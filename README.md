@@ -1,6 +1,6 @@
 # SharpProspero
 
-A C# SDK for building application modules that compile ahead of time to a standalone ELF and pack
+A C# SDK for building application modules that compile ahead of time to a standalone ELF and optionally packs
 into an installable package with LibProsperoPkg. Write the application in C#; the toolchain produces
 an `eboot.bin` with no managed runtime to deploy alongside it.
 
@@ -143,15 +143,7 @@ See [docs/getting-started.md](docs/getting-started.md) to go from an empty proje
 
 ## Documentation
 
-The pages under `docs/` are both the repository documentation and a Jekyll site. To publish it, set
-GitHub Pages to build from the `docs/` folder on the default branch; the theme and navigation come
-from `docs/_config.yml`. Preview it locally with:
-
-```
-cd docs
-bundle install
-bundle exec jekyll serve
-```
+The pages under `docs/` are both the repository documentation and a Jekyll site.
 
 ## License
 
