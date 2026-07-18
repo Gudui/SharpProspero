@@ -1,8 +1,8 @@
 // SharpProspero - a C# SDK for on-device application modules.
 // Copyright (C) 2026 SvenGDK
 
-using System;
 using SharpProspero.Graphics;
+using System;
 
 namespace SharpProspero.Ui;
 
@@ -10,20 +10,15 @@ namespace SharpProspero.Ui;
 /// A control the user activates with the confirm button. It highlights when focused and calls
 /// <see cref="Activated"/> when confirmed. A disabled button cannot be focused or activated.
 /// </summary>
-public sealed class Button : UiElement
+/// <remarks>Creates a button labelled <paramref name="text"/> that calls <paramref name="activated"/> when confirmed.</remarks>
+public sealed class Button(string text, Action? activated = null) : UiElement
 {
-    /// <summary>Creates a button labelled <paramref name="text"/> that calls <paramref name="activated"/> when confirmed.</summary>
-    public Button(string text, Action? activated = null)
-    {
-        Text = text ?? "";
-        Activated = activated;
-    }
 
     /// <summary>The button's label.</summary>
-    public string Text { get; set; }
+    public string Text { get; set; } = text ?? "";
 
     /// <summary>Called when the button is confirmed.</summary>
-    public Action? Activated { get; set; }
+    public Action? Activated { get; set; } = activated;
 
     /// <summary>Whether the button can be focused and activated. Default true.</summary>
     public bool Enabled { get; set; } = true;

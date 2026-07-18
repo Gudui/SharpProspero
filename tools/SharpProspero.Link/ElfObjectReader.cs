@@ -9,9 +9,8 @@ using System.Text;
 namespace SharpProspero.Link;
 
 /// <summary>Raised when a file is not a relocatable object this reader understands.</summary>
-public sealed class ElfLinkException : Exception
+public sealed class ElfLinkException(string message) : Exception(message)
 {
-    public ElfLinkException(string message) : base(message) { }
 }
 
 /// <summary>
@@ -103,7 +102,7 @@ public static class ElfObjectReader
         };
     }
 
-    private static IReadOnlyList<ElfSymbol> ReadSymbols(byte[] data, RawSection[] raw, ElfSection[] sections)
+    private static List<ElfSymbol> ReadSymbols(byte[] data, RawSection[] raw, ElfSection[] sections)
     {
         int symIndex = Array.FindIndex(sections, s => s.Type == ShType.SymTab);
         if (symIndex < 0)
@@ -133,7 +132,7 @@ public static class ElfObjectReader
         return list;
     }
 
-    private static IReadOnlyDictionary<int, IReadOnlyList<ElfRelocation>> ReadRelocations(byte[] data, RawSection[] raw)
+    private static Dictionary<int, IReadOnlyList<ElfRelocation>> ReadRelocations(byte[] data, RawSection[] raw)
     {
         var result = new Dictionary<int, IReadOnlyList<ElfRelocation>>();
         for (int i = 0; i < raw.Length; i++)

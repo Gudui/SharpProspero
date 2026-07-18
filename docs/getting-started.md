@@ -5,66 +5,56 @@ nav_order: 2
 
 # Getting started
 
-This walks from an empty project to an installable package.
+Write a homebrew application in C#, build it into an installable package, and run it on the console.
+This page gets you from nothing to a running module; [Setup](setup.md) has the full per-operating-system
+install, and [Templates](templates.md) covers the other kinds of project you can start from.
 
-## 1. Prerequisites
+## What you need
 
-- .NET 10 SDK (`dotnet --version` reports 10.x).
-- The runtime pack, pointed at by the environment:
+- The **.NET 10 SDK** (`dotnet --version` reports `10.x`).
+- The **runtime pack** — the ahead-of-time runtime built for the console, pointed at by the
+  `PROSPERO_RUNTIME_PACK` environment variable. See [Setup](setup.md) and `runtime/README.md`.
+- This SDK checked out, with `SHARPPROSPERO_ROOT` pointing at the `SharpProspero` folder.
 
-```
-setx PROSPERO_RUNTIME_PACK "<folder with the runtime archives>"
-```
-
-.NET 10 alone is enough to build and test the SDK; the runtime pack is needed to link a module, which
-the SDK's own linker does — it supplies its own start object and stubs, so nothing else is required.
-See [build-pipeline.md](build-pipeline.md).
-
-## 2. Try the SDK
+Check the machine is ready:
 
 ```
-dotnet build SharpProspero.slnx
-dotnet test tests/SharpProspero.Tests/SharpProspero.Tests.csproj
+pwsh doctor.ps1
 ```
 
-## 3. Create an application project
+It reports the .NET SDK, the runtime pack and the SDK root, and prints what to set for anything missing.
+A plain build and the tests need only .NET; producing a runnable module also needs the runtime pack.
 
-An application is a small executable project that references the SDK and imports the build files.
+## 1. Create a project
 
-`MyApp.csproj`:
+The quickest start is the project template. Install it once, then create an application:
 
-```xml
-<Project Sdk="Microsoft.NET.Sdk">
-  <Import Project="path\to\build\Prospero.App.props" />
-  <PropertyGroup>
-    <OutputType>Exe</OutputType>
-    <ProsperoModuleName>eboot.bin</ProsperoModuleName>
-    <ProsperoHeapHardLimitBytes>134217728</ProsperoHeapHardLimitBytes>
-  </PropertyGroup>
-  <ItemGroup>
-    <ProjectReference Include="path\to\src\SharpProspero\SharpProspero.csproj" />
-  </ItemGroup>
-  <Import Project="path\to\build\Prospero.App.targets" />
-</Project>
+```
+dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-app
+dotnet new prospero-app -n MyGame --title "My Game" --titleId PPSA99099
 ```
 
-`Program.cs`:
+That writes a `MyGame` folder with `Program.cs`, the `sce_sys` package metadata, and a `build.ps1`.
+Other project kinds — an interface app, a library, a toolbox — are in [Templates](templates.md).
+
+## 2. Write the application
+
+The template's `Program.cs` derives from `ProsperoApp` and draws each frame:
 
 ```csharp
 using SharpProspero.Application;
 using SharpProspero.Graphics;
 using SharpProspero.Interop.Pad;
 
-internal sealed class MyApp : ProsperoApp
+internal sealed class Game : ProsperoApp
 {
     protected override void OnFrame(FrameContext context)
     {
         Surface surface = context.Surface;
         surface.Clear(Color.FromRgb(0x10, 0x14, 0x1A));
-        surface.DrawTextCentered("My first C# module", 480, 5, Color.White);
+        surface.DrawTextCentered("My Game", 480, 6, Color.White);
 
-        // Leave on the frame Options is pressed.
-        if (context.Pressed(ScePadButton.Options))
+        if (context.Input.IsPressed(ScePadButton.Options))
             context.RequestExit();
     }
 }
@@ -73,31 +63,38 @@ internal static class Program
 {
     private static void Main()
     {
-        using var app = new MyApp();
+        using var app = new Game();
         app.Run();
     }
 }
 ```
 
-## 4. Add package metadata
+`ProsperoApp` opens the display and controller, runs a paced loop that calls `OnFrame`, and tears
+everything down on exit. From here, [Graphics and memory](graphics-and-memory.md) covers drawing and the
+[Interface toolkit](ui.md) builds screens out of widgets instead of drawing by hand.
 
-Create `sce_sys/param.json` with the content id, title and version, and `sce_sys/icon0.png`. Copy
-the sample's `sce_sys` as a starting point and change the title and content id.
+## 3. Build the package
 
-## 5. Build the package
+One command compiles, links and packs:
 
-Model the build on `src/SharpProspero.Sample/build.ps1`:
+```
+pwsh MyGame/build.ps1
+```
 
-1. `dotnet publish -c Release -r linux-x64` to compile the object.
-2. `dotnet msbuild MyApp.csproj /t:ProsperoLink /p:ProsperoObjectFile=<object> /p:OutputPath=<module>/`
-   to link `eboot.bin`.
-3. Copy `sce_sys` next to `eboot.bin`.
-4. `dotnet run --project tools/SharpProspero.Packager -- --in <module> --out <out>`.
+It produces an installable `*.pkg` under `MyGame/out`. To get the loose files instead of a package
+(handy while iterating), pass `-Output Folder`, which leaves `eboot.bin`, `sce_sys` and any `sce_module`
+libraries together in one folder.
 
-The finished `*.pkg` installs on a debug-mode console.
+## 4. Run it on the console
+
+Install the `*.pkg` on a console in the appropriate mode for unsigned packages, then launch it from the
+home screen. The [folder output](build-pipeline.md) is useful for inspecting the module or copying files
+directly.
 
 ## Where to go next
 
-- [architecture.md](architecture.md) for how the layers fit together.
-- [bindings.md](bindings.md) to add services beyond the built-in set.
-- [graphics-and-memory.md](graphics-and-memory.md) for the drawing surface and memory model.
+- [Setup](setup.md) — the full install for Windows, Linux and macOS.
+- [Templates](templates.md) — starting points for each kind of project.
+- [Guides and tips](guides.md) — everyday recipes and troubleshooting.
+- [Architecture](architecture.md) — how the layers fit together.
+- [Build pipeline](build-pipeline.md) — what compile, link and pack each do.

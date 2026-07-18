@@ -1,6 +1,6 @@
 ---
 title: Build pipeline
-nav_order: 4
+nav_order: 5
 ---
 
 # Build pipeline

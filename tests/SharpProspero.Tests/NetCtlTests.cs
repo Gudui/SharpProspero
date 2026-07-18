@@ -1,8 +1,8 @@
 // SharpProspero.Tests
 // Copyright (C) 2026 SvenGDK
 
-using System.Text;
 using SharpProspero.Interop.Net;
+using System.Text;
 using Xunit;
 
 namespace SharpProspero.Tests;

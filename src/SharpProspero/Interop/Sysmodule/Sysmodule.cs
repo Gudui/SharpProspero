@@ -100,6 +100,9 @@ public enum SystemModuleId : ushort
 
     /// <summary>CPU audio decoding.</summary>
     AudioDecCpu = 0x00BD,
+
+    /// <summary>Screenshot and video-clip capture.</summary>
+    Share = 0x010F,
 }
 
 /// <summary>

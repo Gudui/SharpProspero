@@ -51,6 +51,6 @@ public static class SceNid
         byte[] value = ComputeBytes(name);
         Array.Reverse(value);
         string encoded = Convert.ToBase64String(value);
-        return encoded.Substring(0, Length).Replace('/', '-');
+        return encoded[..Length].Replace('/', '-');
     }
 }

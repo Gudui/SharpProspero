@@ -1,6 +1,6 @@
 ---
 title: Utilities
-nav_order: 13
+nav_order: 9
 ---
 
 # Utilities
@@ -51,6 +51,23 @@ JpegEncoder.Save(surface, "/data/photo.jpg", quality: 90);   // quality 1..100
 
 Both also return the encoded bytes directly (`PngEncoder.Encode`, `JpegEncoder.Encode`) for sending
 over the network or storing elsewhere.
+
+## System capture
+
+`ShareCapture` captures the whole finished screen, the application together with the system overlays,
+and saves it to the console's capture gallery. It is the game-DVR capture the share button drives: use
+it to grab a 2K or 4K screenshot, or to save the last several seconds of output as a video clip. This
+differs from encoding a drawing surface, which captures only what the application itself drew.
+
+```csharp
+using var share = ShareCapture.Start();
+share.CaptureScreenshot(ScreenshotFormat.Png4K);   // saved to the gallery in the background
+share.CaptureRecentClip(secondsBack: 30);          // save the last 30 seconds as a clip
+```
+
+Captures are asynchronous: each call returns a request id and the image or clip is written in the
+background. `Block(ShareFeature.Screenshot)` prevents capture while a sensitive screen is shown, and
+`Allow` re-enables it; `SetScreenshotOverlay` adds a watermark to captured screenshots.
 
 ## Microphone capture
 
@@ -103,3 +120,51 @@ area for laying out important content (`DisplaySafeAreaRatio`), and take the aud
 module alone (`SilenceBackgroundMedia` / `RestoreBackgroundMedia`). `LoadExecutable` replaces the
 running module with another, for chain-loading. The console's name is available from
 `SystemParameters.SystemName`.
+
+## Logging
+
+`SharpProspero.Diagnostics` gives a module a small logging facility: choose a minimum level, add one or
+more sinks, and write leveled messages. Messages below the minimum, or when no sink is attached, cost
+almost nothing, and a failing sink never throws back to the caller.
+
+```csharp
+using SharpProspero.Diagnostics;
+
+Log.MinimumLevel = LogLevel.Debug;
+Log.AddSink(FileLogSink.Open("/data/app.log"));   // appends lines to a file
+Log.AddSink(new ConsoleLogSink());                // and to the development console
+
+Log.Information("started");
+Log.Error($"load failed: 0x{code:X8}");
+```
+
+Each line is written as `HH:mm:ss.fff LVL message`. `FileLogSink` appends to a file the user can read
+back after a run and is disposed at shutdown; `ConsoleLogSink` writes to standard output, which appears
+on the development console when one is attached. Implement `ILogSink` to send logs somewhere else, such
+as over the network.
+
+## Optical disc
+
+`DiscDrive` reaches the Blu-ray drive. There is no dedicated disc service, so it works through the file
+system and the raw device node, and both need the module to run with enough privilege to reach the
+drive, which a plain application sandbox does not have — treat the reads as best-effort.
+
+When the system has recognised a disc it mounts its filesystem under `DiscDrive.MountPoint`
+(`/mnt/disc`), which is browsed with the ordinary file APIs:
+
+```csharp
+if (DiscDrive.IsDiscMounted)
+    foreach (DirectoryEntry entry in DiscDrive.EnumerateFiles())
+        Show(entry.Name);
+```
+
+The raw block device is opened for a sector-level read or a full dump:
+
+```csharp
+using var disc = DiscDrive.OpenDevice();               // /dev/cd0
+long total = disc.DumpTo("/data/disc.iso", onProgress: bytes => Report(bytes));
+```
+
+`DumpTo` reads the device to a file until the end; `Read` and `Seek` do positioned reads. What the
+device returns is the drive's raw content, so for a commercial disc the readable files are the ones the
+system has already mounted under `/mnt/disc`, not the raw sectors.

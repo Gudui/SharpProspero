@@ -6,13 +6,12 @@ using SharpProspero.Graphics;
 namespace SharpProspero.Ui;
 
 /// <summary>A line of text. Not focusable; use it for titles, headings and read-only values.</summary>
-public sealed class Label : UiElement
+/// <remarks>Creates a label showing <paramref name="text"/>.</remarks>
+public sealed class Label(string text = "") : UiElement
 {
-    /// <summary>Creates a label showing <paramref name="text"/>.</summary>
-    public Label(string text = "") => Text = text ?? "";
 
     /// <summary>The text to show.</summary>
-    public string Text { get; set; }
+    public string Text { get; set; } = text ?? "";
 
     /// <summary>The text color, or null to use the theme's text color (the default).</summary>
     public Color? TextColor { get; set; }

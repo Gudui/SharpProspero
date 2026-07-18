@@ -1,10 +1,10 @@
 // SharpProspero.Tests
 // Copyright (C) 2026 SvenGDK
 
-using System.Runtime.InteropServices;
 using SharpProspero.Interop.Audio;
 using SharpProspero.Interop.Image;
 using SharpProspero.Interop.SystemService;
+using System.Runtime.InteropServices;
 using Xunit;
 
 namespace SharpProspero.Tests;

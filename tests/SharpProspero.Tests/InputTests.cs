@@ -1,11 +1,11 @@
 // SharpProspero.Tests
 // Copyright (C) 2026 SvenGDK
 
+using SharpProspero.Input;
+using SharpProspero.Interop.Pad;
 using System;
 using System.Buffers.Binary;
 using System.Numerics;
-using SharpProspero.Input;
-using SharpProspero.Interop.Pad;
 using Xunit;
 
 namespace SharpProspero.Tests;

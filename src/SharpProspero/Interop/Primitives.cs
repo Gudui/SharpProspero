@@ -50,19 +50,13 @@ public static class SceResult
 /// Raised when a service call reports a failure code. <see cref="Code"/> carries the raw value so
 /// callers can branch on specific results.
 /// </summary>
-public sealed class ProsperoException : Exception
+/// <remarks>Creates an exception describing a failed <paramref name="operation"/>.</remarks>
+public sealed class ProsperoException(string operation, int code) : Exception($"{operation} failed (0x{unchecked((uint)code):X8}).")
 {
-    /// <summary>Creates an exception describing a failed <paramref name="operation"/>.</summary>
-    public ProsperoException(string operation, int code)
-        : base($"{operation} failed (0x{unchecked((uint)code):X8}).")
-    {
-        Operation = operation;
-        Code = code;
-    }
 
     /// <summary>The name of the operation that failed.</summary>
-    public string Operation { get; }
+    public string Operation { get; } = operation;
 
     /// <summary>The raw result code.</summary>
-    public int Code { get; }
+    public int Code { get; } = code;
 }

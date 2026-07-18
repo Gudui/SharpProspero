@@ -9,11 +9,11 @@
 //
 // Structure is validated against the reference module format. Loading on the device is the final step.
 
+using SharpProspero.Prx;
 using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Text;
-using SharpProspero.Prx;
 
 namespace SharpProspero.Link;
 
@@ -251,7 +251,7 @@ public static class DynamicWriter
             di++;
         }
         byte[] dynstrBytes = dynstr.ToBytes();
-        byte[] dynsymBytes = dynsym.ToArray();
+        byte[] dynsymBytes = [.. dynsym];
         byte[] hashBytes = BuildSysVHash(imports.Count + exports.Count + 1);
         byte[] relaBytes = new byte[imports.Count * 24];
         byte[] relaDynBytes = new byte[(gotDataOrder.Count + abs64Count) * 24];
@@ -728,7 +728,7 @@ public static class DynamicWriter
 
     private sealed class StringTable
     {
-        private readonly List<byte> _bytes = new() { 0 };
+        private readonly List<byte> _bytes = [0];
         private readonly Dictionary<string, int> _off = new(StringComparer.Ordinal);
         public int Add(string value)
         {
@@ -739,6 +739,6 @@ public static class DynamicWriter
             _off[value] = offset;
             return offset;
         }
-        public byte[] ToBytes() => _bytes.ToArray();
+        public byte[] ToBytes() => [.. _bytes];
     }
 }

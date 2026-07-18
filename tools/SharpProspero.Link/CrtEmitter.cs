@@ -114,7 +114,7 @@ public static class CrtEmitter
         output.AddRange(BuildHeader(shdrOff, shShStr, sectionCount: 6));
         output.AddRange(body);
         output.AddRange(shdr);
-        return output.ToArray();
+        return [.. output];
     }
 
     private static long Place(List<byte> body, byte[] data)
@@ -187,7 +187,7 @@ public static class CrtEmitter
 
     private sealed class StringTable
     {
-        private readonly List<byte> _bytes = new() { 0 };
+        private readonly List<byte> _bytes = [0];
         private readonly Dictionary<string, int> _off = new(StringComparer.Ordinal);
 
         public int Add(string value)
@@ -201,6 +201,6 @@ public static class CrtEmitter
             return offset;
         }
 
-        public byte[] ToBytes() => _bytes.ToArray();
+        public byte[] ToBytes() => [.. _bytes];
     }
 }

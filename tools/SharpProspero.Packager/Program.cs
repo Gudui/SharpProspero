@@ -4,10 +4,10 @@
 // Thin command-line front end over the package builder. Point it at a folder that holds the
 // compiled eboot.bin and an optional sce_sys metadata tree, and it writes the finished *.pkg.
 
+using LibProsperoPkg;
 using System;
 using System.Collections.Generic;
 using System.IO;
-using LibProsperoPkg;
 
 namespace SharpProspero.Packager;
 

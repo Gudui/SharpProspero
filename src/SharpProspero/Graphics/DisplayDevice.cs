@@ -1,10 +1,10 @@
 // SharpProspero - a C# SDK for on-device application modules.
 // Copyright (C) 2026 SvenGDK
 
-using System;
 using SharpProspero.Interop;
 using SharpProspero.Interop.VideoOut;
 using SharpProspero.Memory;
+using System;
 
 namespace SharpProspero.Graphics;
 

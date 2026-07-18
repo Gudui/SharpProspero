@@ -12,9 +12,14 @@ namespace SharpProspero.Graphics;
 /// width when the framebuffer pitch is padded; addressing uses the stride while drawing clips to the
 /// width.
 /// </summary>
-public readonly unsafe struct Surface
+/// <remarks>Creates a surface whose rows are <paramref name="stride"/> pixels apart.</remarks>
+/// <param name="pixels">Pointer to the framebuffer pixels.</param>
+/// <param name="width">Width in pixels.</param>
+/// <param name="height">Height in pixels.</param>
+/// <param name="stride">Pixels from the start of one row to the next; at least <paramref name="width"/>.</param>
+public readonly unsafe partial struct Surface(uint* pixels, int width, int height, int stride)
 {
-    private readonly uint* _pixels;
+    private readonly uint* _pixels = pixels;
 
     /// <summary>Creates a surface over <paramref name="pixels"/> whose rows are packed (stride equals width).</summary>
     /// <param name="pixels">Pointer to <paramref name="width"/> * <paramref name="height"/> packed pixels.</param>
@@ -25,27 +30,14 @@ public readonly unsafe struct Surface
     {
     }
 
-    /// <summary>Creates a surface whose rows are <paramref name="stride"/> pixels apart.</summary>
-    /// <param name="pixels">Pointer to the framebuffer pixels.</param>
-    /// <param name="width">Width in pixels.</param>
-    /// <param name="height">Height in pixels.</param>
-    /// <param name="stride">Pixels from the start of one row to the next; at least <paramref name="width"/>.</param>
-    public Surface(uint* pixels, int width, int height, int stride)
-    {
-        _pixels = pixels;
-        Width = width;
-        Height = height;
-        Stride = stride < width ? width : stride;
-    }
-
     /// <summary>Width in pixels.</summary>
-    public int Width { get; }
+    public int Width { get; } = width;
 
     /// <summary>Height in pixels.</summary>
-    public int Height { get; }
+    public int Height { get; } = height;
 
     /// <summary>Pixels from the start of one row to the start of the next.</summary>
-    public int Stride { get; }
+    public int Stride { get; } = stride < width ? width : stride;
 
     /// <summary>Pointer to the first pixel.</summary>
     public uint* Pixels => _pixels;

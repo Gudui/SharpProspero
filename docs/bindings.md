@@ -1,6 +1,6 @@
 ---
 title: Bindings
-nav_order: 5
+nav_order: 6
 ---
 
 # Bindings
@@ -96,6 +96,7 @@ the method class name, and the library. The response files land under
 | `Interop.PlayGo` | Install progress | initialize, open, read the install progress |
 | `Interop.Compression` | Compression | inflate a zlib or deflate stream |
 | `Interop.Content` | Content library | delete by path or id, count, size, search photos and videos, export a file |
+| `Interop.Share` | System capture | initialize, capture a screenshot or a video clip of the composited screen, recording status, screenshot overlay, permit or prohibit a feature |
 
 ## Result codes
 

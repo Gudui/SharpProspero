@@ -1,11 +1,11 @@
 // SharpProspero.Tests
 // Copyright (C) 2026 SvenGDK
 
-using System.Linq;
-using System.Runtime.InteropServices;
 using SharpProspero.Interop.AppContent;
 using SharpProspero.Interop.PlayGo;
 using SharpProspero.Prx;
+using System.Linq;
+using System.Runtime.InteropServices;
 using Xunit;
 
 namespace SharpProspero.Tests;

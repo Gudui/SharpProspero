@@ -1,0 +1,17 @@
+{
+  "$schema": "http://json.schemastore.org/template",
+  "author": "SvenGDK",
+  "classifications": [ "Prospero", "Homebrew", "Console", "AOT", "Library" ],
+  "identity": "SharpProspero.Prx.CSharp",
+  "name": "SharpProspero Library (PRX)",
+  "shortName": "prospero-prx",
+  "tags": {
+    "language": "C#",
+    "type": "project"
+  },
+  "sourceName": "SampleApp",
+  "preferNameDirectory": true,
+  "primaryOutputs": [
+    { "path": "SampleApp.csproj" }
+  ]
+}

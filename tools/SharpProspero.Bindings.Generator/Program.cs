@@ -6,6 +6,8 @@
 // The header path (no subcommand) writes response files describing a header-to-C# run for external
 // processing; it makes no external calls of its own.
 
+using SharpProspero.Link;
+using SharpProspero.Prx;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -15,8 +17,6 @@ using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
-using SharpProspero.Link;
-using SharpProspero.Prx;
 
 namespace SharpProspero.Bindings.Generator;
 
@@ -38,7 +38,7 @@ internal sealed class Catalog
 {
     public string[]? DefaultConfig { get; set; }
     public string[]? DefaultAdditionalArgs { get; set; }
-    public List<ModuleSpec> Modules { get; set; } = new();
+    public List<ModuleSpec> Modules { get; set; } = [];
 }
 
 internal static class Program

@@ -1,13 +1,13 @@
 // SharpProspero.Tests
 // Copyright (C) 2026 SvenGDK
 
+using SharpProspero.Link;
+using SharpProspero.Prx;
 using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
-using SharpProspero.Link;
-using SharpProspero.Prx;
 using Xunit;
 
 namespace SharpProspero.Tests;
@@ -160,7 +160,7 @@ public sealed class SelfContainedLinkTests
     {
         // A library that publishes something other than the usual versions must be carried through
         // exactly; an import that records the wrong version does not bind.
-        byte[] bytes = PrxStubEmitter.BuildObject("libMyLib", new[] { "myLibDoThing" },
+        byte[] bytes = PrxStubEmitter.BuildObject("libMyLib", ["myLibDoThing"],
             moduleVersion: 0x0304, libraryVersion: 0x0007);
         StubLibrary stub = StubLibrary.Parse(bytes, "libMyLib");
 
@@ -179,7 +179,7 @@ public sealed class SelfContainedLinkTests
     public void StubLibrary_CarriesAllThreeNamesWhenTheyDiffer()
     {
         byte[] bytes = PrxStubEmitter.BuildObject(
-            "libSceMsgDialog.native", new[] { "sceMsgDialogOpen" },
+            "libSceMsgDialog.native", ["sceMsgDialogOpen"],
             moduleName: "libSceMsgDialog", soname: "libSceMsgDialog.native.prx");
         StubLibrary stub = StubLibrary.Parse(bytes, "libSceMsgDialog");
 
@@ -192,7 +192,7 @@ public sealed class SelfContainedLinkTests
     [Fact]
     public void StubLibrary_DefaultsToTheUsualVersions()
     {
-        StubLibrary stub = StubLibrary.Parse(PrxStubEmitter.BuildObject("libMyLib", new[] { "myLibDoThing" }), "libMyLib");
+        StubLibrary stub = StubLibrary.Parse(PrxStubEmitter.BuildObject("libMyLib", ["myLibDoThing"]), "libMyLib");
         Assert.Equal(StubLibrary.DefaultModuleVersion, stub.ModuleVersion);
         Assert.Equal(StubLibrary.DefaultLibraryVersion, stub.LibraryVersion);
     }
@@ -218,7 +218,7 @@ public sealed class SelfContainedLinkTests
         options.ExtraObjects.Add(ElfObjectReader.Read(BuildLibraryObject(), "app"));
         // A user's own library that publishes unusual versions.
         options.ExtraStubs.Add(StubLibrary.Parse(
-            PrxStubEmitter.BuildObject("libMyLib", new[] { "sceVideoOutOpen" }, moduleVersion: 0x0205, libraryVersion: 0x0003),
+            PrxStubEmitter.BuildObject("libMyLib", ["sceVideoOutOpen"], moduleVersion: 0x0205, libraryVersion: 0x0003),
             "libMyLib"));
 
         LinkResolution result = Linker.Resolve(options);
@@ -236,7 +236,7 @@ public sealed class SelfContainedLinkTests
         var options = new LinkOptions();
         options.ExtraObjects.Add(ElfObjectReader.Read(BuildLibraryObject(), "app"));
         options.ExtraStubs.Add(StubLibrary.Parse(
-            PrxStubEmitter.BuildObject("libMyLib", new[] { "sceVideoOutOpen" }, moduleVersion: 0x0205, libraryVersion: 0x0003),
+            PrxStubEmitter.BuildObject("libMyLib", ["sceVideoOutOpen"], moduleVersion: 0x0205, libraryVersion: 0x0003),
             "libMyLib"));
         LinkResolution result = Linker.Resolve(options);
 
@@ -291,7 +291,7 @@ public sealed class SelfContainedLinkTests
         Assert.Empty(result.Unresolved);
 
         byte[] module = DynamicWriter.Write(result, entrySymbol: null, ModuleKind.Library,
-            exportSymbols: new[] { "game_frame" }, moduleFileName: "test.prx");
+            exportSymbols: ["game_frame"], moduleFileName: "test.prx");
 
         // A library module type, and the export reads back with the identifier the reader computes.
         Assert.Equal(0xFE18, BinaryPrimitives.ReadUInt16LittleEndian(module.AsSpan(0x10))); // ET_SCE_DYNAMIC
@@ -313,7 +313,7 @@ public sealed class SelfContainedLinkTests
         LinkResolution result = Linker.Resolve(options);
 
         Assert.Throws<ElfLinkException>(() =>
-            DynamicWriter.Write(result, null, ModuleKind.Library, exportSymbols: new[] { "not_defined" }));
+            DynamicWriter.Write(result, null, ModuleKind.Library, exportSymbols: ["not_defined"]));
     }
 
     // A library object: a defined global "game_frame" at a non-zero offset (so it reads back as a
@@ -324,7 +324,7 @@ public sealed class SelfContainedLinkTests
         const int frameOff = 1, videoOff = 12;
         byte[] shstr = Encoding.ASCII.GetBytes("\0.text\0.symtab\0.strtab\0.shstrtab\0");
         const int textName = 1, symName = 7, strName = 15, shstrName = 23;
-        byte[] text = { 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0xC3 }; // nops then ret
+        byte[] text = [0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0xC3]; // nops then ret
 
         byte[] symtab = new byte[3 * 24];
         WriteSymValue(symtab, 1, frameOff, (1 << 4) | 2, 1, value: 8);   // game_frame: global func at .text+8
@@ -376,7 +376,7 @@ public sealed class SelfContainedLinkTests
         const int mainOff = 1, videoOff = 6;
         byte[] shstr = Encoding.ASCII.GetBytes("\0.text\0.symtab\0.strtab\0.shstrtab\0");
         const int textName = 1, symName = 7, strName = 15, shstrName = 23;
-        byte[] text = { 0xC3 }; // ret
+        byte[] text = [0xC3]; // ret
 
         byte[] symtab = new byte[3 * 24];
         WriteSym(symtab, 1, mainOff, (1 << 4) | 2, 1);   // main: global func, defined in .text

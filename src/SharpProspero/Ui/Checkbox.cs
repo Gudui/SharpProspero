@@ -1,8 +1,8 @@
 // SharpProspero - a C# SDK for on-device application modules.
 // Copyright (C) 2026 SvenGDK
 
-using System;
 using SharpProspero.Graphics;
+using System;
 
 namespace SharpProspero.Ui;
 
@@ -10,24 +10,18 @@ namespace SharpProspero.Ui;
 /// An on/off setting the user toggles with the confirm button. It shows a mark when checked and calls
 /// <see cref="Changed"/> with the new state each time it flips.
 /// </summary>
-public sealed class Checkbox : UiElement
+/// <remarks>Creates a checkbox labelled <paramref name="text"/>, initially <paramref name="checked"/>.</remarks>
+public sealed class Checkbox(string text, bool @checked = false, Action<bool>? changed = null) : UiElement
 {
-    /// <summary>Creates a checkbox labelled <paramref name="text"/>, initially <paramref name="checked"/>.</summary>
-    public Checkbox(string text, bool @checked = false, Action<bool>? changed = null)
-    {
-        Text = text ?? "";
-        Checked = @checked;
-        Changed = changed;
-    }
 
     /// <summary>The label shown next to the mark.</summary>
-    public string Text { get; set; }
+    public string Text { get; set; } = text ?? "";
 
     /// <summary>Whether the setting is on.</summary>
-    public bool Checked { get; set; }
+    public bool Checked { get; set; } = @checked;
 
     /// <summary>Called with the new state each time the setting is toggled.</summary>
-    public Action<bool>? Changed { get; set; }
+    public Action<bool>? Changed { get; set; } = changed;
 
     /// <inheritdoc />
     public override bool IsFocusable => Visible;

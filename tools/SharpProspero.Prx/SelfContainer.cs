@@ -207,7 +207,7 @@ public static class SelfContainer
 
         int elfStart = ContainerHeaderSize + segCount * SegEntrySize;
         SelfExtInfo? extInfo = null;
-        byte[] elf = Array.Empty<byte>();
+        byte[] elf = [];
         if (IsElf(data[elfStart..]))
         {
             int phnum = BinaryPrimitives.ReadUInt16LittleEndian(data[(elfStart + OffPhNum)..]);
@@ -486,7 +486,7 @@ public static class SelfContainer
     private static byte[] Inflate(byte[] stored, int expected)
     {
         if (expected == 0)
-            return Array.Empty<byte>();
+            return [];
         // A container may deflate a segment with or without a zlib wrapper; try the wrapped stream
         // first, then a raw stream. A result of a different length is rejected so wrong bytes never
         // reach the caller.
@@ -498,7 +498,7 @@ public static class SelfContainer
 
     private static bool TryInflate(byte[] input, int expected, bool wrapped, out byte[] result)
     {
-        result = Array.Empty<byte>();
+        result = [];
         try
         {
             using var ms = new MemoryStream(input, writable: false);

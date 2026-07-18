@@ -11,9 +11,12 @@ toolchain produces an `eboot.bin` with no managed runtime to deploy alongside it
 
 ## Start here
 
-1. [Getting started](getting-started.md) takes an empty project to a finished build.
-2. [Architecture](architecture.md) explains how the layers fit together.
-3. [Build pipeline](build-pipeline.md) covers compile, link and output.
+1. [Getting started](getting-started.md) takes an empty project to a running module in a few steps.
+2. [Setup](setup.md) is the full install for Windows, Linux and macOS (64-bit).
+3. [Templates](templates.md) are ready-to-build starting points for each kind of project.
+4. [Guides and tips](guides.md) collect everyday recipes and troubleshooting.
+5. [Architecture](architecture.md) explains how the layers fit together, and
+   [Build pipeline](build-pipeline.md) covers compile, link and output.
 
 ## What it gives you
 

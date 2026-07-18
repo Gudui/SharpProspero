@@ -8,19 +8,10 @@ namespace SharpProspero.Numerics;
 /// from the entropy source for an unpredictable start. The same seed always yields the same sequence.
 /// It is not for cryptographic use; take those bytes from <see cref="HardwareEntropy"/>.
 /// </summary>
-public sealed class GameRandom
+/// <remarks>Creates a generator with a fixed seed, so the sequence is reproducible.</remarks>
+public sealed class GameRandom(ulong seed)
 {
-    private ulong _s0, _s1, _s2, _s3;
-
-    /// <summary>Creates a generator with a fixed seed, so the sequence is reproducible.</summary>
-    public GameRandom(ulong seed)
-    {
-        // Spread the seed across the state so even a small seed starts well-mixed.
-        _s0 = SplitMix(ref seed);
-        _s1 = SplitMix(ref seed);
-        _s2 = SplitMix(ref seed);
-        _s3 = SplitMix(ref seed);
-    }
+    private ulong _s0 = SplitMix(ref seed), _s1 = SplitMix(ref seed), _s2 = SplitMix(ref seed), _s3 = SplitMix(ref seed);
 
     /// <summary>Creates a generator seeded from the entropy source.</summary>
     public static GameRandom FromEntropy() => new(HardwareEntropy.NextUInt64());

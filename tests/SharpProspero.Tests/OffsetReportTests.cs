@@ -1,11 +1,11 @@
 // SharpProspero.Tests
 // Copyright (C) 2026 SvenGDK
 
+using SharpProspero.Link;
+using SharpProspero.Prx;
 using System;
 using System.Buffers.Binary;
 using System.Text;
-using SharpProspero.Link;
-using SharpProspero.Prx;
 using Xunit;
 
 namespace SharpProspero.Tests;
@@ -103,7 +103,7 @@ public sealed class OffsetReportTests
         options.ExtraObjects.Add(ElfObjectReader.Read(BuildObjectDefining(exportName), "lib"));
         LinkResolution result = Linker.Resolve(options);
         return DynamicWriter.Write(result, entrySymbol: null, ModuleKind.Library,
-            exportSymbols: new[] { exportName }, moduleFileName: "test.prx");
+            exportSymbols: [exportName], moduleFileName: "test.prx");
     }
 
     // A minimal ET_REL object defining one global function at a non-zero offset (so it reads back as a
@@ -114,7 +114,7 @@ public sealed class OffsetReportTests
         const int nameOff = 1;
         byte[] shstr = Encoding.ASCII.GetBytes("\0.text\0.symtab\0.strtab\0.shstrtab\0");
         const int textName = 1, symName = 7, strName = 15, shstrName = 23;
-        byte[] text = { 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0xC3 }; // nops then ret
+        byte[] text = [0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0xC3]; // nops then ret
 
         byte[] symtab = new byte[2 * 24];
         WriteSym(symtab, 1, nameOff, (1 << 4) | 2, 1);                          // global func, defined in .text

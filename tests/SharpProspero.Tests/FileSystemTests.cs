@@ -1,11 +1,11 @@
 // SharpProspero.Tests
 // Copyright (C) 2026 SvenGDK
 
+using SharpProspero.Storage;
 using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Text;
-using SharpProspero.Storage;
 using Xunit;
 
 namespace SharpProspero.Tests;
@@ -52,7 +52,7 @@ public sealed class FileSystemTests
         AppendRecord(buffer, "good", FileEntryType.File);
         int truncatedStart = buffer.Count;
         AppendRecord(buffer, "truncated", FileEntryType.File);
-        byte[] all = buffer.ToArray();
+        byte[] all = [.. buffer];
 
         // Cut the second record short: its length field still claims the full size.
         var entries = new List<DirectoryEntry>();
@@ -66,7 +66,7 @@ public sealed class FileSystemTests
     public void DecodeEntries_EmptyBuffer_YieldsNothing()
     {
         var entries = new List<DirectoryEntry>();
-        FileSystem.DecodeEntries(ReadOnlySpan<byte>.Empty, entries);
+        FileSystem.DecodeEntries([], entries);
         Assert.Empty(entries);
     }
 

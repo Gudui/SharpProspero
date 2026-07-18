@@ -88,7 +88,7 @@ public static class PrxBindingsEmitter
     private static string PointerType(PrxBinding binding)
     {
         var sb = new StringBuilder("delegate* unmanaged<");
-        foreach (string parameter in binding.ParameterTypes ?? Array.Empty<string>())
+        foreach (string parameter in binding.ParameterTypes ?? [])
             sb.Append(parameter).Append(", ");
         sb.Append(string.IsNullOrEmpty(binding.ReturnType) ? "void" : binding.ReturnType);
         sb.Append('>');

@@ -199,7 +199,7 @@ public static class PrxStubEmitter
         // Two version records: {version=2, attr=9, sub=1}.
         Span<byte> rec = stackalloc byte[9];
         BinaryPrimitives.WriteUInt32LittleEndian(rec, 2);
-        BinaryPrimitives.WriteUInt32LittleEndian(rec.Slice(4), 9);
+        BinaryPrimitives.WriteUInt32LittleEndian(rec[4..], 9);
         rec[8] = 1;
         for (int r = 0; r < 2; r++)
             s.Write(rec);

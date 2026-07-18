@@ -1,9 +1,9 @@
 // SharpProspero.Tests
 // Copyright (C) 2026 SvenGDK
 
+using SharpProspero.Prx;
 using System;
 using System.IO;
-using SharpProspero.Prx;
 using Xunit;
 
 namespace SharpProspero.Tests;

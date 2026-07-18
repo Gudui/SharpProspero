@@ -9,9 +9,8 @@ using System.Text;
 namespace SharpProspero.Prx;
 
 /// <summary>Raised when a file is not a module this reader understands.</summary>
-public sealed class PrxFormatException : Exception
+public sealed class PrxFormatException(string message) : Exception(message)
 {
-    public PrxFormatException(string message) : base(message) { }
 }
 
 /// <summary>
@@ -296,9 +295,9 @@ public sealed class PrxImage
         if (second < 0)
             return false;
 
-        nid = mangled.Substring(0, first);
+        nid = mangled[..first];
         libId = DecodeId(mangled.Substring(first + 1, second - first - 1));
-        modId = DecodeId(mangled.Substring(second + 1));
+        modId = DecodeId(mangled[(second + 1)..]);
         return nid.Length == SceNid.Length;
     }
 

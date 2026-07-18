@@ -1,12 +1,12 @@
 // SharpProspero - a C# SDK for on-device application modules.
 // Copyright (C) 2026 SvenGDK
 
+using SharpProspero.Interop;
+using SharpProspero.Interop.Kernel;
 using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Text;
-using SharpProspero.Interop;
-using SharpProspero.Interop.Kernel;
 
 namespace SharpProspero.Storage;
 
@@ -110,7 +110,7 @@ public static unsafe class FileSystem
         int offset = 0;
         while (offset + RecordHeaderSize <= buffer.Length)
         {
-            int recordLength = BinaryPrimitives.ReadUInt16LittleEndian(buffer.Slice(offset + 4));
+            int recordLength = BinaryPrimitives.ReadUInt16LittleEndian(buffer[(offset + 4)..]);
             // A record shorter than its header, or one that runs past the buffer, ends the run; without
             // this the zero-length case would never advance.
             if (recordLength < RecordHeaderSize || offset + recordLength > buffer.Length)

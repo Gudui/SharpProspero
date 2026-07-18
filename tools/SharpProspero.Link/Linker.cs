@@ -19,19 +19,19 @@ public enum ModuleKind { Executable, Library }
 public sealed class LinkOptions
 {
     /// <summary>Objects always included in the output.</summary>
-    public List<string> Objects { get; } = new();
+    public List<string> Objects { get; } = [];
 
     /// <summary>Archives whose members are pulled in only to satisfy a reference.</summary>
-    public List<string> Archives { get; } = new();
+    public List<string> Archives { get; } = [];
 
     /// <summary>Stub libraries that name the modules a reference can be imported from.</summary>
-    public List<string> Stubs { get; } = new();
+    public List<string> Stubs { get; } = [];
 
     /// <summary>Objects the SDK supplies directly, always included (e.g. the start object).</summary>
-    public List<ElfObject> ExtraObjects { get; } = new();
+    public List<ElfObject> ExtraObjects { get; } = [];
 
     /// <summary>Stub libraries the SDK supplies directly, without a file on disk.</summary>
-    public List<StubLibrary> ExtraStubs { get; } = new();
+    public List<StubLibrary> ExtraStubs { get; } = [];
 
     /// <summary>The output module kind.</summary>
     public ModuleKind Kind { get; set; } = ModuleKind.Executable;

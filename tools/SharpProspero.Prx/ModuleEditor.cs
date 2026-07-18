@@ -179,7 +179,7 @@ public sealed class ModuleEditor
         return BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan((int)offset + 20));
     }
 
-    private static IEnumerable<VersionRecord> ScanVersionRecords(byte[] data, Layout layout)
+    private static List<VersionRecord> ScanVersionRecords(byte[] data, Layout layout)
     {
         var records = new List<VersionRecord>();
         // Reject a dynamic segment whose offset or size falls outside the file before looping. The

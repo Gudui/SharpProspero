@@ -1,11 +1,11 @@
 // SharpProspero.Tests
 // Copyright (C) 2026 SvenGDK
 
+using SharpProspero.Link;
 using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Text;
-using SharpProspero.Link;
 using Xunit;
 
 namespace SharpProspero.Tests;

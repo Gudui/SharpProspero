@@ -1,12 +1,15 @@
 // SharpProspero - a C# SDK for on-device application modules.
 // Copyright (C) 2026 SvenGDK
 
+using SharpProspero.Graphics;
+using SharpProspero.Interop;
+using SharpProspero.Interop.Kernel;
+using SharpProspero.Interop.Media;
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using System.Text;
-using SharpProspero.Interop;
-using SharpProspero.Interop.Media;
+using System.Threading;
 
 namespace SharpProspero.Media;
 
@@ -27,9 +30,87 @@ public readonly ref struct AudioFrame
 }
 
 /// <summary>
-/// Plays a media file. Open it for a path, start it, then pull decoded audio frames while it stays
-/// active and push them at an audio port. The player decodes on its own threads and calls back for
-/// memory, which this type supplies.
+/// One decoded video frame in NV12 (a luma plane followed by an interleaved chroma plane). Its pixels
+/// stay valid until the next call for a frame, so draw it to the display right away with
+/// <see cref="RenderTo(Surface, int, int)"/>, which converts it to the surface's color format.
+/// </summary>
+public readonly ref struct VideoFrame
+{
+    private readonly unsafe byte* _data;
+
+    internal unsafe VideoFrame(byte* data, int width, int height, int pitch, ulong timeStamp)
+    {
+        _data = data;
+        Width = width;
+        Height = height;
+        Pitch = pitch;
+        TimeStamp = timeStamp;
+    }
+
+    /// <summary>Frame width in pixels.</summary>
+    public int Width { get; }
+
+    /// <summary>Frame height in pixels.</summary>
+    public int Height { get; }
+
+    /// <summary>Row pitch of the luma and chroma planes in bytes.</summary>
+    public int Pitch { get; }
+
+    /// <summary>When the frame plays, in milliseconds.</summary>
+    public ulong TimeStamp { get; }
+
+    /// <summary>Draws the frame at its native size with its top-left at (<paramref name="x"/>, <paramref name="y"/>).</summary>
+    public void RenderTo(Surface destination, int x, int y) => RenderTo(destination, x, y, Width, Height);
+
+    /// <summary>
+    /// Draws the frame into the destination rectangle, scaling it to fit (nearest sampling) and
+    /// converting from NV12 to the surface color. Use this to show video full-screen or in a window.
+    /// </summary>
+    public unsafe void RenderTo(Surface destination, int destX, int destY, int destWidth, int destHeight)
+    {
+        if (_data == null || Width <= 0 || Height <= 0 || destWidth <= 0 || destHeight <= 0)
+            return;
+
+        byte* luma = _data;
+        byte* chroma = _data + (long)Pitch * Height;
+        int x0 = Math.Max(0, destX), y0 = Math.Max(0, destY);
+        int x1 = Math.Min(destination.Width, destX + destWidth), y1 = Math.Min(destination.Height, destY + destHeight);
+        uint* pixels = destination.Pixels;
+        int stride = destination.Stride;
+
+        for (int py = y0; py < y1; py++)
+        {
+            int sy = (py - destY) * Height / destHeight;
+            if (sy >= Height) sy = Height - 1;
+            byte* lumaRow = luma + (long)sy * Pitch;
+            byte* chromaRow = chroma + (long)(sy >> 1) * Pitch;
+            uint* destRow = pixels + (long)py * stride;
+            for (int px = x0; px < x1; px++)
+            {
+                int sx = (px - destX) * Width / destWidth;
+                if (sx >= Width) sx = Width - 1;
+
+                // Limited-range BT.601 conversion in integer arithmetic. The chroma is shared across a
+                // 2x2 block, so the sample index drops the low bit and reads the U,V pair.
+                int c = lumaRow[sx] - 16;
+                int chromaIndex = sx & ~1;
+                int d = chromaRow[chromaIndex] - 128;
+                int e = chromaRow[chromaIndex + 1] - 128;
+                int r = (298 * c + 409 * e + 128) >> 8;
+                int g = (298 * c - 100 * d - 208 * e + 128) >> 8;
+                int b = (298 * c + 516 * d + 128) >> 8;
+                destRow[px] = 0xFF000000u | ((uint)Clamp(r) << 16) | ((uint)Clamp(g) << 8) | (uint)Clamp(b);
+            }
+        }
+    }
+
+    private static byte Clamp(int value) => (byte)(value < 0 ? 0 : value > 255 ? 255 : value);
+}
+
+/// <summary>
+/// Plays a media file. Open it for a path, start it, then pull decoded audio frames to push at an audio
+/// port and video frames to draw to the display, while it stays active. The player decodes on its own
+/// threads and calls back for memory, which this type supplies.
 /// </summary>
 /// <example>
 /// <code>
@@ -38,8 +119,10 @@ public readonly ref struct AudioFrame
 /// player.Start();
 /// while (player.IsActive)
 /// {
-///     if (player.TryGetAudioFrame(out AudioFrame frame))
-///         audio.Output(frame.Samples);
+///     if (player.TryGetAudioFrame(out AudioFrame audioFrame))
+///         audio.Output(audioFrame.Samples);
+///     if (player.TryGetVideoFrame(out VideoFrame videoFrame))
+///         videoFrame.RenderTo(display.BackBuffer, 0, 0, display.Width, display.Height);
 /// }
 /// </code>
 /// </example>
@@ -65,8 +148,8 @@ public sealed unsafe class MediaPlayer : IDisposable
         AvPlayer.InitializeData(&data);
         data.MemoryReplacement.Allocate = &AllocateGeneral;
         data.MemoryReplacement.Deallocate = &DeallocateGeneral;
-        data.MemoryReplacement.AllocateTexture = &AllocateGeneral;
-        data.MemoryReplacement.DeallocateTexture = &DeallocateGeneral;
+        data.MemoryReplacement.AllocateTexture = &AllocateTexture;
+        data.MemoryReplacement.DeallocateTexture = &DeallocateTexture;
         data.BasePriority = basePriority;
         data.AutoStart = 0;
 
@@ -145,6 +228,24 @@ public sealed unsafe class MediaPlayer : IDisposable
         return true;
     }
 
+    /// <summary>
+    /// Takes the next decoded video frame. Returns false when none is ready, which is normal while the
+    /// player is still decoding. Draw the frame to the display with <see cref="VideoFrame.RenderTo(Surface, int, int)"/>;
+    /// it stays valid until the next call.
+    /// </summary>
+    public bool TryGetVideoFrame(out VideoFrame frame)
+    {
+        AvPlayerFrameInfoEx info = default;
+        if (!AvPlayer.sceAvPlayerGetVideoDataEx(Live(), &info) || info.Data == null)
+        {
+            frame = default;
+            return false;
+        }
+        frame = new VideoFrame(
+            (byte*)info.Data, (int)info.VideoWidth, (int)info.VideoHeight, (int)info.VideoPitch, info.TimeStamp);
+        return true;
+    }
+
     private void* Live()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -195,5 +296,114 @@ public sealed unsafe class MediaPlayer : IDisposable
     {
         if (memory != null)
             NativeMemory.AlignedFree(memory);
+    }
+
+    // Video frame buffers are GPU memory: the decoder writes them and the caller reads them, so they
+    // must be GPU-visible direct memory, not the plain heap the general allocator hands back. The
+    // player asks for and releases them by pointer through these callbacks, so the reservation each
+    // pointer belongs to is tracked in a small native table, keyed by the mapped address, that both the
+    // player's threads reach without touching the managed heap.
+    private struct TextureSlot
+    {
+        public void* Pointer;
+        public long Offset;
+        public nuint Size;
+    }
+
+    private const int TextureSlotCount = 128;
+    private static readonly TextureSlot* TextureSlots =
+        (TextureSlot*)NativeMemory.AllocZeroed((nuint)(TextureSlotCount * sizeof(TextureSlot)));
+    private static int _textureLock;
+
+    private static void EnterTextureLock()
+    {
+        while (Interlocked.CompareExchange(ref _textureLock, 1, 0) != 0)
+        {
+        }
+    }
+
+    private static void ExitTextureLock() => Interlocked.Exchange(ref _textureLock, 0);
+
+    [UnmanagedCallersOnly]
+    private static void* AllocateTexture(void* context, uint alignment, uint size)
+    {
+        try
+        {
+            // Direct-memory alignment must be a power of two and at least the page size.
+            nuint align = alignment <= 0x4000 ? 0x4000 : (nuint)BitOperations.RoundUpToPowerOf2(alignment);
+            nuint bytes = (size + align - 1) / align * align;
+
+            long offset = 0;
+            long pool = (long)KernelMemory.sceKernelGetDirectMemorySize();
+            if (KernelMemory.sceKernelAllocateDirectMemory(0, pool, bytes, align, KernelMemory.MemoryTypeCachedShared, &offset) < 0)
+                return null;
+
+            void* address = null;
+            if (KernelMemory.sceKernelMapDirectMemory(&address, bytes, KernelMemory.ProtCpuReadWrite | KernelMemory.ProtGpuAll, 0, offset, align) < 0)
+            {
+                KernelMemory.sceKernelReleaseDirectMemory(offset, bytes);
+                return null;
+            }
+
+            EnterTextureLock();
+            try
+            {
+                for (int i = 0; i < TextureSlotCount; i++)
+                {
+                    if (TextureSlots[i].Pointer == null)
+                    {
+                        TextureSlots[i].Pointer = address;
+                        TextureSlots[i].Offset = offset;
+                        TextureSlots[i].Size = bytes;
+                        return address;
+                    }
+                }
+            }
+            finally
+            {
+                ExitTextureLock();
+            }
+
+            // The table is full; this many concurrent frame buffers is not expected, so release and fail.
+            KernelMemory.sceKernelReleaseDirectMemory(offset, bytes);
+            return null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    [UnmanagedCallersOnly]
+    private static void DeallocateTexture(void* context, void* memory)
+    {
+        if (memory == null)
+            return;
+
+        long offset = 0;
+        nuint size = 0;
+        bool found = false;
+        EnterTextureLock();
+        try
+        {
+            for (int i = 0; i < TextureSlotCount; i++)
+            {
+                if (TextureSlots[i].Pointer == memory)
+                {
+                    offset = TextureSlots[i].Offset;
+                    size = TextureSlots[i].Size;
+                    TextureSlots[i] = default;
+                    found = true;
+                    break;
+                }
+            }
+        }
+        finally
+        {
+            ExitTextureLock();
+        }
+
+        if (found)
+            KernelMemory.sceKernelReleaseDirectMemory(offset, size);
     }
 }

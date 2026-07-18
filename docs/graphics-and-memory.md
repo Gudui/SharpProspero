@@ -1,6 +1,6 @@
 ---
 title: Graphics and memory
-nav_order: 6
+nav_order: 7
 ---
 
 # Graphics and memory
@@ -56,6 +56,26 @@ nothing. Operations clip to the surface bounds.
 Fills use a single-pass span write per row, so `Clear` and `FillRect` are as fast as the memory
 allows. When a framebuffer's row pitch is wider than the drawn width, construct the surface with a
 `stride` (in pixels) so addressing skips the padding while drawing still clips to the width.
+
+### More drawing
+
+| Method | What it does |
+|---|---|
+| `Region(x, y, w, h)` | A view over a sub-rectangle; drawing on it clips to the region, so it acts as a clip rectangle or a panel to draw inside. |
+| `FillVerticalGradient(x, y, w, h, top, bottom)` | Fill a rectangle with a top-to-bottom color gradient. |
+| `FillHorizontalGradient(x, y, w, h, left, right)` | Fill a rectangle with a left-to-right color gradient. |
+| `FillRoundedRect(x, y, w, h, radius, color)` | Fill a rectangle with rounded corners. |
+| `DrawRoundedRect(x, y, w, h, radius, color)` | Draw a rounded-rectangle outline. |
+| `DrawLine(x0, y0, x1, y1, color, thickness)` | Draw a line of a given pixel thickness. |
+| `FillTriangle(x0, y0, x1, y1, x2, y2, color)` | Fill a triangle. |
+| `FillPolygon(points, color)` | Fill a simple polygon (even-odd rule). |
+| `BlitScaled(source, x, y, w, h)` | Copy a surface scaled to a destination rectangle. |
+| `BlitScaledBlended(source, x, y, w, h)` | Scaled copy, blending by source alpha. |
+| `BlitRotated(source, centerX, centerY, angleRadians)` | Copy a surface rotated about its center, blended. |
+
+`Region` composes: build a themed panel by taking a sub-region and drawing into it with its own local
+coordinates. Gradients and rounded rectangles give buttons and panels a finished look without an image,
+and the scaled and rotated copies place thumbnails and sprites.
 
 ## Images
 
@@ -227,7 +247,7 @@ exclusive). It is for gameplay, not for keys or tokens; take those from `Hardwar
 ## Playing media
 
 `SharpProspero.Media.MediaPlayer` plays a media file. Open it for a path, start it, then pull decoded
-audio frames while it stays active and push them at an audio port.
+audio frames to push at an audio port and video frames to draw to the display, while it stays active.
 
 ```csharp
 using var player = MediaPlayer.Open("/app0/movie.mp4");
@@ -235,18 +255,21 @@ using var audio = AudioOutDevice.OpenStereo();
 player.Start();
 while (player.IsActive)
 {
-    if (player.TryGetAudioFrame(out AudioFrame frame))
-        audio.Output(frame.Samples);
+    if (player.TryGetAudioFrame(out AudioFrame audioFrame))
+        audio.Output(audioFrame.Samples);
+    if (player.TryGetVideoFrame(out VideoFrame videoFrame))
+        videoFrame.RenderTo(display.BackBuffer, 0, 0, display.Width, display.Height);
 }
 ```
 
 `Start`, `Stop`, `Pause`, `Resume`, `SetLooping`, `JumpTo` and `Position` control playback.
-`TryGetAudioFrame` returns false when nothing is decoded yet, which is normal; each frame reports its
-samples, timestamp, channel count and sample rate.
+`TryGetAudioFrame` and `TryGetVideoFrame` return false when nothing is decoded yet, which is normal;
+each audio frame reports its samples, timestamp, channel count and sample rate, and each video frame is
+a decoded picture. `VideoFrame.RenderTo` converts the frame to the surface color and scales it to the
+destination rectangle, so a movie draws full-screen or in a window.
 
 The player decodes on its own threads and calls back for every allocation, which the SDK answers from
-the unmanaged heap. It plays a path itself, so no file callbacks are needed. It returns decoded audio
-for the caller to play; it does not hand video frames back.
+the unmanaged heap. It plays a path itself, so no file callbacks are needed.
 
 ## The web browser
 

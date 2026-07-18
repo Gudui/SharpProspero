@@ -1,11 +1,11 @@
 // SharpProspero - a C# SDK for on-device application modules.
 // Copyright (C) 2026 SvenGDK
 
+using SharpProspero.Interop;
+using SharpProspero.Interop.Pad;
 using System;
 using System.Buffers.Binary;
 using System.Numerics;
-using SharpProspero.Interop;
-using SharpProspero.Interop.Pad;
 
 namespace SharpProspero.Input;
 
@@ -127,17 +127,17 @@ public readonly struct GamePadState
             Touch1 = ReadTouch(sample, 60, sample[52] > 0),
             Touch2 = ReadTouch(sample, 68, sample[52] > 1),
             IsConnected = sample[76] != 0,
-            TimestampMicroseconds = BinaryPrimitives.ReadUInt64LittleEndian(sample.Slice(80)),
+            TimestampMicroseconds = BinaryPrimitives.ReadUInt64LittleEndian(sample[80..]),
         };
     }
 
     private static float F(ReadOnlySpan<byte> data, int offset)
-        => BinaryPrimitives.ReadSingleLittleEndian(data.Slice(offset));
+        => BinaryPrimitives.ReadSingleLittleEndian(data[offset..]);
 
     private static TouchPoint ReadTouch(ReadOnlySpan<byte> data, int offset, bool active) => new()
     {
-        X = BinaryPrimitives.ReadUInt16LittleEndian(data.Slice(offset)),
-        Y = BinaryPrimitives.ReadUInt16LittleEndian(data.Slice(offset + 2)),
+        X = BinaryPrimitives.ReadUInt16LittleEndian(data[offset..]),
+        Y = BinaryPrimitives.ReadUInt16LittleEndian(data[(offset + 2)..]),
         Id = data[offset + 4],
         IsActive = active,
     };

@@ -1,10 +1,10 @@
 // SharpProspero.Tests
 // Copyright (C) 2026 SvenGDK
 
-using System.Collections.Generic;
 using SharpProspero.Input;
 using SharpProspero.Interop.Pad;
 using SharpProspero.Ui;
+using System.Collections.Generic;
 using Xunit;
 
 namespace SharpProspero.Tests;

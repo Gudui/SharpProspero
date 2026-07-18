@@ -1,12 +1,12 @@
 // SharpProspero.Tests
 // Copyright (C) 2026 SvenGDK
 
+using SharpProspero.Link;
+using SharpProspero.Prx;
 using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Text;
-using SharpProspero.Link;
-using SharpProspero.Prx;
 using Xunit;
 
 namespace SharpProspero.Tests;
@@ -120,7 +120,7 @@ public sealed class SelfContainerTests
         Assert.Equal(ModuleForm.SignedEncrypted, SelfContainer.Classify(encrypted));
         Assert.True(SelfContainer.IsEncryptedSelf(encrypted));
 
-        Assert.Equal(ModuleForm.Unknown, SelfContainer.Classify(new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 }));
+        Assert.Equal(ModuleForm.Unknown, SelfContainer.Classify([1, 2, 3, 4, 5, 6, 7, 8]));
     }
 
     [Fact]
@@ -263,7 +263,7 @@ public sealed class SelfContainerTests
         LinkResolution result = Linker.Resolve(options);
         Assert.Empty(result.Unresolved);
         return DynamicWriter.Write(result, entrySymbol: null, ModuleKind.Library,
-            exportSymbols: new[] { "game_frame" }, moduleFileName: "test.prx");
+            exportSymbols: ["game_frame"], moduleFileName: "test.prx");
     }
 
     // A library object: a defined global "game_frame" at a non-zero offset plus an undefined reference
@@ -274,7 +274,7 @@ public sealed class SelfContainerTests
         const int frameOff = 1, videoOff = 12;
         byte[] shstr = Encoding.ASCII.GetBytes("\0.text\0.symtab\0.strtab\0.shstrtab\0");
         const int textName = 1, symName = 7, strName = 15, shstrName = 23;
-        byte[] text = { 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0xC3 }; // nops then ret
+        byte[] text = [0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0xC3]; // nops then ret
 
         byte[] symtab = new byte[3 * 24];
         WriteSymValue(symtab, 1, frameOff, (1 << 4) | 2, 1, value: 8);

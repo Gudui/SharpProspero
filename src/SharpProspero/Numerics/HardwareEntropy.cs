@@ -1,10 +1,10 @@
 // SharpProspero - a C# SDK for on-device application modules.
 // Copyright (C) 2026 SvenGDK
 
-using System;
-using System.Buffers.Binary;
 using SharpProspero.Interop;
 using SharpProspero.Interop.Random;
+using System;
+using System.Buffers.Binary;
 
 namespace SharpProspero.Numerics;
 
@@ -21,7 +21,7 @@ public static class HardwareEntropy
         while (offset < destination.Length)
         {
             int chunk = Math.Min(SceRandom.MaxSize, destination.Length - offset);
-            fixed (byte* p = destination.Slice(offset))
+            fixed (byte* p = destination[offset..])
                 SceResult.ThrowIfFailed(SceRandom.sceRandomGetRandomNumber(p, (nuint)chunk),
                     nameof(SceRandom.sceRandomGetRandomNumber));
             offset += chunk;

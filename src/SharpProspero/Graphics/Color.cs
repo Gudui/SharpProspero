@@ -10,13 +10,11 @@ namespace SharpProspero.Graphics;
 /// green, red, alpha; the packed integer places red in bits 16-23, green in 8-15, blue in 0-7 and
 /// alpha in 24-31.
 /// </summary>
-public readonly struct Color
+/// <remarks>Wraps an already-packed value.</remarks>
+public readonly struct Color(uint packed)
 {
     /// <summary>The packed 32-bit value for the surface.</summary>
-    public readonly uint Value;
-
-    /// <summary>Wraps an already-packed value.</summary>
-    public Color(uint packed) => Value = packed;
+    public readonly uint Value = packed;
 
     /// <summary>
     /// Packs a fully opaque color from 8-bit red, green and blue components (alpha 0xFF). Use

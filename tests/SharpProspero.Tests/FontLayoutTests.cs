@@ -1,9 +1,9 @@
 // SharpProspero.Tests
 // Copyright (C) 2026 SvenGDK
 
-using System.Runtime.InteropServices;
 using SharpProspero.Graphics;
 using SharpProspero.Interop.Font;
+using System.Runtime.InteropServices;
 using Xunit;
 
 namespace SharpProspero.Tests;

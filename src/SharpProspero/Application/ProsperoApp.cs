@@ -1,13 +1,13 @@
 // SharpProspero - a C# SDK for on-device application modules.
 // Copyright (C) 2026 SvenGDK
 
-using System;
-using System.Diagnostics;
 using SharpProspero.Graphics;
 using SharpProspero.Input;
 using SharpProspero.Interop;
 using SharpProspero.Interop.SystemService;
 using SharpProspero.Interop.UserService;
+using System;
+using System.Diagnostics;
 
 namespace SharpProspero.Application;
 
@@ -16,18 +16,16 @@ namespace SharpProspero.Application;
 /// <see cref="Run"/> from the module entry point. The base opens the display and controller, drives
 /// a vertical-blank-paced loop, and tears everything down on exit.
 /// </summary>
-public abstract class ProsperoApp : IDisposable
+/// <remarks>Creates the application with <paramref name="config"/>, or the defaults when null.</remarks>
+public abstract class ProsperoApp(AppConfig? config = null) : IDisposable
 {
     private readonly FrameContext _context = new();
     private DisplayDevice? _display;
     private GamePad? _gamePad;
     private bool _disposed;
 
-    /// <summary>Creates the application with <paramref name="config"/>, or the defaults when null.</summary>
-    protected ProsperoApp(AppConfig? config = null) => Config = config ?? new AppConfig();
-
     /// <summary>The startup settings.</summary>
-    public AppConfig Config { get; }
+    public AppConfig Config { get; } = config ?? new AppConfig();
 
     /// <summary>The display, available after <see cref="Run"/> has started.</summary>
     protected DisplayDevice Display => _display ?? throw new InvalidOperationException("The display is available only while running.");

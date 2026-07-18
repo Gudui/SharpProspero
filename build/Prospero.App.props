@@ -92,6 +92,7 @@
     <DirectPInvoke Include="libSceJpegDec" />
     <DirectPInvoke Include="libSceJpegEnc" />
     <DirectPInvoke Include="libSceAudioIn" />
+    <DirectPInvoke Include="libSceShare" />
     <DirectPInvoke Include="libSceRtc" />
     <DirectPInvoke Include="libSceRandom" />
     <DirectPInvoke Include="libSceZlib" />

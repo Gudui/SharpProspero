@@ -92,6 +92,7 @@ public static class StubCatalog
         // libSceFont.native.prx, module libSceFont, library libSceFont.native.
         new Entry("libSceFont.native", Font, ModuleName: "libSceFont"),
         new Entry("libSceFontFt", FontFt),
+        new Entry("libSceShare", Share),
     ];
 
     /// <summary>
@@ -291,6 +292,19 @@ public static class StubCatalog
     [
         "sceFontSelectLibraryFt",
         "sceFontSelectRendererFt",
+    ];
+
+    // Screenshot and video-clip capture of the composited output.
+    private static readonly string[] Share =
+    [
+        "sceShareInitialize",
+        "sceShareTerminate",
+        "sceShareCaptureScreenshot",
+        "sceShareCaptureVideoClip",
+        "sceShareGetCurrentStatus",
+        "sceShareSetScreenshotOverlayImage",
+        "sceShareFeaturePermit",
+        "sceShareFeatureProhibit",
     ];
 
     private static readonly string[] JpegDec =
@@ -585,6 +599,7 @@ public static class StubCatalog
         "sceAvPlayerIsActive",
         "sceAvPlayerSetLooping",
         "sceAvPlayerGetAudioData",
+        "sceAvPlayerGetVideoDataEx",
         "sceAvPlayerCurrentTime",
         "sceAvPlayerJumpToTime",
         "sceAvPlayerStreamCount",

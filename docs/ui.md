@@ -1,6 +1,6 @@
 ---
 title: Interface toolkit
-nav_order: 11
+nav_order: 10
 ---
 
 # Interface toolkit
@@ -70,6 +70,9 @@ press counts once. `Render` combines the layout and draw steps when you do not n
 | `Label` | A line of text, for titles and read-only values. Not focusable. |
 | `Button` | Activates on confirm and calls its action. Can be disabled. |
 | `Checkbox` | An on/off setting the user toggles with confirm. |
+| `Slider` | A value between a minimum and a maximum, adjusted with left and right. |
+| `OptionSelector` | One choice from a fixed set, cycled with left and right (wraps at the ends). |
+| `TextBox` | A field that raises its action on confirm, where the application opens the on-screen keyboard to edit the text. |
 | `ListView` | A vertical list the user moves through and opens with confirm; it scrolls to keep the selection in view. |
 | `ProgressBar` | A bar that fills from the left to show a fraction. |
 | `Image` | A picture drawn from a surface (for example a decoded `PngImage`). |

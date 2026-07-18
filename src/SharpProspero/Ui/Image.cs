@@ -11,21 +11,15 @@ namespace SharpProspero.Ui;
 /// pixels the caller owns, so keep those pixels (for example a decoded <c>PngImage</c>) alive while the
 /// control is on screen.
 /// </summary>
-public sealed unsafe class Image : UiElement
+/// <remarks>Creates an image control showing <paramref name="content"/>.</remarks>
+/// <param name="content">The pixels to draw.</param>
+/// <param name="blend">Whether to blend the source by its alpha (for a picture with transparency).</param>
+public sealed unsafe class Image(Surface content, bool blend = false) : UiElement
 {
-    private Surface _content;
-
-    /// <summary>Creates an image control showing <paramref name="content"/>.</summary>
-    /// <param name="content">The pixels to draw.</param>
-    /// <param name="blend">Whether to blend the source by its alpha (for a picture with transparency).</param>
-    public Image(Surface content, bool blend = false)
-    {
-        _content = content;
-        Blend = blend;
-    }
+    private Surface _content = content;
 
     /// <summary>Whether the picture is blended over the background by its alpha.</summary>
-    public bool Blend { get; set; }
+    public bool Blend { get; set; } = blend;
 
     /// <summary>Replaces the pictures's pixels.</summary>
     public void SetContent(Surface content) => _content = content;

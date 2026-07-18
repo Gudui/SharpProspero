@@ -11,10 +11,11 @@ an `eboot.bin` with no managed runtime to deploy alongside it.
   system-module loading, and the user and system services. Bindings are declared as direct imports; the
   linker resolves them at link time against stubs it generates for each module, so a build needs no stub
   library from elsewhere.
-- **A drawing layer**: a framebuffer surface with rectangle and circle fills, lines, outlines, opaque
-  and alpha-blended surface copies, PNG and JPEG image decoding, PNG and JPEG encoding for screenshots,
-  an 8x8 bitmap font and a scalable TrueType/OpenType font for antialiased text, over a double-buffered
-  display device that presents on the vertical blank.
+- **A drawing layer**: a framebuffer surface with rectangle, circle, triangle and polygon fills,
+  gradients, rounded rectangles, thin and thick lines, outlines, opaque, alpha-blended, scaled and
+  rotated surface copies, and sub-region clipping; PNG and JPEG image decoding, PNG and JPEG encoding
+  for screenshots; an 8x8 bitmap font and a scalable TrueType/OpenType font for antialiased text, over
+  a double-buffered display device that presents on the vertical blank.
 - **An application host**: derive from `ProsperoApp`, override `OnFrame`, and call `Run`. The host
   opens the display and controller, drives a paced loop, and tears everything down on exit.
 - **An interface toolkit**: build screens from labels, buttons, lists, checkboxes and progress bars,
@@ -42,8 +43,15 @@ an `eboot.bin` with no managed runtime to deploy alongside it.
 - **Networking**: TCP and UDP sockets for a client or a server, a poller for serving many connections
   from one thread, and a name resolver, alongside the connection-status reader and the HTTP downloader.
 - **Integrity and capture**: file checksums and digests (SHA-256, SHA-1, MD5, CRC-32) with no module
-  needed, screenshot and photo export to PNG or JPEG, and app-loop control such as keeping the console
-  awake through a long operation, reacting to system events, and chain-loading another module.
+  needed; screenshot and photo export of a drawing surface to PNG or JPEG; system capture of the whole
+  composited screen to the gallery as a 2K or 4K screenshot or a video clip; and app-loop control such
+  as keeping the console awake through a long operation, reacting to system events, and chain-loading
+  another module.
+- **Logging**: a small leveled logging facility with a file sink and a console sink, so a module can
+  record progress and errors to a file the user reads back or to the development console.
+- **Optical disc**: browse a mounted disc's filesystem under `/mnt/disc` with the file APIs, and open
+  the raw drive device for a sector read or a full dump, where the running module has the privilege to
+  reach the drive.
 - **System-version range**: a module built with the SDK targets the earliest supported system by
   default and runs on every later one; raise the target only to call a function a later system added.
 - **Firmware compatibility at run time**: read the running system version, resolve system services by
@@ -76,14 +84,17 @@ an `eboot.bin` with no managed runtime to deploy alongside it.
 | `tools/SharpProspero.Packager` | Command-line packager over LibProsperoPkg. |
 | `tests/SharpProspero.Tests` | Unit tests for the drawing, memory, and module code. |
 | `build/` | The ahead-of-time compile and link pipeline (props and targets). |
+| `templates/` | `dotnet new` templates for an application, an interface app, a toolbox, and a library. |
 | `runtime/` | The platform layer and how the runtime support pack is assembled. |
 | `docs/` | The documentation, and the Jekyll site built from it. |
 
 ## Requirements
 
-- .NET 10 SDK.
+- .NET 10 SDK, on Windows, Linux or macOS (64-bit).
 - A runtime support pack: the ahead-of-time runtime archives compiled for the device ABI, referenced
-  through `PROSPERO_RUNTIME_PACK`. See [docs/build-pipeline.md](docs/build-pipeline.md).
+  through `PROSPERO_RUNTIME_PACK`.
+
+See [docs/setup.md](docs/setup.md) for the full per-operating-system install.
 
 The link runs through the SDK's own linker, which supplies its own start object and its own stubs for
 the modules the SDK imports from. A build needs no separate linker, start file, or stub library.
@@ -101,7 +112,7 @@ dotnet test tests/SharpProspero.Tests/SharpProspero.Tests.csproj
 `doctor.ps1` reports the .NET SDK and the runtime pack, and prints what to set for anything missing.
 A plain build and the tests need only .NET 10.
 
-Scaffold your own application from the template:
+Scaffold your own project from a template — an application, an interface app, a toolbox, or a library:
 
 ```
 dotnet new install templates/prospero-app
@@ -109,6 +120,9 @@ dotnet new prospero-app -n MyGame --title "My Game"
 setx SHARPPROSPERO_ROOT "<this folder>"
 pwsh MyGame/build.ps1
 ```
+
+The other templates are `prospero-ui`, `prospero-tool` and `prospero-prx`; see
+[docs/templates.md](docs/templates.md).
 
 Or build the sample (with the runtime pack set). Pick the output you want:
 
@@ -142,6 +156,17 @@ internal static class Program
 See [docs/getting-started.md](docs/getting-started.md) to go from an empty project to a build.
 
 ## Documentation
+
+Start with these:
+
+- [Getting started](docs/getting-started.md) — from nothing to a running module.
+- [Setup](docs/setup.md) — the full install for Windows, Linux and macOS (64-bit).
+- [Templates](docs/templates.md) — starting points for each kind of project.
+- [Guides and tips](docs/guides.md) — everyday recipes and troubleshooting.
+- [Architecture](docs/architecture.md) and [Build pipeline](docs/build-pipeline.md) — how it all fits.
+
+The rest cover the drawing surface, networking, utilities, the interface toolkit, bindings, modules,
+firmware compatibility, and the signed and unsigned module forms.
 
 The pages under `docs/` are both the repository documentation and a Jekyll site.
 

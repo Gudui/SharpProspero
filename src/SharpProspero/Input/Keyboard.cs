@@ -1,9 +1,9 @@
 // SharpProspero - a C# SDK for on-device application modules.
 // Copyright (C) 2026 SvenGDK
 
-using System;
 using SharpProspero.Interop;
 using SharpProspero.Interop.Keyboard;
+using System;
 using Native = SharpProspero.Interop.Keyboard.Keyboard;
 
 namespace SharpProspero.Input;
@@ -79,7 +79,7 @@ public sealed unsafe class Keyboard : IDisposable
         ObjectDisposedException.ThrowIf(_disposed, this);
         SceKeyboardData data;
         if (SceResult.Failed(Native.sceKeyboardReadState(_handle, &data)))
-            return new KeyboardState(false, KeyModifier.None, ReadOnlySpan<ushort>.Empty);
+            return new KeyboardState(false, KeyModifier.None, []);
 
         int count = Math.Clamp(data.Length, 0, Native.MaxKeyCodes);
         var keys = new ushort[count];

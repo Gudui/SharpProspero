@@ -1,9 +1,9 @@
 // SharpProspero.Tests
 // Copyright (C) 2026 SvenGDK
 
-using System;
 using SharpProspero.Interop.Rtc;
 using SharpProspero.Timing;
+using System;
 using Xunit;
 
 namespace SharpProspero.Tests;

@@ -173,8 +173,32 @@ public unsafe struct AvPlayerFrameInfo
 }
 
 /// <summary>
+/// One decoded video frame in extended form. The extended frame carries the pitch, which is needed to
+/// address the NV12 planes the decoder writes. Only the fields the SDK reads are named; the rest of the
+/// 80-byte details union is reserved.
+/// </summary>
+[StructLayout(LayoutKind.Explicit, Size = 104)]
+public unsafe struct AvPlayerFrameInfoEx
+{
+    /// <summary>The frame payload (NV12 planes). Offset 0.</summary>
+    [FieldOffset(0)] public void* Data;
+
+    /// <summary>When the frame plays, in milliseconds. Offset 16.</summary>
+    [FieldOffset(16)] public ulong TimeStamp;
+
+    /// <summary>Video width in pixels. Offset 24 (details.video.width).</summary>
+    [FieldOffset(24)] public uint VideoWidth;
+
+    /// <summary>Video height in pixels. Offset 28 (details.video.height).</summary>
+    [FieldOffset(28)] public uint VideoHeight;
+
+    /// <summary>Row pitch of the luma and chroma planes in bytes. Offset 60 (details.video.pitch).</summary>
+    [FieldOffset(60)] public uint VideoPitch;
+}
+
+/// <summary>
 /// Media-playback bindings. Start the player with allocators it can call, add a source, start it, and
-/// pull decoded audio frames while it stays active. The player does not hand video frames back.
+/// pull decoded audio and video frames while it stays active.
 /// </summary>
 public static unsafe partial class AvPlayer
 {
@@ -227,6 +251,14 @@ public static unsafe partial class AvPlayer
     [LibraryImport(Lib)]
     [return: MarshalAs(UnmanagedType.U1)]
     public static partial bool sceAvPlayerGetAudioData(void* handle, AvPlayerFrameInfo* frame);
+
+    /// <summary>
+    /// Takes the next decoded video frame into <paramref name="frame"/>, in NV12 with the pitch filled.
+    /// Returns false when none is ready.
+    /// </summary>
+    [LibraryImport(Lib)]
+    [return: MarshalAs(UnmanagedType.U1)]
+    public static partial bool sceAvPlayerGetVideoDataEx(void* handle, AvPlayerFrameInfoEx* frame);
 
     /// <summary>The playback position in milliseconds.</summary>
     [LibraryImport(Lib)]
