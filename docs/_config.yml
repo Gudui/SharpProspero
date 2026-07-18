@@ -1,0 +1,28 @@
+title: SharpProspero
+description: A C# SDK and toolchain for building application modules that run on the console.
+
+url: https://svengdk.github.io
+baseurl: /SharpProspero
+
+remote_theme: just-the-docs/just-the-docs
+
+plugins:
+  - jekyll-remote-theme
+  - jekyll-seo-tag
+
+# Theme options
+color_scheme: dark
+search_enabled: true
+heading_anchors: true
+
+aux_links:
+  View on GitHub:
+    - https://github.com/SvenGDK/SharpProspero
+aux_links_new_tab: true
+
+footer_content: Copyright &copy; SvenGDK 2026. Distributed under the GPL-3.0-or-later license.
+
+exclude:
+  - Gemfile
+  - Gemfile.lock
+  - vendor

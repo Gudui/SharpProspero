@@ -1,0 +1,9 @@
+bin/
+obj/
+.vs/
+*.user
+*.suo
+
+# Build output of the sample and generated bindings.
+src/SharpProspero.Sample/out/
+src/SharpProspero/Interop/Generated/

@@ -1,0 +1,135 @@
+// SharpProspero - a C# SDK for on-device application modules.
+// Copyright (C) 2026 SvenGDK
+
+using System.Runtime.InteropServices;
+
+namespace SharpProspero.Interop.SystemService;
+
+/// <summary>
+/// System-service bindings. Covers the small set an application module needs at startup: dismissing
+/// the boot splash and reading system parameters.
+/// </summary>
+public static unsafe partial class SystemService
+{
+    private const string Lib = "libSceSystemService";
+
+    /// <summary>Parameter id for the system language.</summary>
+    public const int ParamIdLanguage = 1;
+
+    /// <summary>Parameter id for the date display format.</summary>
+    public const int ParamIdDateFormat = 2;
+
+    /// <summary>Parameter id for the time display format.</summary>
+    public const int ParamIdTimeFormat = 3;
+
+    /// <summary>Parameter id for the time-zone offset in minutes.</summary>
+    public const int ParamIdTimeZone = 4;
+
+    /// <summary>Parameter id for the summer-time flag.</summary>
+    public const int ParamIdSummerTime = 5;
+
+    /// <summary>Parameter id for the console's system name (a string).</summary>
+    public const int ParamIdSystemName = 6;
+
+    /// <summary>Event type: the application has resumed from a suspended state.</summary>
+    public const int EventOnResume = 0x10000000;
+
+    /// <summary>Event type: another application was launched over this one.</summary>
+    public const int EventLaunchApp = 0x10000007;
+
+    /// <summary>Removes the boot splash so the first rendered frame is shown.</summary>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceSystemServiceHideSplashScreen();
+
+    /// <summary>Reads an integer system parameter identified by <paramref name="paramId"/>.</summary>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceSystemServiceParamGetInt(int paramId, int* value);
+
+    /// <summary>Reads a string system parameter into <paramref name="buf"/> of <paramref name="bufSize"/> bytes.</summary>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceSystemServiceParamGetString(int paramId, byte* buf, nuint bufSize);
+
+    /// <summary>
+    /// Starts the installed application <paramref name="titleId"/> (a 9-character id). The running
+    /// application is replaced by it. <paramref name="argv"/> is a null-terminated array of argument
+    /// strings, or null; <paramref name="param"/> carries launch options, or null for the defaults.
+    /// </summary>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceSystemServiceLaunchApp(byte* titleId, byte** argv, void* param);
+
+    /// <summary>
+    /// Replaces the running module with the executable at <paramref name="path"/>. <paramref name="argv"/>
+    /// is a null-terminated array of argument strings, or null.
+    /// </summary>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceSystemServiceLoadExec(byte* path, byte** argv);
+
+    /// <summary>Resets the idle-shutdown timer, keeping the console awake during a long operation.</summary>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceSystemServicePowerTick();
+
+    /// <summary>Reads the next pending system event, if any, into <paramref name="event"/>.</summary>
+    /// <returns>Zero on success, or a negative error code (including a no-event code).</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceSystemServiceReceiveEvent(SceSystemServiceEvent* @event);
+
+    /// <summary>Reads the current service status into <paramref name="status"/>.</summary>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceSystemServiceGetStatus(SceSystemServiceStatus* status);
+
+    /// <summary>Reads the display's safe-area ratio into <paramref name="info"/>.</summary>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceSystemServiceGetDisplaySafeAreaInfo(SceSystemServiceDisplaySafeAreaInfo* info);
+
+    /// <summary>Stops the background media player, so this module has the audio output to itself.</summary>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceSystemServiceDisableMediaPlay();
+
+    /// <summary>Allows the background media player to run again.</summary>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceSystemServiceReenableMediaPlay();
+}
+
+/// <summary>The current state of the system service, as <see cref="SystemService.sceSystemServiceGetStatus"/> reports it.</summary>
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct SceSystemServiceStatus
+{
+    /// <summary>The number of events waiting to be received.</summary>
+    public int EventNum;
+
+    /// <summary>Non-zero when a system dialog is drawn over the application.</summary>
+    public byte IsSystemUiOverlaid;
+
+    /// <summary>Non-zero when the application is running in the background.</summary>
+    public byte IsInBackgroundExecution;
+
+    private fixed byte _reserved[128];
+}
+
+/// <summary>The display's safe-area ratio, as <see cref="SystemService.sceSystemServiceGetDisplaySafeAreaInfo"/> reports it.</summary>
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct SceSystemServiceDisplaySafeAreaInfo
+{
+    /// <summary>The fraction of the screen, 0 to 1, that is safe to draw important content in.</summary>
+    public float Ratio;
+
+    private fixed byte _reserved[128];
+}
+
+/// <summary>One system event. Only the type is read here; the remaining bytes are event-specific data.</summary>
+[StructLayout(LayoutKind.Sequential, Size = 8196)]
+public struct SceSystemServiceEvent
+{
+    /// <summary>The event type, one of the <c>SystemService.Event*</c> values.</summary>
+    public int EventType;
+}

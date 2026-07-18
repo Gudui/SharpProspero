@@ -1,0 +1,29 @@
+<Project>
+
+  <!-- Shared settings for every SharpProspero project. Individual projects override as needed. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>14.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+
+    <Authors>SvenGDK</Authors>
+    <Product>SharpProspero</Product>
+    <Copyright>Copyright © SvenGDK 2026</Copyright>
+    <Company>SvenGDK</Company>
+    <NeutralLanguage>en-US</NeutralLanguage>
+  </PropertyGroup>
+
+  <!-- Path to the runtime pack (the folder that holds the runtime archives compiled for the device
+       ABI). The value falls back to the PROSPERO_RUNTIME_PACK environment variable so machine-specific
+       paths stay out of the project files. The link needs nothing else on disk. -->
+  <PropertyGroup>
+    <ProsperoRuntimePack Condition="'$(ProsperoRuntimePack)' == ''">$(PROSPERO_RUNTIME_PACK)</ProsperoRuntimePack>
+  </PropertyGroup>
+
+</Project>

@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>SharpProspero.Bindings.Generator</RootNamespace>
+    <AssemblyName>sharpprospero-bindgen</AssemblyName>
+    <RollForward>LatestMajor</RollForward>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Update="modules.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SharpProspero.Prx\SharpProspero.Prx.csproj" />
+    <ProjectReference Include="..\SharpProspero.Link\SharpProspero.Link.csproj" />
+  </ItemGroup>
+
+</Project>

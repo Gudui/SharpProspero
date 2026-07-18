@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>SharpProspero.Packager</RootNamespace>
+    <AssemblyName>sharpprospero-pack</AssemblyName>
+    <RollForward>LatestMajor</RollForward>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\LibProsperoPKG\src\LibProsperoPkg\LibProsperoPkg.csproj" />
+  </ItemGroup>
+
+</Project>

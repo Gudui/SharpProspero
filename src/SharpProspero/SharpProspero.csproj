@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <RootNamespace>SharpProspero</RootNamespace>
+    <AssemblyName>SharpProspero</AssemblyName>
+
+    <!-- The library is written to survive full trimming and ahead-of-time compilation. The analyzer
+         flags any construct that would not. -->
+    <IsAotCompatible>true</IsAotCompatible>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+
+    <PackageId>SharpProspero</PackageId>
+    <Version>0.1.0</Version>
+    <Description>A C# SDK for building applications that compile to standalone ELF modules and pack into installable packages.</Description>
+    <PackageLicenseExpression>GPL-3.0-or-later</PackageLicenseExpression>
+    <PackageTags>ps5;prospero;homebrew;sdk;aot;elf</PackageTags>
+  </PropertyGroup>
+
+  <!-- The tests exercise the internal layout hooks (placing controls into bounds and collecting the
+       focusable ones) so the interface logic can be checked without a display. -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="SharpProspero.Tests" />
+  </ItemGroup>
+
+</Project>

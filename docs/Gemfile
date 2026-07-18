@@ -1,0 +1,7 @@
+source "https://rubygems.org"
+
+# The gem set GitHub Pages builds with, so a local preview matches the published site.
+# Preview with: bundle install && bundle exec jekyll serve
+gem "github-pages", group: :jekyll_plugins
+gem "jekyll-remote-theme"
+gem "jekyll-seo-tag"
