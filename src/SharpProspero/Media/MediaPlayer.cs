@@ -143,7 +143,28 @@ public sealed unsafe class MediaPlayer : IDisposable
     public static MediaPlayer Open(string path, uint basePriority = 0)
     {
         ArgumentException.ThrowIfNullOrEmpty(path);
+        return OpenSource(path, basePriority);
+    }
 
+    /// <summary>
+    /// Starts a player for a network stream at <paramref name="url"/>, an <c>http://</c> or
+    /// <c>https://</c> address. The player opens the stream itself over its own network source, so the
+    /// console must have a working connection; the same decode and frame pull as a file follow.
+    /// </summary>
+    /// <param name="url">The <c>http</c> or <c>https</c> address of the stream.</param>
+    /// <param name="basePriority">Player thread priority; zero takes the default.</param>
+    /// <exception cref="ProsperoException">The player would not start or would not take the source.</exception>
+    public static MediaPlayer OpenUrl(string url, uint basePriority = 0)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(url);
+        if (!url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
+            !url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("The stream address must be an http:// or https:// URL.", nameof(url));
+        return OpenSource(url, basePriority);
+    }
+
+    private static MediaPlayer OpenSource(string source, uint basePriority)
+    {
         AvPlayerInitData data;
         AvPlayer.InitializeData(&data);
         data.MemoryReplacement.Allocate = &AllocateGeneral;
@@ -160,9 +181,9 @@ public sealed unsafe class MediaPlayer : IDisposable
         var player = new MediaPlayer(handle);
         try
         {
-            int byteCount = Encoding.UTF8.GetByteCount(path);
+            int byteCount = Encoding.UTF8.GetByteCount(source);
             Span<byte> buffer = byteCount < 512 ? stackalloc byte[byteCount + 1] : new byte[byteCount + 1];
-            int written = Encoding.UTF8.GetBytes(path, buffer);
+            int written = Encoding.UTF8.GetBytes(source, buffer);
             buffer[written] = 0;
             int rc;
             fixed (byte* p = buffer)

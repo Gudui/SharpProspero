@@ -12,8 +12,8 @@ install, and [Templates](templates.md) covers the other kinds of project you can
 ## What you need
 
 - The **.NET 10 SDK** (`dotnet --version` reports `10.x`).
-- The **runtime pack** — the ahead-of-time runtime built for the console, pointed at by the
-  `PROSPERO_RUNTIME_PACK` environment variable. See [Setup](setup.md) and `runtime/README.md`.
+- On Windows, **WSL** — the build runs the compile step there automatically. The runtime itself comes
+  from the .NET SDK, so there is nothing else to set up. See [Setup](setup.md).
 - This SDK checked out, with `SHARPPROSPERO_ROOT` pointing at the `SharpProspero` folder.
 
 Check the machine is ready:
@@ -22,8 +22,9 @@ Check the machine is ready:
 pwsh doctor.ps1
 ```
 
-It reports the .NET SDK, the runtime pack and the SDK root, and prints what to set for anything missing.
-A plain build and the tests need only .NET; producing a runnable module also needs the runtime pack.
+It reports the .NET SDK, the SDK root, and (on Windows) the WSL compile host, and prints what to set for
+anything missing. A plain build and the tests need only .NET; building a module runs the compile step on
+Linux (via WSL on Windows).
 
 ## 1. Create a project
 

@@ -13,9 +13,10 @@ an `eboot.bin` with no managed runtime to deploy alongside it.
   library from elsewhere.
 - **A drawing layer**: a framebuffer surface with rectangle, circle, triangle and polygon fills,
   gradients, rounded rectangles, thin and thick lines, outlines, opaque, alpha-blended, scaled and
-  rotated surface copies, and sub-region clipping; PNG and JPEG image decoding, PNG and JPEG encoding
-  for screenshots; an 8x8 bitmap font and a scalable TrueType/OpenType font for antialiased text, over
-  a double-buffered display device that presents on the vertical blank.
+  rotated surface copies, and sub-region clipping; in-place image effects (grayscale, invert,
+  brightness, contrast, tint, flip and blur); PNG, JPEG and BMP image decoding, PNG, JPEG and BMP
+  encoding for screenshots; an 8x8 bitmap font and a scalable TrueType/OpenType font for antialiased
+  text, over a double-buffered display device that presents on the vertical blank.
 - **An application host**: derive from `ProsperoApp`, override `OnFrame`, and call `Run`. The host
   opens the display and controller, drives a paced loop, and tears everything down on exit.
 - **An interface toolkit**: build screens from labels, buttons, lists, checkboxes and progress bars,
@@ -24,29 +25,32 @@ an `eboot.bin` with no managed runtime to deploy alongside it.
 - **Memory tools** for the constrained heap: a direct-memory region with deterministic release, and
   a heap monitor that reads usage against the configured ceiling.
 - **Timing and files**: a monotonic clock for frame pacing and measurement, a wall-clock reader for
-  the calendar date and time, a reader for the assets bundled with the module, and a filesystem layer
-  that lists directories and creates, moves and removes entries.
+  the calendar date and time, a reader for the assets bundled with the module, a filesystem layer
+  that lists directories and creates, moves and removes entries, and an INI settings store for a
+  module's own configuration.
 - **Randomness and settings**: a reproducible generator for gameplay seeded from the system entropy
   source, a reader for the user's system settings (language, date and time formats, time zone), and the
   signed-in users with their display names.
-- **System features**: play a media file and pull its decoded audio, open the system browser over the
-  running application, and install a package file. Services a title does not link against are loaded
-  at run time and resolved by name.
+- **System features**: play a media file or a network stream and pull its decoded audio, open the
+  system browser over the running application, and install a package file. Services a title does not
+  link against are loaded at run time and resolved by name.
 - **App and content management**: install, size, check, uninstall and launch an application by its
   title id; list the photos and videos in the content library, export a file into it, and read a
   file's metadata; find connected USB drives and where they are mounted (mapping one on request), to
   browse them with the file APIs; and let the user pick a save through the save-data dialog.
 - **Audio and input**: a stereo audio-output port that paces the caller to the audio clock; a
-  microphone-input port for recording and level metering; controller vibration and light-bar control;
-  and controller samples decoded down to motion (orientation, acceleration, angular velocity) and
-  touch-pad contacts.
+  microphone-input port for recording and level metering; 16-bit WAV file reading and writing with no
+  module; controller vibration and light-bar control; and controller samples decoded down to motion
+  (orientation, acceleration, angular velocity) and touch-pad contacts.
 - **Networking**: TCP and UDP sockets for a client or a server, a poller for serving many connections
-  from one thread, and a name resolver, alongside the connection-status reader and the HTTP downloader.
+  from one thread, a small HTTP/1.1 server for a control panel or a file browser, and a name resolver,
+  alongside the connection-status reader and the HTTP downloader.
 - **Integrity and capture**: file checksums and digests (SHA-256, SHA-1, MD5, CRC-32) with no module
   needed; screenshot and photo export of a drawing surface to PNG or JPEG; system capture of the whole
-  composited screen to the gallery as a 2K or 4K screenshot or a video clip; and app-loop control such
-  as keeping the console awake through a long operation, reacting to system events, and chain-loading
-  another module.
+  composited screen to the gallery as a 2K or 4K screenshot or a video clip; live capture of the
+  finished screen's audio and video for a recorder or stream (an advanced, privileged surface); and
+  app-loop control such as keeping the console awake through a long operation, reacting to system
+  events, and chain-loading another module.
 - **Logging**: a small leveled logging facility with a file sink and a console sink, so a module can
   record progress and errors to a file the user reads back or to the development console.
 - **Optical disc**: browse a mounted disc's filesystem under `/mnt/disc` with the file APIs, and open
@@ -85,19 +89,20 @@ an `eboot.bin` with no managed runtime to deploy alongside it.
 | `tests/SharpProspero.Tests` | Unit tests for the drawing, memory, and module code. |
 | `build/` | The ahead-of-time compile and link pipeline (props and targets). |
 | `templates/` | `dotnet new` templates for an application, an interface app, a toolbox, and a library. |
-| `runtime/` | The platform layer and how the runtime support pack is assembled. |
+| `runtime/` | Notes on how the ahead-of-time runtime is sourced and its operating-system surface met. |
 | `docs/` | The documentation, and the Jekyll site built from it. |
 
 ## Requirements
 
 - .NET 10 SDK, on Windows, Linux or macOS (64-bit).
-- A runtime support pack: the ahead-of-time runtime archives compiled for the device ABI, referenced
-  through `PROSPERO_RUNTIME_PACK`.
+- The compile step runs on Linux; on Windows the build runs it through WSL automatically, so no host
+  switch is needed. Nothing else is set up: the runtime comes from the .NET SDK's own runtime pack, and
+  the SDK's linker supplies its own start object, a compat object, and the module stubs.
 
 See [docs/setup.md](docs/setup.md) for the full per-operating-system install.
 
-The link runs through the SDK's own linker, which supplies its own start object and its own stubs for
-the modules the SDK imports from. A build needs no separate linker, start file, or stub library.
+The link runs through the SDK's own linker; a build needs no runtime pack, separate linker, start file,
+or stub library.
 
 ## Quick start
 
@@ -109,8 +114,8 @@ dotnet build SharpProspero.slnx
 dotnet test tests/SharpProspero.Tests/SharpProspero.Tests.csproj
 ```
 
-`doctor.ps1` reports the .NET SDK and the runtime pack, and prints what to set for anything missing.
-A plain build and the tests need only .NET 10.
+`doctor.ps1` reports the .NET SDK and, on Windows, the WSL host the compile step uses, and prints what
+to set for anything missing. A plain build and the tests need only .NET 10.
 
 Scaffold your own project from a template — an application, an interface app, a toolbox, or a library:
 
@@ -124,7 +129,7 @@ pwsh MyGame/build.ps1
 The other templates are `prospero-ui`, `prospero-tool` and `prospero-prx`; see
 [docs/templates.md](docs/templates.md).
 
-Or build the sample (with the runtime pack set). Pick the output you want:
+Or build the sample. Pick the output you want:
 
 ```
 pwsh src/SharpProspero.Sample/build.ps1                  # an installable *.pkg

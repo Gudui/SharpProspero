@@ -77,6 +77,29 @@ allows. When a framebuffer's row pitch is wider than the drawn width, construct 
 coordinates. Gradients and rounded rectangles give buttons and panels a finished look without an image,
 and the scaled and rotated copies place thumbnails and sprites.
 
+### Image effects
+
+A surface also transforms in place, over its own pixels, so the same calls apply to a decoded image, an
+off-screen surface, or the back buffer. Each keeps the alpha channel.
+
+| Method | What it does |
+|---|---|
+| `Invert()` | Invert the colours (a photo negative). |
+| `ToGrayscale()` | Convert to grey by perceived luminance. |
+| `AdjustBrightness(delta)` | Add to every channel (negative darkens), clamped. |
+| `AdjustContrast(factor)` | Scale contrast around mid-grey (1 leaves it, above 1 raises it). |
+| `Tint(color, amount)` | Blend towards a colour for a wash. |
+| `FlipHorizontal()` / `FlipVertical()` | Mirror left-to-right or top-to-bottom. |
+| `BoxBlur(radius)` | Blur with a box filter of the given radius. |
+
+```csharp
+using var photo = BmpImage.Load("/data/photo.bmp");
+Surface s = photo.AsSurface();
+s.AdjustBrightness(20);
+s.BoxBlur(2);
+display.BackBuffer.Blit(s, 0, 0);
+```
+
 ## Images
 
 `PngImage` decodes a PNG into B8-G8-R8-A8 pixels — the same layout the display surface uses — so a
@@ -94,6 +117,17 @@ decoder. `AsSurface` views the decoded pixels for drawing; disposing the image f
 `JpegImage` decodes JPEG the same way (load `SystemModuleId.JpegDec`). A decoded image carries its
 alpha channel, so `BlitBlended` draws it over the background as a sprite while `Blit` copies it
 opaquely.
+
+`BmpImage` reads BMP, and `BmpEncoder` writes it, with no system module — the format is uncompressed,
+so the SDK handles it on its own. It is a dependable interchange format for a file browser or an editor,
+and a fallback when no decode module is loaded.
+
+```csharp
+using var picture = BmpImage.Load("/data/picture.bmp");   // 24- or 32-bit BMP
+display.BackBuffer.Blit(picture.AsSurface(), 0, 0);
+
+BmpEncoder.Save(display.BackBuffer, "/data/shot.bmp");     // export a 24-bit BMP
+```
 
 ## Color
 
@@ -270,6 +304,15 @@ destination rectangle, so a movie draws full-screen or in a window.
 
 The player decodes on its own threads and calls back for every allocation, which the SDK answers from
 the unmanaged heap. It plays a path itself, so no file callbacks are needed.
+
+`MediaPlayer.OpenUrl` plays a network stream instead of a file — pass an `http://` or `https://`
+address and the player opens the stream over its own network source. The console needs a working
+connection; everything after opening is the same as a file.
+
+```csharp
+using var player = MediaPlayer.OpenUrl("https://example.com/stream.m3u8");
+player.Start();
+```
 
 ## The web browser
 

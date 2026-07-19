@@ -71,6 +71,8 @@ internal static class Program
         // Writes the start object that carries the program entry point.
         if (args.Length > 0 && string.Equals(args[0], "crt", StringComparison.Ordinal))
             return RunCrt(args);
+        if (args.Length > 0 && string.Equals(args[0], "compat", StringComparison.Ordinal))
+            return RunCompat(args);
 
         // Prints the identifier a module export is keyed by, for a plain symbol name.
         if (args.Length > 0 && string.Equals(args[0], "nid", StringComparison.Ordinal))
@@ -342,6 +344,11 @@ internal static class Program
         {
             if (kind == ModuleKind.Executable)
                 options.ExtraObjects.Add(ElfObjectReader.Read(CrtEmitter.BuildStartObject(), "sharpprospero_crt.o"));
+            // The compat object defines the C-library names the ahead-of-time runtime imports that the
+            // device modules do not publish. It is needed only when the runtime archives are linked, so
+            // a bare link (no runtime) does not carry it.
+            if (options.Archives.Count > 0)
+                options.ExtraObjects.Add(ElfObjectReader.Read(CompatEmitter.BuildObject(), "sharpprospero_compat.o"));
             foreach (StubCatalog.Entry entry in StubCatalog.Core)
                 options.ExtraStubs.Add(StubLibrary.Parse(
                     PrxStubEmitter.BuildObject(entry.Library, entry.Exports, entry.ModuleVersion, entry.LibraryVersion, entry.ModuleName, entry.Soname),
@@ -359,6 +366,12 @@ internal static class Program
             Console.WriteLine($"Unresolved:       {result.Unresolved.Count}");
             foreach (string name in result.Unresolved)
                 Console.WriteLine($"  ? {name}");
+            if (result.SkippedMembers.Count > 0)
+            {
+                Console.WriteLine($"Skipped members:  {result.SkippedMembers.Count}");
+                foreach (string skip in result.SkippedMembers)
+                    Console.WriteLine($"  ! {skip}");
+            }
 
             string? outPath = GetOption(args, "--out");
             if (outPath is not null)
@@ -1082,6 +1095,21 @@ internal static class Program
         Directory.CreateDirectory(Path.GetDirectoryName(full)!);
         File.WriteAllBytes(full, CrtEmitter.BuildStartObject());
         Console.WriteLine($"Wrote {full} (start object).");
+        return 0;
+    }
+
+    private static int RunCompat(string[] args)
+    {
+        string? outPath = GetOption(args, "--out");
+        if (string.IsNullOrEmpty(outPath))
+        {
+            Console.Error.WriteLine("Usage: compat --out <file.o>");
+            return 1;
+        }
+        string full = Path.GetFullPath(outPath);
+        Directory.CreateDirectory(Path.GetDirectoryName(full)!);
+        File.WriteAllBytes(full, CompatEmitter.BuildObject());
+        Console.WriteLine($"Wrote {full} (runtime-support compat object).");
         return 0;
     }
 

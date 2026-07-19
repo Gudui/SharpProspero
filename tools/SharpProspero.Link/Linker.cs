@@ -66,6 +66,10 @@ public sealed class LinkResolution
 
     /// <summary>References neither an included object nor a stub provides.</summary>
     public required IReadOnlyList<string> Unresolved { get; init; }
+
+    /// <summary>Archive members the reader could not parse, with the reason. An unexpected entry here
+    /// hides the symbols that member would have defined, so it is surfaced rather than passed over.</summary>
+    public IReadOnlyList<string> SkippedMembers { get; init; } = [];
 }
 
 /// <summary>The input side of the linker: read objects and archives and resolve the symbol graph.</summary>
@@ -92,8 +96,15 @@ public static class Linker
         foreach (ElfObject extra in options.ExtraObjects)
             Include(extra, included, defined, undefined, strongUndefined);
 
+        // Undefined names the objects the link is built from ask for directly. These always have to
+        // resolve. Names an archive member only declares are held to the stricter test below (a
+        // relocation has to reference them), so an incidental declaration in a pulled member is not an
+        // error the way a genuine reference is.
+        var primaryUndefined = new HashSet<string>(strongUndefined, StringComparer.Ordinal);
+
         // Load the archive members and index which global symbols each one defines.
         var pending = new List<(ElfObject Object, HashSet<string> Defines)>();
+        var skipped = new List<string>();
         foreach (string archivePath in options.Archives)
         {
             byte[] bytes = File.ReadAllBytes(archivePath);
@@ -101,7 +112,7 @@ public static class Linker
             {
                 ElfObject obj;
                 try { obj = ElfObjectReader.Read(member.Data, member.Name); }
-                catch (ElfLinkException) { continue; } // non-object member (e.g. a stub in another format)
+                catch (ElfLinkException ex) { skipped.Add($"{Path.GetFileName(archivePath)}({member.Name}): {ex.Message}"); continue; }
                 var defines = new HashSet<string>(StringComparer.Ordinal);
                 foreach (ElfSymbol s in obj.Symbols)
                     if (s.IsGlobalOrWeak && !s.IsUndefined && s.Name.Length > 0)
@@ -146,15 +157,39 @@ public static class Linker
                 providedBy.TryAdd(name, stub);
         }
 
+        // A symbol only has to resolve when a relocation in an included object actually references it.
+        // An object may also carry a global declaration (`.globl`) that no relocation uses — an
+        // alternate entry an assembler emitted, for instance — and that is not a reference to satisfy.
+        var referenced = new HashSet<string>(StringComparer.Ordinal);
+        foreach (ElfObject obj in included)
+            foreach (IReadOnlyList<ElfRelocation> relocs in obj.Relocations.Values)
+                foreach (ElfRelocation r in relocs)
+                    if (r.SymbolIndex < obj.Symbols.Count)
+                    {
+                        ElfSymbol s = obj.Symbols[(int)r.SymbolIndex];
+                        if (s.IsUndefined && s.Name.Length > 0)
+                            referenced.Add(s.Name);
+                    }
+
+        // Names the linker itself defines: the start and end of an allocated section named like a C
+        // identifier, which code reads to walk that section. The writer fills in their addresses.
+        var sectionNames = new HashSet<string>(StringComparer.Ordinal);
+        foreach (ElfObject obj in included)
+            foreach (ElfSection s in obj.Sections)
+                if (s.IsAlloc && s.Name.Length > 0)
+                    sectionNames.Add(s.Name);
+
         var imports = new List<ImportSymbol>();
         var unresolved = new List<string>();
         foreach (string name in undefined)
         {
-            if (defined.ContainsKey(name))
+            if (defined.ContainsKey(name) || !(referenced.Contains(name) || primaryUndefined.Contains(name)))
                 continue;
             if (providedBy.TryGetValue(name, out StubLibrary? stub))
                 imports.Add(new ImportSymbol(
                     name, stub.ModuleName, stub.LibraryName, stub.Soname, stub.ModuleVersion, stub.LibraryVersion));
+            else if (IsEncapsulationSymbol(name, sectionNames, out _, out _))
+                continue; // the linker synthesizes this at the section boundary
             else if (strongUndefined.Contains(name))
                 unresolved.Add(name);
             // A weak-only reference that nothing satisfies is left out; the writer binds it to zero.
@@ -168,7 +203,23 @@ public static class Linker
             Defined = defined,
             Imports = imports,
             Unresolved = unresolved,
+            SkippedMembers = skipped,
         };
+    }
+
+    /// <summary>
+    /// Recognizes a section-boundary symbol: <c>__start_&lt;section&gt;</c> or <c>__stop_&lt;section&gt;</c>
+    /// naming a section that is present. These are defined by the linker at the section's start and end,
+    /// the way the system linker does, so code can walk a named section without a table of its own.
+    /// </summary>
+    internal static bool IsEncapsulationSymbol(string name, ICollection<string> sectionNames, out string section, out bool isStop)
+    {
+        section = "";
+        isStop = false;
+        if (name.StartsWith("__start_", StringComparison.Ordinal)) { section = name["__start_".Length..]; isStop = false; }
+        else if (name.StartsWith("__stop_", StringComparison.Ordinal)) { section = name["__stop_".Length..]; isStop = true; }
+        else return false;
+        return section.Length > 0 && sectionNames.Contains(section);
     }
 
     private static void Include(

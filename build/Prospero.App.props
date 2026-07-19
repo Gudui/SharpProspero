@@ -59,10 +59,8 @@
            Prx         a relocatable library module (.prx), loaded by another module at run time. -->
     <ProsperoModuleKind Condition="'$(ProsperoModuleKind)' == ''">Executable</ProsperoModuleKind>
 
-    <!-- The module file name. Defaults from the kind: eboot.bin for an application, <name>.prx for a
-         library. -->
-    <ProsperoModuleName Condition="'$(ProsperoModuleName)' == '' and '$(ProsperoModuleKind)' == 'Prx'">$(AssemblyName).prx</ProsperoModuleName>
-    <ProsperoModuleName Condition="'$(ProsperoModuleName)' == ''">eboot.bin</ProsperoModuleName>
+    <!-- The module file name is derived from the kind in Prospero.App.targets, which a project imports
+         after it has set the kind (a project sets ProsperoModuleKind between the two imports). -->
 
   </PropertyGroup>
 

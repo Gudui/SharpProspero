@@ -477,8 +477,52 @@ public static class DynamicWriter
                 if (!d.IsUndefined && d.Name == sym.Name)
                     return d.SectionIndex == ShnAbs ? d.Value : sectionAddr(defObj, d.SectionIndex) + d.Value;
         if (importByName.TryGetValue(sym.Name, out Import? imp)) return imp.PltAddress;
+        if (TryEncapsulationAddress(resolution, sectionAddr, sym.Name, out ulong enc)) return enc;
         if (sym.IsWeak) return 0;
         throw new ElfLinkException($"Unresolved symbol '{sym.Name}'.");
+    }
+
+    // The address of a section-boundary symbol: the lowest start (for __start_) or the highest end (for
+    // __stop_) of the allocated sections that carry the named section across every included object.
+    private static bool TryEncapsulationAddress(
+        LinkResolution resolution, Func<ElfObject, int, ulong> sectionAddr, string name, out ulong addr)
+    {
+        addr = 0;
+        bool isStop;
+        string section;
+        if (name.StartsWith("__start_", StringComparison.Ordinal)) { isStop = false; section = name["__start_".Length..]; }
+        else if (name.StartsWith("__stop_", StringComparison.Ordinal)) { isStop = true; section = name["__stop_".Length..]; }
+        else return false;
+        if (section.Length == 0)
+            return false;
+
+        // The boundary spans the section's start to its end. The section is placed per object rather
+        // than coalesced across objects, so a contiguous span is only well defined when a single object
+        // carries the section. That is the case for the sections these symbols mark (the compiler emits
+        // each in one object); a second contributor would leave the span covering unrelated data in
+        // between, so it is refused rather than silently miscomputed.
+        bool found = false;
+        int contributors = 0;
+        ulong min = ulong.MaxValue, max = 0;
+        foreach (ElfObject o in resolution.Included)
+            for (int i = 0; i < o.Sections.Count; i++)
+            {
+                ElfSection s = o.Sections[i];
+                if (!s.IsAlloc || s.Name != section)
+                    continue;
+                ulong a = sectionAddr(o, i);
+                if (a < min) min = a;
+                if (a + s.Size > max) max = a + s.Size;
+                found = true;
+                contributors++;
+            }
+        if (!found)
+            return false;
+        if (contributors > 1)
+            throw new ElfLinkException(
+                $"Section '{section}' is carried by more than one object; the boundary symbol '{name}' would span unrelated data. Coalescing same-named sections is not supported.");
+        addr = isStop ? max : min;
+        return true;
     }
 
     // Finds the object and symbol that define a global name, for resolving an export to its address.

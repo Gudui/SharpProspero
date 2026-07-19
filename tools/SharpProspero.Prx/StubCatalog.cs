@@ -106,6 +106,7 @@ public static class StubCatalog
     [
         new Entry("libSceAppInstUtil", AppInstUtil),
         new Entry("libSceUsbStorage", UsbStorage),
+        new Entry("libSceAvcap2", Avcap2),
     ];
 
     // Kernel: direct memory, files, timing, module control, and the thread, synchronization, memory,
@@ -162,6 +163,33 @@ public static class StubCatalog
         "scePthreadKeyDelete",
         "scePthreadSetspecific",
         "scePthreadGetspecific",
+        // The POSIX surface the ahead-of-time runtime imports, resolved against the kernel module,
+        // which publishes these names directly alongside its own.
+        "read", "write", "close", "fcntl", "ioctl", "poll", "pipe", "dup2", "unlink", "flock",
+        "mprotect", "munmap", "madvise", "mlock", "munlock",
+        "clock_gettime", "gettimeofday", "nanosleep", "sysconf",
+        "getpid", "geteuid", "kill", "waitpid", "execv",
+        "sigaction", "signal", "sigemptyset", "sigaddset", "sched_yield",
+        "tcgetattr", "tcsetattr", "__tls_get_addr",
+        "pthread_create", "pthread_self", "pthread_kill", "pthread_sigmask",
+        "pthread_key_create", "pthread_setspecific",
+        "pthread_mutex_init", "pthread_mutex_destroy", "pthread_mutex_lock", "pthread_mutex_unlock",
+        "pthread_mutexattr_init", "pthread_mutexattr_destroy", "pthread_mutexattr_settype",
+        "pthread_cond_init", "pthread_cond_destroy", "pthread_cond_wait", "pthread_cond_timedwait",
+        "pthread_cond_signal", "pthread_cond_broadcast",
+        "pthread_condattr_init", "pthread_condattr_destroy", "pthread_condattr_setclock",
+        "pthread_rwlock_rdlock", "pthread_rwlock_wrlock", "pthread_rwlock_unlock",
+        "pthread_attr_init", "pthread_attr_destroy", "pthread_attr_setdetachstate",
+        "pthread_attr_setstacksize", "pthread_attr_getstack",
+        // Base names the runtime-support compat object forwards its large-file variants to, plus the
+        // thread-rename entry the compat object maps the POSIX name onto.
+        "open", "lseek", "mmap", "pread", "getrlimit", "fstat", "stat", "scePthreadRename",
+        "ftruncate", "pwrite", "setrlimit", "lstat", "pwritev", "preadv",
+        // Further POSIX names the runtime archives reference, published by the kernel module.
+        "access", "chdir", "chmod", "dlopen", "dlsym", "environ", "execve", "fchmod", "fsync",
+        "getegid", "getgroups", "getpriority", "getrusage", "getsid", "getsockopt", "mkdir", "msync",
+        "pthread_setcancelstate", "rename", "rmdir", "seteuid", "setgroups", "setpriority", "setuid",
+        "shm_open", "shm_unlink", "sigfillset", "sync",
     ];
 
     // C runtime: the allocation, memory, string, control, formatting, and unwind functions the
@@ -176,7 +204,7 @@ public static class StubCatalog
         "__cxa_atexit", "__cxa_finalize", "__cxa_begin_catch", "__cxa_end_catch",
         "__cxa_throw", "__cxa_rethrow", "__cxa_allocate_exception", "__cxa_free_exception",
         "__cxa_guard_acquire", "__cxa_guard_release",
-        "__stack_chk_fail", "__error", "__errno_location",
+        "__stack_chk_fail", "__error",
         "qsort", "bsearch",
         "snprintf", "vsnprintf",
         "setjmp", "longjmp",
@@ -185,6 +213,18 @@ public static class StubCatalog
         "_Unwind_GetIP", "_Unwind_GetIPInfo", "_Unwind_SetIP",
         "_Unwind_GetGR", "_Unwind_SetGR", "_Unwind_GetCFA",
         "_Unwind_GetDataRelBase", "_Unwind_GetTextRelBase", "_Unwind_Backtrace",
+        // The C-library calls the ahead-of-time runtime imports, resolved against the C module.
+        "asprintf", "sscanf", "fprintf", "fputs", "fwrite", "fclose", "fflush",
+        "opendir", "closedir", "getcwd", "getenv", "strerror", "strerror_r",
+        "strcasecmp", "strtok_r", "time", "log", "lrand48", "srand48", "stderr",
+        // Base names the runtime-support compat object forwards its large-file variants to.
+        "fopen", "readdir",
+        // Further C-library names the runtime archives reference.
+        "bcmp", "malloc_usable_size", "realpath", "stdout", "syslog",
+        // Math the runtime and a drawing application reach, published by the C module.
+        "floor", "floorf", "ceil", "ceilf", "round", "roundf", "trunc", "truncf",
+        "fabs", "fabsf", "fmod", "fmodf", "sqrt", "sqrtf", "pow", "powf", "exp", "expf",
+        "logf", "sin", "sinf", "cos", "cosf", "tan", "tanf", "atan2", "atan2f",
     ];
 
     private static readonly string[] VideoOut =
@@ -634,5 +674,41 @@ public static class StubCatalog
         "sceUsbStorageGetMountPointOfShellCore",
         "sceUsbStorageRequestMap",
         "sceUsbStorageRequestUnmap",
+    ];
+
+    // The system-composited AV-capture service. Resolved at run time and reached only by a process with
+    // the privilege for it, so it is not linked; the names let the offsets tool report its coverage.
+    private static readonly string[] Avcap2 =
+    [
+        "sceAvcap2Initialize",
+        "sceAvcap2Terminate",
+        "sceAvcap2OpenAudio",
+        "sceAvcap2OpenVideo",
+        "sceAvcap2Close",
+        "sceAvcap2Start",
+        "sceAvcap2Stop",
+        "sceAvcap2ReadAudio",
+        "sceAvcap2ReadVideo",
+        "sceAvcap2GetFramePitch",
+        "sceAvcap2GetSupportInformation",
+        "sceAvcap2GetVideoOutMode",
+        "sceAvcap2GetRecProhibit",
+        "sceAvcap2GetNonVclNalUnitStream",
+        "sceAvcap2GetNonVclNalUnitStream2",
+        "sceAvcap2Select",
+        "sceAvcap2MapMemory",
+        "sceAvcap2LockInputDataBuffer",
+        "sceAvcap2UnlockInputDataBuffer",
+        "sceAvcap2SetVideoEncodeConfig",
+        "sceAvcap2QueryVideoEncoderMemorySize",
+        "sceAvcap2AllocateVideoEncoderMemory",
+        "sceAvcap2FreeEncoderVideoMemory",
+        "sceAvcap2SetInvalidFrame",
+        "sceAvcap2SetPrivacyGuard",
+        "sceAvcap2SetAudioOutVolume",
+        "sceAvcap2SetAudioOutVolumeForRec",
+        "sceAvcap2SetMicVolumeForRec",
+        "sceAvcap2SetChapterOpenLevel",
+        "sceAvcap2SetChapterPermissionLevel",
     ];
 }

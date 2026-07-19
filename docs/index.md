@@ -24,17 +24,19 @@ toolchain produces an `eboot.bin` with no managed runtime to deploy alongside it
   controller input and output, audio output and microphone input, files and directories, image decode
   and encode, the real-time clock, the entropy source, and the user and system services.
 - **A drawing layer**: a framebuffer surface with fills, lines, circles, outlines, opaque and
-  alpha-blended copies, PNG and JPEG decode and encode, a bitmap font and a scalable TrueType font,
-  over a double-buffered display.
+  alpha-blended copies, in-place image effects (grayscale, brightness, contrast, tint, flip, blur),
+  PNG, JPEG and BMP decode and encode, a bitmap font and a scalable TrueType font, over a
+  double-buffered display.
 - **An application host**: derive from `ProsperoApp`, override `OnFrame`, call `Run`.
 - **An interface toolkit**: build screens out of labels, buttons, lists, checkboxes and progress bars,
   driven by the controller, so you do not draw the interface by hand. See
   [Interface toolkit](ui.md).
-- **Networking**: TCP and UDP sockets, a poller for serving many connections from one thread, and a
-  name resolver, on top of the connection status and HTTP download. See [Networking](networking.md).
+- **Networking**: TCP and UDP sockets, a poller for serving many connections from one thread, a small
+  HTTP/1.1 server for a control panel or a file browser, and a name resolver, on top of the connection
+  status and HTTP download. See [Networking](networking.md).
 - **Utilities**: file checksums and digests (SHA-256, SHA-1, MD5, CRC-32), screenshot and photo
-  export, microphone capture, and app-loop control such as keeping the console awake. See
-  [Utilities](utilities.md).
+  export, WAV audio reading and writing, an INI settings store, microphone capture, and app-loop
+  control such as keeping the console awake. See [Utilities](utilities.md).
 - **Firmware compatibility**: read the running system version, resolve system services by name so one
   build runs across versions, and check that a service resolves before using it. See
   [Firmware compatibility](firmware.md), and [Working with module offsets](offsets.md) for the
@@ -60,8 +62,8 @@ A program and a library each have an unsigned and a signed form: `.elf`/`.self` 
 ## Requirements
 
 - .NET 10 SDK.
-- A runtime pack: the ahead-of-time runtime archives compiled for the device, referenced through
-  `PROSPERO_RUNTIME_PACK`. See [the build pipeline](build-pipeline.md).
+- The compile step runs on Linux; on Windows the build uses WSL for it automatically. The runtime
+  itself comes from the .NET SDK, with nothing else to set up. See [the build pipeline](build-pipeline.md).
 
 ## License
 

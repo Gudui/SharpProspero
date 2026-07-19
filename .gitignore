@@ -4,6 +4,7 @@ obj/
 *.user
 *.suo
 
-# Build output of the sample and generated bindings.
+# Build output of the sample, the templates, and generated bindings.
 src/SharpProspero.Sample/out/
+templates/*/out/
 src/SharpProspero/Interop/Generated/

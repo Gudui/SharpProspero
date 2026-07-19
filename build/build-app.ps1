@@ -4,15 +4,20 @@
     Builds a SharpProspero application and writes either an installable package or a plain folder.
 
 .DESCRIPTION
-    Compile the C# to an object, link it into the module, gather the module and its metadata, then
-    either pack the result or leave the files as they are.
+    Compile the C# to an object, link it into the module with the ahead-of-time runtime, gather the
+    module and its metadata, then either pack the result or leave the files as they are. Everything the
+    link needs is produced by the toolchain and the .NET SDK; no runtime pack or outside tool is set up.
+
+    The compile step (`dotnet publish -r linux-x64`) has to run on a Linux host, because that is where
+    the ahead-of-time compiler emits an object for the device instruction set. On Windows this script
+    runs that one step through WSL automatically, so a Windows user builds without switching hosts; the
+    rest of the build is the toolchain itself and runs wherever the script is started.
 
 .PARAMETER ProjectPath
     The application project to build.
 
 .PARAMETER Output
-    Package writes an installable *.pkg (the default). Folder leaves every file in one folder, ready
-    to copy to a console or inspect.
+    Package writes an installable *.pkg (the default). Folder leaves every file in one folder.
 
 .PARAMETER OutputFolder
     Where the result is written. Defaults to an 'out' folder next to the project.
@@ -22,9 +27,6 @@
 
 .PARAMETER SystemVersionPolicy
     How the system version the application requires is settled against the modules it ships.
-    Match requires what the modules need and never lowers it (the default). Upgrade raises it to
-    -SystemVersion. Downgrade lowers it to -SystemVersion and reports what stops loading. Keep
-    leaves it alone.
 
 .PARAMETER SystemVersion
     The version Upgrade and Downgrade move to, as NN.NN (for example 11.20).
@@ -49,42 +51,108 @@ if (-not $SdkRoot) { $SdkRoot = Split-Path -Parent (Split-Path -Parent $MyInvoca
 if (-not (Test-Path (Join-Path $SdkRoot "build/Prospero.App.targets")) -and $env:SHARPPROSPERO_ROOT) {
     $SdkRoot = $env:SHARPPROSPERO_ROOT
 }
+# A project created from a template points its imports and its reference to the SDK through the
+# SharpProsperoRoot property (defaulting to the SHARPPROSPERO_ROOT environment variable). The in-tree
+# sample uses relative imports and does not need it, but a template project does, so the resolved SDK
+# folder is passed to every compile and evaluate step below. Resolve it to a full path first.
+$SdkRoot = (Resolve-Path $SdkRoot).Path
 
 $projectDir = Split-Path -Parent (Resolve-Path $ProjectPath)
 if (-not $OutputFolder) { $OutputFolder = Join-Path $projectDir "out" }
 $moduleFolder = Join-Path $OutputFolder "module"
 
-$objectGuidance = @"
-No compiled object was produced. The stock compiler emits an object only for the operating system it
-runs on, so run this step on Linux (or WSL), or supply the object writer for the device through
-PROSPERO_RUNTIME_PACK. See $SdkRoot/docs/build-pipeline.md.
-"@
+$onWindows = [System.Environment]::OSVersion.Platform -eq "Win32NT"
+$haveWsl = $onWindows -and (Get-Command wsl.exe -ErrorAction SilentlyContinue)
 
-# 1. Compile the C# to an object for the device instruction set.
+# A Windows path as WSL sees it: C:\a\b -> /mnt/c/a/b.
+function ConvertTo-WslPath([string]$p) {
+    $full = [System.IO.Path]::GetFullPath($p)
+    $drive = $full.Substring(0, 1).ToLowerInvariant()
+    return "/mnt/$drive" + ($full.Substring(2) -replace '\\', '/')
+}
+
+# 1. Compile the C# to an object for the device instruction set. On Windows the ahead-of-time compiler
+# cannot cross-compile, so the publish runs in WSL; the object still lands in the project's obj folder,
+# which both sides share.
+#
+# The publish's own last step tries to link the object into a host executable and fails, because the
+# device service functions the module imports (scePad*, sceVideoOut*, ...) are not present on the build
+# host — the SDK's linker resolves those against the device modules. The object the compiler writes just
+# before that link is exactly what is needed, so a non-zero publish result is expected; the object's
+# presence is the real check.
 Write-Host "== Compile =="
-& dotnet publish $ProjectPath -c $Configuration -r $rid --nologo
-if ($LASTEXITCODE -ne 0) { throw $objectGuidance }
+if ($onWindows) {
+    if (-not $haveWsl) {
+        throw "The compile step needs a Linux host. Install WSL (wsl --install) so this runs automatically, or build on Linux."
+    }
+    $wslProject = ConvertTo-WslPath $ProjectPath
+    $wslSdk = ConvertTo-WslPath $SdkRoot
+    & wsl.exe -e bash -lc "dotnet publish '$wslProject' -c $Configuration -r $rid -p:SharpProsperoRoot='$wslSdk' --nologo" 2>&1 | Out-Host
+} else {
+    & dotnet publish $ProjectPath -c $Configuration -r $rid "-p:SharpProsperoRoot=$SdkRoot" --nologo 2>&1 | Out-Host
+}
 
-# Name the object the project actually produces. Picking a file out of the folder instead would link
-# whichever object happened to be there, including one left behind by an earlier assembly name.
+# Name the object the project actually produces, rather than picking a file out of the folder.
 $targetName = (& dotnet msbuild $ProjectPath -getProperty:TargetName `
-    -p:Configuration=$Configuration -p:RuntimeIdentifier=$rid --nologo | Out-String).Trim()
+    -p:Configuration=$Configuration -p:RuntimeIdentifier=$rid "-p:SharpProsperoRoot=$SdkRoot" --nologo | Out-String).Trim()
 if (-not $targetName) { throw "Could not resolve the project's target name." }
 $objectPath = Join-Path $projectDir "obj/$Configuration/net10.0/$rid/native/$targetName.o"
-if (-not (Test-Path $objectPath)) { throw $objectGuidance }
+if (-not (Test-Path $objectPath)) {
+    throw "No compiled object was produced at $objectPath. The ahead-of-time compile did not run; check the publish output above."
+}
 
-# 2. Link the object into the module.
+# 2. Gather the ahead-of-time runtime archives. They are restored by the publish above (the .NET SDK's
+# NativeAOT runtime pack), so they are found in the package cache rather than assembled by hand. On
+# Windows the cache lives in WSL, so the archives are copied out to the project's obj folder.
+Write-Host "== Runtime support =="
+$archiveNames = @(
+    "libbootstrapper.o", "libRuntime.WorkstationGC.a", "libRuntime.VxsortDisabled.a",
+    "libeventpipe-disabled.a", "libstandalonegc-disabled.a", "libaotminipal.a", "libstdc++compat.a",
+    "libSystem.Native.a", "libz.a", "libbrotlienc.a", "libbrotlidec.a", "libbrotlicommon.a",
+    "libSystem.IO.Compression.Native.a"
+)
+$supportDir = Join-Path $projectDir "obj/$Configuration/net10.0/$rid/runtime-support"
+New-Item -ItemType Directory -Force -Path $supportDir | Out-Null
+
+$packGlob = "microsoft.netcore.app.runtime.nativeaot.linux-x64/*/runtimes/linux-x64/native"
+if ($onWindows) {
+    $wslSupport = ConvertTo-WslPath $supportDir
+    $copyScript = "set -e; NAT=`$(ls -d ~/.nuget/packages/$packGlob 2>/dev/null | sort -V | tail -1); " +
+        "if [ -z `"`$NAT`" ]; then echo NONE; exit 0; fi; " +
+        "for n in $($archiveNames -join ' '); do cp `"`$NAT/`$n`" '$wslSupport/' 2>/dev/null || true; done; echo `"`$NAT`""
+    $nativeDir = (& wsl.exe -e bash -lc $copyScript | Out-String).Trim()
+    if ($nativeDir -eq "NONE" -or -not $nativeDir) {
+        throw "The NativeAOT runtime pack was not found in the WSL package cache. Run the compile step once so it is restored."
+    }
+} else {
+    $userHome = [System.Environment]::GetFolderPath("UserProfile")
+    $nativeDir = Get-ChildItem -Path (Join-Path $userHome ".nuget/packages/microsoft.netcore.app.runtime.nativeaot.linux-x64") `
+        -Directory -ErrorAction SilentlyContinue | Sort-Object Name | Select-Object -Last 1
+    if (-not $nativeDir) { throw "The NativeAOT runtime pack was not found in the package cache." }
+    $nativeDir = Join-Path $nativeDir.FullName "runtimes/linux-x64/native"
+    foreach ($n in $archiveNames) {
+        $src = Join-Path $nativeDir $n
+        if (Test-Path $src) { Copy-Item -Force $src (Join-Path $supportDir $n) }
+    }
+}
+if (-not (Get-ChildItem -Path $supportDir -File -ErrorAction SilentlyContinue)) {
+    throw "No runtime archives were gathered into $supportDir."
+}
+
+# 3. Link the object and the runtime archives into the module. The gathered archives live in one folder,
+# so the folder is handed over and the link target picks up every archive in it — no list to pass.
 Write-Host "== Link =="
 New-Item -ItemType Directory -Force -Path $moduleFolder | Out-Null
 & dotnet msbuild $ProjectPath /t:ProsperoLink `
     /p:Configuration=$Configuration `
     /p:ProsperoObjectFile=$objectPath `
+    /p:ProsperoRuntimePack=$supportDir `
     /p:OutputPath=$moduleFolder/ `
+    "/p:SharpProsperoRoot=$SdkRoot" `
     /nologo
 if ($LASTEXITCODE -ne 0) { throw "Link failed." }
 
-# 3. Gather the module's metadata and any modules it ships with. The destination is replaced rather
-# than copied into, so a rebuild neither nests the folder inside itself nor keeps a deleted file.
+# 4. Gather the module's metadata and any modules it ships with.
 foreach ($folder in @("sce_sys", "sce_module")) {
     $source = Join-Path $projectDir $folder
     if (-not (Test-Path $source)) { continue }
@@ -93,19 +161,19 @@ foreach ($folder in @("sce_sys", "sce_module")) {
     Copy-Item -Recurse -Force $source $destination
 }
 
-# 4. Settle the system version the application requires. A module records the system it was built
-# against, and an application that ships it has to require at least as much, or the system installs
-# the application and then fails to load the module.
-Write-Host "== System version =="
-$sysverArgs = @("sysver", "--folder", $moduleFolder, "--policy", $SystemVersionPolicy.ToLowerInvariant(), "--apply")
-if ($SystemVersion) { $sysverArgs += @("--version", $SystemVersion) }
-& dotnet run --project (Join-Path $SdkRoot "tools/SharpProspero.Bindings.Generator/SharpProspero.Bindings.Generator.csproj") `
-    -c $Configuration -- @sysverArgs
-# 4 reports a module that will not load under the result. That is a warning the user asked for by
-# choosing the policy, not a build failure; anything else is.
-if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 4) { throw "Could not settle the system version." }
+# 5. Settle the system version the application requires. This lives in the application metadata; a
+# library module has none (the application that bundles it settles its own version), so the step runs
+# only when that metadata is present.
+if (Test-Path (Join-Path $moduleFolder "sce_sys/param.json")) {
+    Write-Host "== System version =="
+    $sysverArgs = @("sysver", "--folder", $moduleFolder, "--policy", $SystemVersionPolicy.ToLowerInvariant(), "--apply")
+    if ($SystemVersion) { $sysverArgs += @("--version", $SystemVersion) }
+    & dotnet run --project (Join-Path $SdkRoot "tools/SharpProspero.Bindings.Generator/SharpProspero.Bindings.Generator.csproj") `
+        -c $Configuration -- @sysverArgs
+    if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 4) { throw "Could not settle the system version." }
+}
 
-# 5. Either pack the result or leave the folder as the output.
+# 6. Either pack the result or leave the folder as the output.
 if ($Output -eq "Folder") {
     Write-Host "== Done =="
     Write-Host "Files written to $moduleFolder"

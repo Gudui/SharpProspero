@@ -11,16 +11,14 @@ object into an ELF module, and pack the module. The first two are driven by MSBu
 
 ## Inputs
 
-One location is needed, resolvable from an environment variable so machine paths stay out of the
-project files:
+Nothing outside the .NET SDK is set up. `build.ps1` gathers the ahead-of-time runtime from the .NET
+SDK's own NativeAOT runtime pack (restored by the compile step) and links through the SDK's own linker,
+which supplies its own start object, a compat object for the C-library names the runtime needs that the
+device does not publish, and stubs for the service modules. So there is no runtime pack to assemble, no
+`PROSPERO_RUNTIME_PACK` to set, and no separate linker, start file, or stub library.
 
-| Variable | Points at | Used by |
-|---|---|---|
-| `PROSPERO_RUNTIME_PACK` | Folder with the runtime archives for the device ABI. | Compile, link. |
-
-The property `ProsperoRuntimePack` overrides the variable when set on the command line. The link runs
-through the SDK's own linker, which supplies its own start object and its own stubs for the modules
-the SDK imports from, so a build needs no separate linker, start file, or stub library.
+The one host requirement is that the compile step runs on Linux (see step 1). On Windows `build.ps1`
+runs that step through WSL automatically, so a Windows user builds in place.
 
 ## Step 1: compile
 
@@ -41,23 +39,23 @@ Publish with an x86_64 runtime identifier:
 dotnet publish -c Release -r linux-x64
 ```
 
-The compiler writes an object under `obj/Release/net10.0/linux-x64/native`. The object targets the
-x86_64 instruction set; the runtime code it contains comes from the runtime pack (below), so the
-object matches the device ABI.
+The compiler writes an object under `obj/Release/net10.0/linux-x64/native`. It targets the x86_64
+instruction set; the native runtime it links against (below) matches the device ABI.
 
-One constraint on this step: the stock compiler emits an object only for the operating system it runs
-on, so it does not produce an ELF object from a Windows host on its own. Run the publish on Linux (or
-WSL), or supply the object writer for the device ABI as part of the runtime pack. The link and pack
-steps below run on any host.
+One constraint on this step: the ahead-of-time compiler emits an object only for the operating system
+it runs on, so it does not cross-compile to Linux from a Windows host. `build.ps1` therefore runs the
+publish through WSL on Windows — the object still lands in the project's `obj` folder, which both sides
+share — and runs it directly on Linux. The link and pack steps below are the toolchain itself and run
+wherever the script is started.
 
 ## Step 2: link
 
 `build/Prospero.App.targets` defines the `ProsperoLink` target. It is not part of a normal build, so
 `dotnet build` never touches it; run it directly or through `build.ps1`. The target:
 
-1. Checks the runtime pack and the compiled object exist, stopping with a specific message if one is
-   missing.
-2. Runs the SDK's linker over the application object and the runtime archives from the pack. The
+1. Checks the runtime archives and the compiled object exist, stopping with a specific message if one
+   is missing.
+2. Runs the SDK's linker over the application object and the runtime archives. The
    linker supplies its own start object (which carries the `_start` entry point) and its own stubs for
    the modules the SDK imports from. It reads each object and archive, resolves the symbol graph, lays
    the sections into segments, applies the relocations, and writes `eboot.bin` — the exception-frame
@@ -94,29 +92,28 @@ dotnet run --project tools/SharpProspero.Packager -- --in <module-folder> --out 
 **Folder** stops after gathering, leaving `eboot.bin`, `sce_sys` and `sce_module` together in one
 folder ready to copy or inspect. Nothing is packed, so there is no content id or passcode to set.
 
-## The runtime support pack
+## Where the runtime comes from
 
-The compiler and linker need the ahead-of-time runtime built for the device ABI. On the desktop
-frameworks these archives ship per platform; the device is not one of them, so the pack is supplied
-separately and pointed at by `PROSPERO_RUNTIME_PACK`. It contains:
+The linked module needs the ahead-of-time runtime — the garbage collector, exception handling, and the
+bootstrap that runs before the managed entry. These are the standard NativeAOT runtime archives, and
+the `dotnet publish` compile step restores them into the .NET SDK's package cache as its own runtime
+pack. `build.ps1` gathers those archives from the cache and hands them to the linker, so nothing is
+assembled or downloaded separately.
 
-- The runtime archives the compiled object links against: the runtime core, the exception handling
-  support, the bootstrap object that runs before the managed entry, and the platform layer that maps
-  the runtime's memory, thread and time calls onto the device services.
-- The object-writer support the compiler uses to emit an object in the device ABI.
+The runtime archives call a set of C-library and operating-system functions. The device's own C and
+kernel modules already publish most of them (the whole `pthread` family, the memory and file calls,
+timing, and the C library), so the linker resolves those as ordinary imports against the module stubs.
+The rest — a small set the runtime asks for by a name the device does not publish, such as the
+large-file variants of the file calls — are provided by a compat object the linker emits itself: each
+is a thin forwarder to the name the device does publish, or a fixed result an application module can
+accept. The upshot is that the runtime's operating-system surface is satisfied entirely by the device
+modules and the toolchain, with no platform layer to build.
 
-The platform layer is the part that ties the runtime to the device. Its calls map onto the same
-services the SDK binds:
+The linker also defines the section-boundary symbols the runtime reads to walk its own managed-code and
+module tables (`__start_<section>` / `__stop_<section>`), the way the system linker does.
 
-| Runtime need | Device service |
-|---|---|
-| Reserve and map memory | `sceKernelAllocateDirectMemory`, `sceKernelMapDirectMemory` |
-| Protect and unmap memory | the map and release calls with the CPU protection flags |
-| Threads and synchronization | the pthread family in `libkernel` |
-| Monotonic time | the process-time call in `libkernel` |
-
-Until the pack is present, `dotnet build` of the solution still succeeds and the tests still run; it
-is the link step that requires it, and it reports exactly what is missing when it is not set.
+A plain `dotnet build` of the solution and the tests need none of this; it applies only to the link
+step, which runs after the compile step has restored the runtime pack.
 
 ## Keeping the heap in bounds
 

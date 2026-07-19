@@ -87,6 +87,32 @@ while (running)
 
 `SocketPoller.Abort` unblocks a thread waiting in `Wait`, so a server loop can be told to stop.
 
+## An HTTP server
+
+`HttpServer` builds a small HTTP/1.1 server on these sockets, so a module can serve a page or an API to
+a phone or a computer on the same network — a remote control panel, a status page, or a file browser.
+Start it on a port and call `PollOnce` each frame so it never blocks the loop; it answers one waiting
+request and returns. A handler maps a request to a response.
+
+```csharp
+using var server = HttpServer.Start(8080);
+
+// In the frame loop, once per frame:
+server.PollOnce(request => request.Path switch
+{
+    "/" => HttpServerResponse.Html("<h1>Hello from C#</h1>"),
+    "/status" => HttpServerResponse.Json("{\"ok\":true}"),
+    _ => HttpServerResponse.NotFound(),
+});
+```
+
+`HttpServerRequest` gives the `Method`, `Path` (percent-decoded), `Query`, `Headers` and `Body`.
+`HttpServerResponse` has `Text`, `Html`, `Json`, `Bytes`, `NotFound` and `Redirect` builders, and its
+`StatusCode`, `ContentType`, `Headers` and `Body` are settable for anything else. Each request is
+answered and its connection closed, which keeps it simple and robust. To dedicate the loop to serving
+instead of polling, call `Run(handler, keepRunning)`. Bind to the loopback address only, with
+`Start(port, loopbackOnly: true)`, for a server just this console reaches.
+
 ## UDP
 
 Datagrams need no connection. Bind to receive, send to an explicit destination.

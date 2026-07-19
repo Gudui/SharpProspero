@@ -1,53 +1,48 @@
-# Runtime support pack
+# Runtime support
 
-The link step needs a set of archives compiled for the device ABI: the ahead-of-time runtime and the
-platform layer that ties it to the kernel. This folder holds the platform layer and the steps that
-assemble the pack. The finished folder is what `PROSPERO_RUNTIME_PACK` points at.
+The link step needs the ahead-of-time runtime — the garbage collector, exception handling, and the
+bootstrap that runs before the managed entry. Nothing here is assembled by hand: the runtime is the
+.NET SDK's own, and the toolchain meets its operating-system surface itself.
 
-## What the pack contains
+## Where the runtime comes from
 
-| Piece | Source | Role |
-|---|---|---|
-| Platform layer | `pal/prospero_pal.c` (here) | Implements the operating-system primitives the runtime calls (memory, threads, thread-local storage, time) by forwarding to the kernel module. |
-| Runtime core | The ahead-of-time runtime for an x86_64 target | The garbage collector, type system, exception handling and bootstrap the compiled object references. |
-| C runtime forwarders | Small forwarding objects, as needed | Map any remaining C-library symbols the runtime imports onto the kernel and C runtime modules. |
+The compile step (`dotnet publish -c Release -r linux-x64`) restores the standard NativeAOT runtime
+archives into the .NET SDK's package cache as its own runtime pack
+(`microsoft.netcore.app.runtime.nativeaot.linux-x64`). `build/build-app.ps1` gathers those archives
+from the cache and hands them to the linker. On Windows the cache lives in WSL, so the archives are
+copied out to the project's `obj` folder along the way.
 
-## Building the platform layer
+## How the runtime's operating-system surface is met
 
-Compile `pal/prospero_pal.c` for the device ABI (freestanding, optimized for size) into an object,
-wrap it in an archive named `libProsperoPal.a`, and place the archive in the pack folder. The source
-is small and freestanding, so any compiler that targets the device ABI produces it.
+The runtime archives call a set of C-library and operating-system functions. They are satisfied without
+a platform layer of our own:
 
-## The runtime core
+- **The device's C and kernel modules already publish most of them** — the whole `pthread` family, the
+  memory-mapping and protection calls, the file and directory calls, timing, and the C library. The
+  linker resolves these as ordinary imports against the module stubs it generates.
+- **A compat object supplies the rest** — the small set the runtime asks for by a name the device does
+  not publish (chiefly the large-file variants of the file calls, and a few glibc-only helpers). The
+  linker emits this object itself: each entry is a thin forwarder to the name the device does publish,
+  a fixed result an application module can accept, or a weak no-op the toolchain overrides. The set is
+  recorded in `imports/compat.txt`; the emitter is `tools/SharpProspero.Link/CompatEmitter.cs`.
 
-The runtime core is the one piece that is produced outside this repository. It is the ahead-of-time
-runtime for an x86_64 target, built so its operating-system calls resolve against the platform layer
-above rather than a host C library. Producing it is a build of the runtime sources for the target
-followed by a validation run on a device; it is a mechanical build with the platform layer already in
-hand, not open design work.
+The linker also defines the section-boundary symbols the runtime reads to walk its own managed-code and
+module tables (`__start_<section>` / `__stop_<section>`), the way the system linker does.
 
-Once built, drop the runtime archives next to `libProsperoPal.a`. The order the linker expects can be
-fixed with `ProsperoRuntimeLibraries` (see `build/Prospero.App.targets`); otherwise every archive in
-the folder is linked inside one group.
+## The import lists
 
-## How the layer maps to the kernel
+`imports/` records which names the runtime pulls in and where each resolves, as a reference:
 
-`pal/prospero_pal.c` is the record of the mapping. Each POSIX primitive the runtime uses forwards to
-a kernel entry:
+| File | Names resolved against |
+|---|---|
+| `imports/libc.txt` | the device C module |
+| `imports/libkernel.txt` | the device kernel module |
+| `imports/compat.txt` | the compat object the linker emits |
 
-- Memory (`mmap`/`munmap`/`mprotect`) forward to the named-flexible-memory and protection calls.
-- Threads and synchronization forward to the pthread family in the kernel module.
-- Thread-local storage forwards to the pthread key calls.
-- Time and sleep forward to the process-time counter and the microsecond sleep.
+The authoritative lists live in the toolchain: the C and kernel names are in
+`tools/SharpProspero.Prx/StubCatalog.cs`, and the compat names in `CompatEmitter.cs`.
 
-Graphics buffers do not come through this layer; they use the direct-memory path in the SDK, which is
-separate from the managed heap the runtime manages here.
+## Building
 
-## Using the pack
-
-```
-setx PROSPERO_RUNTIME_PACK "<this folder once assembled>"
-```
-
-With the pack present, `src/SharpProspero.Sample/build.ps1` links a module end to end. Without it, the
-solution still builds and the tests still run; only the link step needs the pack.
+There is nothing to build here and no `PROSPERO_RUNTIME_PACK` to set. `build/build-app.ps1` does the
+gathering and linking; a plain `dotnet build` of the solution and the tests need none of it.

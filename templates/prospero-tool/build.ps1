@@ -4,7 +4,7 @@
     Builds this application into an installable package.
 .DESCRIPTION
     Delegates to the SDK's shared build pipeline. Set SHARPPROSPERO_ROOT to the SDK folder, or pass
-    -SdkRoot. Run the SDK's doctor.ps1 to check the .NET SDK and runtime pack first.
+    -SdkRoot. Run the SDK's doctor.ps1 to check the .NET SDK first (the build gathers the runtime automatically; on Windows the compile step uses WSL).
 #>
 param(
     [string]$SdkRoot = "",

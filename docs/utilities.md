@@ -69,6 +69,33 @@ Captures are asynchronous: each call returns a request id and the image or clip 
 background. `Block(ShareFeature.Screenshot)` prevents capture while a sensitive screen is shown, and
 `Allow` re-enables it; `SetScreenshotOverlay` adds a watermark to captured screenshots.
 
+### Live capture of the finished screen (advanced)
+
+`SystemAvCapture` reads the live system-composited audio and video — the finished screen the whole
+system draws, together with its audio — for a recorder or a stream, rather than saving a gallery clip.
+It is an advanced, privileged surface: the capture service runs behind a system channel and the process
+must hold the authority to reach it, which a plain application sandbox does not, so opening it there
+fails with a permission error. Treat it as best-effort.
+
+```csharp
+using SharpProspero.Interop.AvCapture;
+using SharpProspero.Platform;
+
+using var capture = SystemAvCapture.Open();
+capture.OpenVideo(Avcap2VideoConfig.Create());
+capture.Start();
+while (recording)
+{
+    if (capture.TryReadVideo(out Avcap2VideoFrameInfo frame) && frame.IsValid)
+        Encode(frame);          // a privileged consumer reads the frame planes
+}
+capture.Stop();
+```
+
+For a recording path that needs no elevated privilege, save a gallery clip with `ShareCapture` above,
+or encode the application's own frames with the image encoders. Use `SystemAvCapture` only when the
+whole finished screen, including other applications and the system overlays, must be captured live.
+
 ## Microphone capture
 
 `AudioInDevice` captures 16-bit samples from the microphone for a voice recorder, a level meter, or
@@ -88,6 +115,26 @@ while (recording)
 ```
 
 `IsSilent` reports when the input is muted at the hardware or by the system.
+
+## WAV audio files
+
+`WavAudio` reads and writes 16-bit PCM WAV files with no system module, so a sound loads straight into
+the shape the audio port plays and a microphone recording writes straight back out. A file becomes a
+`PcmAudio` — the interleaved samples, the sample rate and the channel count.
+
+```csharp
+using SharpProspero.Audio;
+
+PcmAudio clip = WavAudio.Load("/app0/assets/beep.wav");
+using var audio = AudioOutDevice.OpenStereo();
+audio.Output(clip.Samples);            // play it
+
+// Save a recording:
+WavAudio.Save("/data/recording.wav", new PcmAudio(recorded, 48000, 2));
+```
+
+`PcmAudio` reports its `FrameCount` and `DurationMilliseconds`. Only uncompressed 16-bit mono or stereo
+is handled, which is the format the audio ports use, so what is read is always ready to play.
 
 ## Keeping the console awake and reacting to the system
 
@@ -142,6 +189,26 @@ Each line is written as `HH:mm:ss.fff LVL message`. `FileLogSink` appends to a f
 back after a run and is disposed at shutdown; `ConsoleLogSink` writes to standard output, which appears
 on the development console when one is attached. Implement `ILogSink` to send logs somewhere else, such
 as over the network.
+
+## Settings files
+
+`IniFile` keeps a module's own configuration in a small INI-style file, with no system module. Values
+live under named sections as `key = value` lines, and a leading `;` or `#` marks a comment — a format
+the user can also read and edit. Load a file, read and write typed values, save it back.
+
+```csharp
+using SharpProspero.Storage;
+
+IniFile settings = IniFile.Load("/data/app.ini");
+int volume = settings.GetInt("audio", "volume", 80);
+bool fullscreen = settings.GetBool("display", "fullscreen", true);
+
+settings.Set("audio", "volume", 90);
+settings.Save("/data/app.ini");
+```
+
+`GetString`, `GetInt` and `GetBool` each take a fallback for a missing value, so a first run with no
+file still gets sensible defaults. `Load` returns an empty store when the file is absent.
 
 ## Optical disc
 

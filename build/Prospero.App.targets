@@ -30,6 +30,11 @@
     <!-- The entry symbol the module starts at. The linker's start object provides it. -->
     <ProsperoEntrySymbol Condition="'$(ProsperoEntrySymbol)' == ''">_start</ProsperoEntrySymbol>
 
+    <!-- The module file name follows the kind, which the project sets before importing this file:
+         <name>.prx for a library, eboot.bin for an application. -->
+    <ProsperoModuleName Condition="'$(ProsperoModuleName)' == '' and '$(ProsperoModuleKind)' == 'Prx'">$(AssemblyName).prx</ProsperoModuleName>
+    <ProsperoModuleName Condition="'$(ProsperoModuleName)' == ''">eboot.bin</ProsperoModuleName>
+
     <ProsperoModulePath>$(OutputPath)$(ProsperoModuleName)</ProsperoModulePath>
     <_ProsperoIsPrx Condition="'$(ProsperoModuleKind)' == 'Prx'">true</_ProsperoIsPrx>
   </PropertyGroup>
@@ -49,8 +54,11 @@
       <ProsperoObjectFile Condition="'$(ProsperoObjectFile)' == ''">$(IntermediateOutputPath)native\$(TargetName).o</ProsperoObjectFile>
     </PropertyGroup>
 
-    <Error Condition="'$(ProsperoRuntimePack)' == '' Or !Exists('$(ProsperoRuntimePack)')"
-           Text="The runtime pack was not found. Set PROSPERO_RUNTIME_PACK (or the ProsperoRuntimePack property) to the folder that holds the runtime archives compiled for the device ABI. See docs/build-pipeline.md for how it is produced." />
+    <!-- The runtime archives come either as an explicit list (build.ps1 gathers them from the .NET
+         NativeAOT runtime pack the publish restored) or from a folder for a manual link. One of the two
+         has to be present; there is no separate pack to install. -->
+    <Error Condition="'$(ProsperoRuntimeLibraries)' == '' And ('$(ProsperoRuntimePack)' == '' Or !Exists('$(ProsperoRuntimePack)'))"
+           Text="No runtime archives were given. Build through build.ps1 (it gathers them from the .NET NativeAOT runtime pack automatically), or set ProsperoRuntimeLibraries to the archive list. See docs/build-pipeline.md." />
     <Error Condition="!Exists('$(ProsperoObjectFile)')"
            Text="The compiled object '$(ProsperoObjectFile)' does not exist. Run the AOT publish step first, or set ProsperoObjectFile to the emitted object." />
   </Target>
@@ -61,6 +69,7 @@
   <Target Name="ProsperoResolveRuntimePack">
     <ItemGroup Condition="'$(ProsperoRuntimeLibraries)' == ''">
       <ProsperoRuntimeLibrary Include="$(ProsperoRuntimePack)\*.a" />
+      <ProsperoRuntimeLibrary Include="$(ProsperoRuntimePack)\*.o" />
     </ItemGroup>
     <ItemGroup Condition="'$(ProsperoRuntimeLibraries)' != ''">
       <ProsperoRuntimeLibrary Include="$(ProsperoRuntimeLibraries)" />

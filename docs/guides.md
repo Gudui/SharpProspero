@@ -91,8 +91,8 @@ See [Modules and libraries](modules.md).
 
 | Symptom | Cause and fix |
 |---|---|
-| "No compiled object was produced" | The compile emits an object for the host OS. On Windows/macOS, use the runtime pack's object writer, or run `dotnet publish -r linux-x64` on Linux/WSL/Docker. See [Setup](setup.md). |
-| The link step reports the runtime pack is missing | Set `PROSPERO_RUNTIME_PACK` to the assembled pack (see `runtime/README.md`). `doctor.ps1` confirms it. |
+| "No compiled object was produced" | The compile runs on Linux. On Windows the build uses WSL for it — make sure WSL and the .NET 10 SDK are installed inside it (`doctor.ps1` checks). On macOS, run the compile in a Linux container. See [Setup](setup.md). |
+| The link step reports no runtime archives | Run the compile step once so the .NET SDK restores its runtime pack, which `build.ps1` then gathers; on Windows this happens inside WSL. |
 | The package installs but the module will not load | The system version the application requires is lower than a module it ships needs. `build-app.ps1` settles this with `-SystemVersionPolicy`; the default `Match` raises the requirement to what the modules need. See [Firmware compatibility](firmware.md). |
 | A binding call is unresolved at link time | The module's export is not in the linker's catalog. Add it, or supply a stub for your own module with `ProsperoUserStubLibrary`. See [Bindings](bindings.md). |
 | `dotnet new prospero-app` not found | Install the template: `dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-app`. |
