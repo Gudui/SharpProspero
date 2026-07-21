@@ -49,6 +49,36 @@ public readonly unsafe partial struct Surface
         }
     }
 
+    /// <summary>
+    /// Fills a rectangle with a radial gradient from <paramref name="center"/> at the middle out to
+    /// <paramref name="edge"/> at the farthest corner. Use it for a soft background, a spotlight, or a
+    /// vignette (a light centre with a darker edge). Every pixel is computed, so it is a fill rather than
+    /// a per-frame effect on a large area.
+    /// </summary>
+    public void FillRadialGradient(int x, int y, int width, int height, Color center, Color edge)
+    {
+        if (width <= 0 || height <= 0)
+            return;
+        float cx = x + (width / 2f), cy = y + (height / 2f);
+        float maxDist = MathF.Sqrt(((float)width * width) + ((float)height * height)) / 2f;
+        if (maxDist < 1e-3f)
+            maxDist = 1f;
+
+        int x0 = Math.Max(0, x), y0 = Math.Max(0, y);
+        int x1 = Math.Min(Width, x + width), y1 = Math.Min(Height, y + height);
+        for (int py = y0; py < y1; py++)
+        {
+            uint* dstRow = _pixels + (long)py * Stride;
+            float dy = py + 0.5f - cy;
+            for (int px = x0; px < x1; px++)
+            {
+                float dx = px + 0.5f - cx;
+                float t = MathF.Sqrt((dx * dx) + (dy * dy)) / maxDist;
+                dstRow[px] = Color.Lerp(center, edge, t).Value;
+            }
+        }
+    }
+
     /// <summary>Fills a rectangle with rounded corners of the given <paramref name="radius"/>.</summary>
     public void FillRoundedRect(int x, int y, int width, int height, int radius, Color color)
     {
@@ -223,6 +253,56 @@ public readonly unsafe partial struct Surface
                 dstRow[px] = blended ? Blend(srcRow[sx], dstRow[px]) : srcRow[sx];
             }
         }
+    }
+
+    /// <summary>
+    /// Copies <paramref name="source"/> scaled to fill the destination rectangle with bilinear sampling,
+    /// so an enlarged image looks smooth rather than blocky. Use it for a photo; <see cref="BlitScaled"/>
+    /// is the faster nearest-sample form for pixel art or a slight resize.
+    /// </summary>
+    public void BlitScaledSmooth(Surface source, int destX, int destY, int destWidth, int destHeight)
+    {
+        if (destWidth <= 0 || destHeight <= 0 || source.Width <= 0 || source.Height <= 0)
+            return;
+        int x0 = Math.Max(0, destX), y0 = Math.Max(0, destY);
+        int x1 = Math.Min(Width, destX + destWidth), y1 = Math.Min(Height, destY + destHeight);
+        float scaleX = (float)source.Width / destWidth;
+        float scaleY = (float)source.Height / destHeight;
+
+        for (int py = y0; py < y1; py++)
+        {
+            // Map the destination pixel's centre back into the source, then take the four samples around it.
+            float syf = ((py - destY + 0.5f) * scaleY) - 0.5f;
+            int sy0 = (int)MathF.Floor(syf);
+            float fy = syf - sy0;
+            uint* srcRow0 = source._pixels + (long)Math.Clamp(sy0, 0, source.Height - 1) * source.Stride;
+            uint* srcRow1 = source._pixels + (long)Math.Clamp(sy0 + 1, 0, source.Height - 1) * source.Stride;
+            uint* dstRow = _pixels + (long)py * Stride;
+
+            for (int px = x0; px < x1; px++)
+            {
+                float sxf = ((px - destX + 0.5f) * scaleX) - 0.5f;
+                int sx0 = (int)MathF.Floor(sxf);
+                float fx = sxf - sx0;
+                int a = Math.Clamp(sx0, 0, source.Width - 1);
+                int b = Math.Clamp(sx0 + 1, 0, source.Width - 1);
+                dstRow[px] = BilinearMix(srcRow0[a], srcRow0[b], srcRow1[a], srcRow1[b], fx, fy);
+            }
+        }
+    }
+
+    // Interpolates each channel across the four neighbouring source pixels.
+    private static uint BilinearMix(uint c00, uint c10, uint c01, uint c11, float fx, float fy)
+    {
+        uint Channel(int shift)
+        {
+            float a = (c00 >> shift) & 0xFF, b = (c10 >> shift) & 0xFF;
+            float c = (c01 >> shift) & 0xFF, d = (c11 >> shift) & 0xFF;
+            float top = a + (b - a) * fx;
+            float bottom = c + (d - c) * fx;
+            return (uint)(top + (bottom - top) * fy + 0.5f) & 0xFF;
+        }
+        return (Channel(24) << 24) | (Channel(16) << 16) | (Channel(8) << 8) | Channel(0);
     }
 
     /// <summary>

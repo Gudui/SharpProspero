@@ -225,6 +225,93 @@ public static unsafe class FileSystem
     public static void WriteAllText(string path, string text)
         => WriteAllBytes(path, Encoding.UTF8.GetBytes(text ?? string.Empty));
 
+    /// <summary>Reads the file at <paramref name="path"/> and decodes it as UTF-8 text.</summary>
+    /// <exception cref="ProsperoException">Opening or reading the file failed.</exception>
+    public static string ReadAllText(string path) => Encoding.UTF8.GetString(ReadAllBytes(path));
+
+    /// <summary>Creates the directory at <paramref name="path"/> and any missing parent directories.</summary>
+    /// <exception cref="ProsperoException">A directory could not be created.</exception>
+    public static void CreateDirectoryRecursive(string path, ushort mode = 0x1FF)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(path);
+        bool absolute = path[0] == '/';
+        var builder = new StringBuilder(path.Length);
+        string[] segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        for (int i = 0; i < segments.Length; i++)
+        {
+            if (i > 0 || absolute)
+                builder.Append('/');
+            builder.Append(segments[i]);
+            string directory = builder.ToString();
+            if (!Exists(directory))
+                CreateDirectory(directory, mode);
+        }
+    }
+
+    /// <summary>Lists every file beneath <paramref name="path"/>, walking into sub-directories, as full paths.</summary>
+    /// <exception cref="ProsperoException">A directory could not be read.</exception>
+    public static List<string> EnumerateRecursive(string path)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(path);
+        var files = new List<string>();
+        CollectFiles(path, files);
+        return files;
+    }
+
+    /// <summary>Copies the file at <paramref name="source"/> to <paramref name="destination"/>, overwriting it.</summary>
+    /// <exception cref="ProsperoException">The read or write failed.</exception>
+    public static void CopyFile(string source, string destination)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(source);
+        ArgumentException.ThrowIfNullOrEmpty(destination);
+        WriteAllBytes(destination, ReadAllBytes(source));
+    }
+
+    /// <summary>Copies the directory tree at <paramref name="source"/> to <paramref name="destination"/>, creating it.</summary>
+    /// <exception cref="ProsperoException">A read, write, or directory creation failed.</exception>
+    public static void CopyDirectory(string source, string destination)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(source);
+        ArgumentException.ThrowIfNullOrEmpty(destination);
+
+        // Refuse to copy a tree into itself or into one of its own sub-directories. Otherwise creating the
+        // destination first would add an entry the walk then descends into, recursing without end.
+        string normalizedSource = source.TrimEnd('/');
+        string normalizedDestination = destination.TrimEnd('/');
+        if (normalizedDestination == normalizedSource ||
+            normalizedDestination.StartsWith(normalizedSource + "/", StringComparison.Ordinal))
+        {
+            throw new ProsperoException("The destination is the source directory or is inside it.", -1);
+        }
+
+        CreateDirectoryRecursive(destination);
+        foreach (DirectoryEntry entry in EnumerateDirectory(source))
+        {
+            if (entry.Name is "." or "..")
+                continue;
+            string from = source.TrimEnd('/') + "/" + entry.Name;
+            string to = destination.TrimEnd('/') + "/" + entry.Name;
+            if (entry.IsDirectory)
+                CopyDirectory(from, to);
+            else
+                CopyFile(from, to);
+        }
+    }
+
+    private static void CollectFiles(string directory, List<string> files)
+    {
+        foreach (DirectoryEntry entry in EnumerateDirectory(directory))
+        {
+            if (entry.Name is "." or "..")
+                continue;
+            string child = directory.TrimEnd('/') + "/" + entry.Name;
+            if (entry.IsDirectory)
+                CollectFiles(child, files);
+            else
+                files.Add(child);
+        }
+    }
+
     private static int OpenPath(string path, int flags, ushort mode)
     {
         byte[] owned = ToNullTerminated(path);

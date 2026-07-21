@@ -1,6 +1,7 @@
 // SharpProspero.Tests
 // Copyright (C) 2026 SvenGDK
 
+using SharpProspero.Interop;
 using SharpProspero.Storage;
 using System;
 using System.Buffers.Binary;
@@ -68,6 +69,16 @@ public sealed class FileSystemTests
         var entries = new List<DirectoryEntry>();
         FileSystem.DecodeEntries([], entries);
         Assert.Empty(entries);
+    }
+
+    [Fact]
+    public void CopyDirectory_RejectsDestinationInsideSource()
+    {
+        // The containment check runs before any device call, so it is exercised on the host: copying a
+        // tree into itself or a sub-directory would recurse without end and must be refused up front.
+        Assert.Throws<ProsperoException>(() => FileSystem.CopyDirectory("/data", "/data/backup"));
+        Assert.Throws<ProsperoException>(() => FileSystem.CopyDirectory("/data/", "/data"));
+        Assert.Throws<ProsperoException>(() => FileSystem.CopyDirectory("/save", "/save/deep/inner"));
     }
 
     // Builds one directory record: file number, record length, type, name length, then the name

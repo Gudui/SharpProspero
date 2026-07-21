@@ -76,5 +76,58 @@ public sealed class HashTests
         Assert.Equal(20, new Sha1().HashSize);
         Assert.Equal(16, new Md5().HashSize);
         Assert.Equal(4, new Crc32().HashSize);
+        Assert.Equal(64, new Sha512().HashSize);
+    }
+
+    [Theory]
+    [InlineData("", "cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e")]
+    [InlineData("abc", "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f")]
+    [InlineData("The quick brown fox jumps over the lazy dog", "07e547d9586f6a73f73fbac0435ed76951218fb7d0c8d788a309d785436bbb642e93a252a954f23912547d1e8a3b5ed6e1bfd7097821233fa0538f3db854fee6")]
+    // 112 bytes: exactly fills a block, forcing the length pad into a second block.
+    [InlineData("abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu", "8e959b75dae313da8cf4f72814fc143f8f7779c6eb9f7fa17299aeadb6889018501d289e4900f7e4331b99dec4b5433ac7d329eeb6dd26545e96e55b874be909")]
+    public void Sha512_MatchesVectors(string input, string expected) =>
+        Assert.Equal(expected, Sha512.HashHex(Ascii(input)));
+
+    [Fact]
+    public void Sha512_IncrementalMatchesOneShot()
+    {
+        // Longer than one 128-byte block, split into thirds so a whole block is transformed mid-stream.
+        byte[] data = Ascii("The SHA-512 streaming path must match hashing the whole message at once, even when the updates land at awkward offsets that cross the 128-byte block boundary more than once.");
+        int a = data.Length / 3, b = 2 * data.Length / 3;
+        var streaming = new Sha512();
+        streaming.Update(data.AsSpan(0, a));
+        streaming.Update(data.AsSpan(a, b - a));
+        streaming.Update(data.AsSpan(b));
+        Assert.Equal(Sha512.HashHex(data), Convert.ToHexStringLower(streaming.Finish()));
+    }
+
+    // Keyed digests checked against the published HMAC test vectors, with one case whose key is longer
+    // than the block size so the key-is-hashed-first path is exercised.
+    [Fact]
+    public void Hmac_MatchesVectors()
+    {
+        byte[] jefe = Ascii("Jefe");
+        byte[] message = Ascii("what do ya want for nothing?");
+        Assert.Equal("5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843", Hmac.Sha256Hex(jefe, message));
+        Assert.Equal("164b7a7bfcf819e2e395fbe73b56e0a387bd64222e831fd610270cd7ea2505549758bf75c05a994a6d034f65f8f0e6fdcaeab1a34d4a6b4b636e070a38bce737", Hmac.Sha512Hex(jefe, message));
+        Assert.Equal("effcdf6ae5eb2fa2d27416d5f184df9c259a7c79", Hmac.Sha1Hex(jefe, message));
+        Assert.Equal("750c783e6ab0b503eaa86e310a5db738", Hmac.Md5Hex(jefe, message));
+
+        // A 131-byte key (longer than the 64-byte block) is reduced by hashing before use.
+        byte[] longKey = new byte[131];
+        Array.Fill(longKey, (byte)0xAA);
+        byte[] tcData = Ascii("Test Using Larger Than Block-Size Key - Hash Key First");
+        Assert.Equal("60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54", Hmac.Sha256Hex(longKey, tcData));
+    }
+
+    [Fact]
+    public void Hmac_IncrementalMatchesOneShot()
+    {
+        byte[] key = Ascii("a shared secret");
+        byte[] data = Ascii("a message tagged in one shot or in several pieces");
+        var streaming = new Hmac(key, static () => new Sha256(), 64);
+        streaming.Update(data.AsSpan(0, 12));
+        streaming.Update(data.AsSpan(12));
+        Assert.Equal(Hmac.Sha256Hex(key, data), Convert.ToHexStringLower(streaming.Finish()));
     }
 }

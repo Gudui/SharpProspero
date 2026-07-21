@@ -42,6 +42,29 @@ The console's memory maps are limited, so cap the managed heap and avoid churn:
 - Draw into the pre-allocated back buffer each frame and reuse buffers rather than allocating in the
   frame loop. Pull GPU-visible buffers from `SharpProspero.Memory.DirectMemoryRegion`.
 
+## Animate a value over time
+
+`SharpProspero.Animation` moves a number from one value to another over a set time along an easing
+curve, so a panel slides in, a bar fills, or a colour fades without hand-written per-frame maths. A
+`Tween` holds no reference to what it drives, so the same one can move a position, an alpha, or a
+colour channel.
+
+```csharp
+using SharpProspero.Animation;
+
+var slideIn = new Tween(from: -200, to: 0, durationSeconds: 0.3f, Ease.OutCubic);
+
+// each frame, in OnFrame:
+int x = (int)slideIn.Update((float)frame.DeltaSeconds);
+panel.DrawAt(x, y);
+if (slideIn.IsComplete) { /* settled */ }
+```
+
+`Ease` picks the curve — `Linear`, the quad/cubic/sine `In`/`Out`/`InOut` pairs, the springy `OutBack`,
+or `OutBounce`. `TweenMode` decides the end: `Once` settles and reports `IsComplete`, `Loop` repeats,
+`PingPong` runs out and back. For a one-off reading without a tween, `Easing.Interpolate(from, to, t,
+ease)` gives the eased value at a fraction `t`.
+
 ## Log while developing
 
 Attach a file sink at startup and read the log back after a run:

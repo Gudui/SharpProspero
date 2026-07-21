@@ -12,8 +12,11 @@ SDK's `templates/` folder. Install them once, then create a project from whichev
 
 ```
 dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-app
+dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-game
 dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-ui
 dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-tool
+dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-media
+dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-server
 dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-prx
 ```
 
@@ -21,9 +24,12 @@ dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-prx
 
 | Template | Creates | Start here for |
 |---|---|---|
-| `prospero-app` | A frame-loop application that draws to the screen and reads the controller. | A game, a demo, or any application that draws its own screen. |
+| `prospero-app` | A frame-loop application that draws to the screen and reads the controller. | A demo, or any application that draws its own screen. |
+| `prospero-game` | A real-time game paced by the frame time: a paddle and a ball, a score, and a frame-rate overlay. | A game or anything with delta-timed movement, physics, and a live score. |
 | `prospero-ui` | An application built from the interface toolkit (labels, buttons, sliders, option pickers). | A menu-driven application, a settings screen, a launcher. |
 | `prospero-tool` | A toolbox application that shows a checksum, the console name, and the network status. | A system utility or toolbox that uses the SDK's tool surfaces. |
+| `prospero-media` | A media player that plays a bundled file, drawing the video and pacing the loop to the decoded audio. | A video or music player, or anything that plays a media file. |
+| `prospero-server` | A network service that serves an HTTP control panel and a JSON status endpoint from the frame loop. | A control panel, a file browser, or any service reached over the network. |
 | `prospero-prx` | A relocatable library module (`.prx`) that exports functions for another module to load. | A shared library you load at run time from an application. |
 
 ## Create a project
@@ -65,9 +71,10 @@ An application writes an installable `*.pkg` (or a folder with `-Output Folder`)
 
 ## What each template contains
 
-- **Applications** (`prospero-app`, `prospero-ui`, `prospero-tool`): `Program.cs`, the `sce_sys`
-  package metadata (`param.json`, `icon0.png`), and `build.ps1`. Edit `Program.cs`, replace the icon,
-  and set the title and ids in `param.json` (the `dotnet new` options fill these in).
+- **Applications** (`prospero-app`, `prospero-game`, `prospero-ui`, `prospero-tool`, `prospero-media`,
+  `prospero-server`): `Program.cs`, the `sce_sys` package metadata (`param.json`, `icon0.png`), and
+  `build.ps1`. Edit `Program.cs`, replace the icon, and set the title and ids in `param.json` (the
+  `dotnet new` options fill these in).
 - **Library** (`prospero-prx`): `Library.cs` with `[UnmanagedCallersOnly]` exported functions, the
   matching `<ProsperoExportSymbol>` entries in the project file, and `build.ps1`. Add a function and its
   export symbol for each entry point.

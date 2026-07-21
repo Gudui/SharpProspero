@@ -46,7 +46,8 @@ public sealed unsafe class DirectMemoryRegion : IDisposable
         nuint bytes,
         nuint alignment = 2 * 1024 * 1024,
         int memoryType = KernelMemory.MemoryTypeCachedShared,
-        int protection = KernelMemory.ProtCpuReadWrite | KernelMemory.ProtGpuAll)
+        int protection = KernelMemory.ProtCpuReadWrite | KernelMemory.ProtGpuAll,
+        int mappingFlags = 0)
     {
         nuint size = AlignUp(bytes, alignment);
 
@@ -56,7 +57,7 @@ public sealed unsafe class DirectMemoryRegion : IDisposable
         SceResult.ThrowIfFailed(rc, nameof(KernelMemory.sceKernelAllocateDirectMemory));
 
         void* address = null;
-        rc = KernelMemory.sceKernelMapDirectMemory(&address, size, protection, 0, offset, alignment);
+        rc = KernelMemory.sceKernelMapDirectMemory(&address, size, protection, mappingFlags, offset, alignment);
         if (SceResult.Failed(rc))
         {
             KernelMemory.sceKernelReleaseDirectMemory(offset, size);

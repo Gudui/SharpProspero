@@ -20,7 +20,7 @@ namespace SharpProspero.Graphics;
 /// <see cref="DrawText"/> is the left end of the text baseline. Only characters in the Basic Multilingual
 /// Plane are drawn.
 /// </remarks>
-public sealed unsafe class TrueTypeFont : IDisposable
+public sealed unsafe class TrueTypeFont : IDisposable, ITextFont
 {
     private readonly void* _memoryBlock;
     private readonly SceFontMemory* _memory;
@@ -143,6 +143,12 @@ public sealed unsafe class TrueTypeFont : IDisposable
             throw;
         }
     }
+
+    /// <summary>
+    /// The distance, in pixels, from one line of text to the next. This leaves the usual gap above and
+    /// below the glyphs so wrapped paragraphs do not touch.
+    /// </summary>
+    public int LineHeight => (int)((_pixelSize * 1.2f) + 0.5f);
 
     /// <summary>The width, in pixels, that <paramref name="text"/> occupies at the current size.</summary>
     /// <exception cref="ProsperoException">A glyph's metrics could not be read.</exception>

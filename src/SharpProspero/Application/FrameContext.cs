@@ -4,6 +4,7 @@
 using SharpProspero.Graphics;
 using SharpProspero.Input;
 using SharpProspero.Interop.Pad;
+using SharpProspero.Threading;
 
 namespace SharpProspero.Application;
 
@@ -35,6 +36,12 @@ public sealed class FrameContext
 
     /// <summary>The controller sample from the previous frame, for detecting button edges.</summary>
     public GamePadState PreviousInput { get; internal set; }
+
+    /// <summary>
+    /// The hand-off point back to the frame thread. Post work here from a worker thread to run it on the
+    /// next frame; the run loop drains it once per frame before <see cref="ProsperoApp.OnFrame"/>.
+    /// </summary>
+    public Dispatcher Dispatcher { get; internal set; } = new();
 
     /// <summary>True while every button in <paramref name="button"/> is held this frame.</summary>
     public bool Held(ScePadButton button) => Input.IsPressed(button);

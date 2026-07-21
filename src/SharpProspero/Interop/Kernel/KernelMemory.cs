@@ -48,6 +48,15 @@ public static unsafe partial class KernelMemory
     /// <summary>Alias of <see cref="ProtGpuReadWrite"/>.</summary>
     public const int ProtGpuAll = 0x30;
 
+    /// <summary>
+    /// Mapping flag: keep this mapping to itself rather than joining it to a neighbouring one. A
+    /// service that is handed a region and checks what backs it needs the mapping left as it was made.
+    /// </summary>
+    public const int MapNoCoalesce = 0x400000;
+
+    /// <summary>The size of a memory page, and the alignment a direct mapping is made on.</summary>
+    public const nuint PageSize = 16384;
+
     /// <summary>Size, in bytes, of the direct-memory pool available to the module.</summary>
     [LibraryImport(Lib)]
     public static partial nuint sceKernelGetDirectMemorySize();

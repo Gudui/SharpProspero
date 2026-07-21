@@ -95,6 +95,47 @@ public readonly struct Color(uint packed)
         return FromRgb((byte)((r + m) * 255f + 0.5f), (byte)((g + m) * 255f + 0.5f), (byte)((b + m) * 255f + 0.5f));
     }
 
+    /// <summary>
+    /// The hue (0-360 degrees), saturation and value (each 0-1) of this color, the inverse of
+    /// <see cref="FromHsv"/>. Alpha is not part of the result.
+    /// </summary>
+    public (float Hue, float Saturation, float Value) ToHsv()
+    {
+        float r = R / 255f, g = G / 255f, b = B / 255f;
+        float max = MathF.Max(r, MathF.Max(g, b));
+        float min = MathF.Min(r, MathF.Min(g, b));
+        float delta = max - min;
+
+        float hue;
+        if (delta <= 0f)
+            hue = 0f;
+        else if (max == r)
+            hue = 60f * ((((g - b) / delta) % 6f + 6f) % 6f);
+        else if (max == g)
+            hue = 60f * (((b - r) / delta) + 2f);
+        else
+            hue = 60f * (((r - g) / delta) + 4f);
+
+        float saturation = max <= 0f ? 0f : delta / max;
+        return (hue, saturation, max);
+    }
+
+    /// <summary>A darker shade, moving the red, green and blue toward black by <paramref name="amount"/> (0 to 1). Alpha is kept.</summary>
+    public Color Darken(float amount)
+    {
+        amount = Math.Clamp(amount, 0f, 1f);
+        byte Scale(byte c) => (byte)(c * (1f - amount) + 0.5f);
+        return FromArgb(A, Scale(R), Scale(G), Scale(B));
+    }
+
+    /// <summary>A lighter tint, moving the red, green and blue toward white by <paramref name="amount"/> (0 to 1). Alpha is kept.</summary>
+    public Color Lighten(float amount)
+    {
+        amount = Math.Clamp(amount, 0f, 1f);
+        byte Scale(byte c) => (byte)(c + (255 - c) * amount + 0.5f);
+        return FromArgb(A, Scale(R), Scale(G), Scale(B));
+    }
+
     /// <summary>Implicitly reads the packed value.</summary>
     public static implicit operator uint(Color color) => color.Value;
 }

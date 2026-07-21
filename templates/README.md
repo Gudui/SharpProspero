@@ -6,16 +6,22 @@ in [docs/templates.md](../docs/templates.md).
 | Template | Creates |
 |---|---|
 | `prospero-app` | A frame-loop application that draws to the screen and reads the controller. |
+| `prospero-game` | A real-time game paced by the frame time: a paddle and a ball, a score, and a frame-rate overlay. |
 | `prospero-ui` | An application built from the interface toolkit (labels, buttons, sliders, pickers). |
 | `prospero-tool` | A toolbox application that shows a checksum, the console name and the network status. |
+| `prospero-media` | A media player that plays a bundled file, drawing the video and pacing to the audio. |
+| `prospero-server` | A network service that serves an HTTP control panel and a JSON status endpoint. |
 | `prospero-prx` | A relocatable library module (`.prx`) that exports functions for another module. |
 
 ## Install
 
 ```
 dotnet new install <sdk>/templates/prospero-app
+dotnet new install <sdk>/templates/prospero-game
 dotnet new install <sdk>/templates/prospero-ui
 dotnet new install <sdk>/templates/prospero-tool
+dotnet new install <sdk>/templates/prospero-media
+dotnet new install <sdk>/templates/prospero-server
 dotnet new install <sdk>/templates/prospero-prx
 ```
 
@@ -24,10 +30,13 @@ Replace `<sdk>` with the SharpProspero folder.
 ## Create a project
 
 ```
-dotnet new prospero-app  -n MyGame    --title "My Game"    --titleId PPSA99099
-dotnet new prospero-ui   -n MyMenu     --title "My Menu"    --titleId PPSA99098
-dotnet new prospero-tool -n MyToolbox  --title "My Toolbox" --titleId PPSA99097
-dotnet new prospero-prx  -n MyLibrary
+dotnet new prospero-app    -n MyApp      --title "My App"     --titleId PPSA99099
+dotnet new prospero-game   -n MyGame     --title "My Game"    --titleId PPSA99098
+dotnet new prospero-ui     -n MyMenu     --title "My Menu"    --titleId PPSA99097
+dotnet new prospero-tool   -n MyToolbox  --title "My Toolbox" --titleId PPSA99096
+dotnet new prospero-media  -n MyPlayer   --title "My Player"  --titleId PPSA99095
+dotnet new prospero-server -n MyPanel    --title "My Panel"   --titleId PPSA99094
+dotnet new prospero-prx    -n MyLibrary
 ```
 
 Options for the application templates:

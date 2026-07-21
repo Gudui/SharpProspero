@@ -126,7 +126,7 @@ A `*.pkg` appears under the sample's `out` folder.
 The same pipeline produces both; the project's `ProsperoModuleKind` decides which:
 
 - **Application** (the default) → an `eboot.bin` the console launches. Templates: `prospero-app`,
-  `prospero-ui`, `prospero-tool`.
+  `prospero-game`, `prospero-ui`, `prospero-tool`, `prospero-media`, `prospero-server`.
 - **Library** → a relocatable `.prx` another module loads at run time. Template: `prospero-prx`. Set
   `<ProsperoModuleKind>Prx</ProsperoModuleKind>`; the module is named `<AssemblyName>.prx`.
 

@@ -51,6 +51,7 @@ nothing. Operations clip to the surface bounds.
 | `DrawGlyph(c, x, y, scale, color)` | Draw one glyph scaled by an integer factor. |
 | `DrawText(text, x, y, scale, color)` | Draw a string left to right. |
 | `DrawTextCentered(text, y, scale, color)` | Draw a string centered horizontally. |
+| `DrawTextOutlined(text, x, y, scale, fill, outline)` | Draw a string with a one-pixel outline, so it stays readable over a photo or a video frame. |
 | `MeasureText(text, scale)` | Width in pixels the string occupies. |
 
 Fills use a single-pass span write per row, so `Clear` and `FillRect` are as fast as the memory
@@ -64,6 +65,7 @@ allows. When a framebuffer's row pitch is wider than the drawn width, construct 
 | `Region(x, y, w, h)` | A view over a sub-rectangle; drawing on it clips to the region, so it acts as a clip rectangle or a panel to draw inside. |
 | `FillVerticalGradient(x, y, w, h, top, bottom)` | Fill a rectangle with a top-to-bottom color gradient. |
 | `FillHorizontalGradient(x, y, w, h, left, right)` | Fill a rectangle with a left-to-right color gradient. |
+| `FillRadialGradient(x, y, w, h, center, edge)` | Fill a rectangle with a gradient from the middle out to the corners, for a soft background or a vignette. |
 | `FillRoundedRect(x, y, w, h, radius, color)` | Fill a rectangle with rounded corners. |
 | `DrawRoundedRect(x, y, w, h, radius, color)` | Draw a rounded-rectangle outline. |
 | `DrawLine(x0, y0, x1, y1, color, thickness)` | Draw a line of a given pixel thickness. |
@@ -71,11 +73,81 @@ allows. When a framebuffer's row pitch is wider than the drawn width, construct 
 | `FillPolygon(points, color)` | Fill a simple polygon (even-odd rule). |
 | `BlitScaled(source, x, y, w, h)` | Copy a surface scaled to a destination rectangle. |
 | `BlitScaledBlended(source, x, y, w, h)` | Scaled copy, blending by source alpha. |
+| `BlitScaledSmooth(source, x, y, w, h)` | Scaled copy with bilinear sampling, so an enlarged photo stays smooth rather than blocky. |
 | `BlitRotated(source, centerX, centerY, angleRadians)` | Copy a surface rotated about its center, blended. |
+| `DrawRectThick(x, y, w, h, thickness, color)` | Draw a rectangle outline of a given thickness, drawn inside the rectangle. |
+| `FillEllipse(cx, cy, radiusX, radiusY, color)` | Fill an ellipse. |
+| `DrawEllipse(cx, cy, radiusX, radiusY, color)` | Draw a one-pixel ellipse outline. |
+| `DrawTriangle(x0, y0, x1, y1, x2, y2, color)` | Draw a triangle outline. |
+| `DrawPolyline(points, color, thickness)` | Draw a run of connected line segments; the run is open, so the ends are not joined. |
+| `FillArcRing(cx, cy, innerRadius, outerRadius, start, sweep, color)` | Fill a slice of a ring, measured clockwise from the positive x-axis; a full turn is a complete ring. |
+| `FillPie(cx, cy, radius, start, sweep, color)` | Fill a pie slice (a sector of a disc). |
+| `DrawArc(cx, cy, radius, start, sweep, color)` | Draw a one-pixel arc; a full turn is a complete circle. |
+| `DrawCircleThick(cx, cy, radius, thickness, color)` | Draw a ring: a circle outline of a given thickness, drawn inwards. |
+| `FillRectBlended(x, y, w, h, color)` | Fill a rectangle, blending by the color's alpha (a translucent panel); opaque colors fill directly. |
+| `FillCircleBlended(cx, cy, radius, color)` | Fill a disc, blending by the color's alpha (a soft dot or glow). |
+| `BlitNineSlice(source, x, y, w, h, border)` | Draw a panel image at any size: corners keep their size, edges stretch along their run, the middle stretches both ways. |
+
+### Text that fits
+
+`TextLayout` fits text to a width: breaking a paragraph into lines, shortening a label that will not
+fit, and drawing either one aligned. It measures through an `ITextFont`, so the same layout serves the
+built-in text (`BitmapTextFont`) and a loaded outline font (`TrueTypeFont` implements it too).
+
+| Call | What it does |
+|---|---|
+| `Wrap(font, text, maxWidth)` | Break into lines no wider than the width, splitting at spaces. A line break starts a new line; a word too wide is split rather than overflowing. |
+| `MeasureWrapped(font, text, maxWidth)` | The widest line and the total height of the wrapped block. |
+| `DrawWrapped(surface, font, text, x, y, width, color, alignment)` | Draw the wrapped block; returns the height it used. |
+| `DrawAligned(surface, font, text, x, y, width, color, alignment)` | Draw one line placed left, centred or right within a width. |
+| `Truncate(font, text, maxWidth, ellipsis)` | Shorten to fit, ending with the marker when anything was dropped. |
+
+```csharp
+ITextFont font = new BitmapTextFont(2);
+int used = TextLayout.DrawWrapped(surface, font, description, 40, 100, 600, Color.White);
+string name = TextLayout.Truncate(font, longFileName, columnWidth);
+```
 
 `Region` composes: build a themed panel by taking a sub-region and drawing into it with its own local
 coordinates. Gradients and rounded rectangles give buttons and panels a finished look without an image,
 and the scaled and rotated copies place thumbnails and sprites.
+
+### Sprite sheets
+
+`SpriteSheet` reads one image as a grid of equal-sized frames — a character's animation, a set of
+icons, a tile set — and draws any frame as a sprite. It reads frames as views onto the shared image
+and copies nothing, so it allocates nothing of its own. Pair it with a `Tween` or a frame counter to
+animate.
+
+```csharp
+using var strip = PngImage.Decode(File.ReadAllBytes("/app0/run.png"));
+var sheet = new SpriteSheet(strip.AsSurface(), frameWidth: 48, frameHeight: 48);
+
+int frame = (int)(time * 12) % sheet.Count;     // 12 frames a second
+sheet.Draw(display.BackBuffer, frame, x, y);    // blended, so a transparent background composites
+```
+
+| Member | What it is |
+|---|---|
+| `Columns`, `Rows`, `Count` | How the frames are arranged and how many there are. |
+| `Frame(index)` | A view onto one frame (numbered left to right, then down), to draw however you like. |
+| `Draw(dest, index, x, y)` | Draw a frame as a sprite, blended by alpha. |
+| `DrawScaled(dest, index, x, y, w, h)` | Draw a frame scaled into a rectangle. |
+
+`AnimatedSprite` plays a run of a sheet's frames over time, so you do not track the frame yourself.
+Point it at all of a sheet or a range within one — several animations can share a sheet — set the rate,
+advance it each frame, and draw it.
+
+```csharp
+var run = new AnimatedSprite(sheet, framesPerSecond: 12, firstFrame: 0, frameCount: 8);
+// each frame:
+run.Update((float)context.DeltaSeconds);
+run.Draw(context.Surface, x, y);
+```
+
+The mode is `Loop` (the default), `Once` (stops on the last frame and reports `IsComplete`) or
+`PingPong` (runs out and back). `CurrentFrame` is the sheet frame showing, and `Reset` returns to the
+start.
 
 ### Image effects
 
@@ -129,6 +201,82 @@ display.BackBuffer.Blit(picture.AsSurface(), 0, 0);
 BmpEncoder.Save(display.BackBuffer, "/data/shot.bmp");     // export a 24-bit BMP
 ```
 
+`TgaImage` and `TgaEncoder` read and write TGA, a simple lossless format editors and asset pipelines
+export. Unlike BMP it keeps a proper alpha channel and reads run-length-compressed files, with no module.
+
+```csharp
+using var texture = TgaImage.Load("/app0/texture.tga");     // 24- or 32-bit, plain or RLE
+display.BackBuffer.BlitBlended(texture.AsSurface(), x, y);
+
+TgaEncoder.Save(display.BackBuffer, "/data/shot.tga");      // export 32-bit BGRA
+```
+
+### Off-screen buffers
+
+`PixelBuffer` is a drawing surface of its own, off the screen: its pixels live in memory it owns, in the
+same layout as the display. Draw into it as you would the back buffer, then blit it onto the screen. Use
+it to build an image once and draw it many times (a pre-rendered sprite, a cached panel), to compose a
+picture before showing it, or to build something to encode to PNG or JPEG. It starts fully transparent,
+so a frame drawn onto it with alpha composites cleanly.
+
+```csharp
+using var cache = new PixelBuffer(256, 64);
+Surface s = cache.AsSurface();
+s.FillRoundedRect(0, 0, 256, 64, 12, theme.Panel);
+s.DrawText("Ready", 16, 20, 3, Color.White);
+
+// later, every frame — no redrawing the panel:
+display.BackBuffer.BlitBlended(cache.AsSurface(), x, y);
+```
+
+Its `AsSurface` view is valid only while the buffer is alive, so dispose it when you are done with it.
+
+## A 2D scene: camera, tiles and particles
+
+For a scrolling game or map, three pieces work together. `Camera2D` is a movable, zoomable view: game
+logic stays in world coordinates and the camera converts them to the screen. `TileMap` is a grid of
+tiles drawn from a sprite sheet through the camera, drawing only what is in view. `ParticleSystem` throws
+and animates many small particles for an effect.
+
+```csharp
+var camera = new Camera2D(surface.Width, surface.Height);
+var level = TileMap.FromCsv(PackageFile.ReadAllText("/app0/level.csv"), tileWidth: 32, tileHeight: 32);
+var sparks = new ParticleSystem(512) { Gravity = new Vector2(0, 500) };
+
+// each frame:
+camera.MoveTo(player.Position);
+camera.ClampToBounds(level.WorldBounds);       // do not scroll past the edges of the map
+
+surface.Clear(sky);
+level.Draw(surface, tileSheet, camera);
+sparks.Update(dt);
+sparks.Draw(surface, camera);
+
+// collision against the level, and an effect on a hit:
+bool blocked = level.Collides(player.NextBounds, tile => tile >= 16);   // tiles 16+ are solid
+if (hit) sparks.Emit(hit.Position, 40, EmitParams.Burst(Color.FromRgb(255, 200, 80)));
+```
+
+`Camera2D` gives `WorldToScreen`/`ScreenToWorld`, `VisibleWorldBounds` (for culling), `Move`/`MoveTo`
+and `ClampToBounds`. `TileMap` stores a frame index per cell (or `TileMap.Empty`), with `GetTile`,
+`SetTile`, `TileBounds`, `WorldToTile`, `Collides` and `FromCsv`. `ParticleSystem` keeps a fixed pool,
+so it allocates nothing after it is created; shape a burst with `EmitParams` or start from
+`EmitParams.Burst`.
+
+`GridPathfinder` in `SharpProspero.Ai` finds the shortest path across a grid with A*, for an enemy that
+routes around walls or a cursor that steps to a target. It works with any grid through a walkable test,
+so it reads a `TileMap` directly. Reuse one instance — it keeps its working buffers.
+
+```csharp
+var finder = new GridPathfinder(level.Columns, level.Rows) { AllowDiagonal = true };
+var path = finder.FindPath((enemyCol, enemyRow), (playerCol, playerRow),
+    (col, row) => level.GetTile(col, row) < 16);   // tiles below 16 are floor
+```
+
+The path runs from the start cell to the goal cell, or is empty when there is no way through. With
+`AllowDiagonal`, a diagonal step is taken only when both cells beside it are open, so a path never cuts
+through a wall corner.
+
 ## Color
 
 `Color` packs a pixel for the display format. In memory the bytes run blue, green, red, alpha. The
@@ -142,9 +290,25 @@ Color rainbow = Color.FromHsv(context.TotalSeconds * 60 % 360, 1f, 1f);   // hue
 ```
 
 `Lerp` blends component-wise with the factor clamped to 0-1. `FromHsv` builds an opaque color from a
-hue in degrees (wrapped) and a saturation and value in 0-1. `WithAlpha` keeps the red, green and blue
-and sets a new alpha, which `BlitBlended` then composites. `Black`, `White`, `Red`, `Green`, `Blue`
-and `Transparent` are ready to use.
+hue in degrees (wrapped) and a saturation and value in 0-1, and `ToHsv` reads them back for a color
+picker or a hue shift. `Darken` and `Lighten` move a color toward black or white while keeping its
+alpha, for a pressed or hovered shade. `WithAlpha` keeps the red, green and blue and sets a new alpha,
+which `BlitBlended` then composites. `Black`, `White`, `Red`, `Green`, `Blue` and `Transparent` are
+ready to use.
+
+Where the surface's gradient fills blend two colors, a `Gradient` holds as many stops as you like and
+returns the color at any point along it — a heat ramp, a UI theme, a spectrum. A `Palette` is a fixed
+set of colors addressed by index, which a gradient can fill by even sampling.
+
+```csharp
+Color hot = Gradient.Heat.Sample(load);            // 0..1 along black-red-yellow-white
+var ramp = Gradient.Rainbow.ToPalette(16);         // 16 evenly sampled colors
+Color series = ramp.Cycle(seriesIndex);            // wraps for a color-per-series scheme
+```
+
+`Gradient` sorts its stops, clamps the sample to 0-1, and blends the surrounding stops; `TwoColor` makes
+a simple start-to-end ramp. `Palette` offers an index (bounds-checked), `Cycle` (wraps any index), and
+`Sample` (maps 0-1 to the nearest entry).
 
 ## The font
 
@@ -205,6 +369,24 @@ if (HeapMonitor.ExceedsBudget(0.85))
 and the collection count, plus a `Pressure` ratio. Run `Collect` sparingly, for example after loading
 a scene rather than every frame.
 
+When a hot loop needs a steady supply of short-lived objects — scratch lists, particles, projectiles —
+an `ObjectPool<T>` reuses them instead of allocating each time, which keeps collection pressure down.
+Borrow with `Rent`, give back with `Return`; a returned object is kept up to a retained limit and dropped
+past it, so a burst does not grow the pool without bound.
+
+```csharp
+using SharpProspero.Memory;
+
+var scratch = new ObjectPool<List<int>>(() => new List<int>(), onReturn: l => l.Clear());
+List<int> work = scratch.Rent();
+// ... use work ...
+scratch.Return(work);
+```
+
+Pass `onRent` to prepare an object as it goes out and `onReturn` to reset it as it comes back, `prewarm`
+to make some up front, and `maxRetained` to cap how many idle objects the pool keeps. Return each borrowed
+object once.
+
 ## Timing
 
 `GameClock` is a monotonic clock in the `SharpProspero.Timing` namespace. Construct one to measure
@@ -230,6 +412,39 @@ DateTime local = SystemClock.LocalNow;
 
 Use `GameClock` to pace and measure frames and `SystemClock` for the wall-clock time; unlike the game
 clock, the system clock follows the calendar and can jump when the clock is set.
+
+For game logic there are three small timers driven by the frame's delta, not the clock: `Cooldown` (a
+gate that is ready, then cold for a set time — a weapon or an ability on a recharge), `Interval` (fires
+on a steady beat — spawn something every few seconds), and `Countdown` (a one-shot that fires once when
+it reaches zero — a delayed action or a respawn).
+
+```csharp
+var fireRate = new Cooldown(0.25f);
+var spawner = new Interval(2f);
+var respawn = new Countdown(3f);
+
+// each frame, with dt = (float)context.DeltaSeconds:
+fireRate.Advance(dt);
+if (input.WasPressed("Fire") && fireRate.TryUse()) Shoot();
+
+for (int i = 0; i < spawner.Advance(dt); i++) SpawnEnemy();
+
+if (respawn.Advance(dt)) Respawn();
+```
+
+`Cooldown.Fraction` and `Countdown.Progress` give a 0..1 value for a recharge meter or a progress bar.
+
+For a simulation that must advance in equal amounts regardless of the display rate — game physics, or an
+emulated core — `FixedTimestep` turns the variable frame delta into a fixed number of steps. Feed it the
+real delta; it returns how many steps are due and leaves an `Alpha` for interpolating the render between
+the last two steps, and it clamps a slow frame so a hitch cannot trigger a catch-up burst.
+
+```csharp
+var sim = new FixedTimestep(1.0 / 60);
+int steps = sim.Advance(context.DeltaSeconds);
+for (int i = 0; i < steps; i++) Step(sim.Step);
+Draw(sim.Alpha); // 0..1 between the previous and current step
+```
 
 ## Files
 
@@ -258,8 +473,21 @@ foreach (DirectoryEntry entry in FileSystem.EnumerateDirectory("/app0/assets"))
 
 `EnumerateDirectory` returns each entry's `Name` and `Type` (`IsDirectory` and `IsFile` cover the
 common cases) and leaves out `.` and `..`. `GetFileSize`, `Exists`, `CreateDirectory`, `DeleteFile`,
-`DeleteDirectory`, `Move`, `ReadAllBytes`, `WriteAllBytes` and `WriteAllText` round it out. The
-package root `/app0` is read-only; writes need a writable mount.
+`DeleteDirectory`, `Move`, `ReadAllBytes`, `WriteAllBytes` and `WriteAllText` round it out. For whole
+trees there is `EnumerateRecursive` (every file beneath a folder), `CreateDirectoryRecursive` (a folder
+and any missing parents), `CopyFile` and `CopyDirectory`, and `ReadAllText` for a text file. The package
+root `/app0` is read-only; writes need a writable mount.
+
+`PathUtil` works with paths as text — no files touched. `Combine` joins parts with a single separator,
+and `GetFileName`, `GetFileNameWithoutExtension`, `GetExtension`, `GetDirectoryName`, `ChangeExtension`,
+`HasExtension` and `IsAbsolute` pull a path apart. Paths use a forward slash, and an absolute path starts
+with one.
+
+```csharp
+string name = PathUtil.GetFileName(path);            // "level.csv"
+string save = PathUtil.Combine("/data/saves", name); // "/data/saves/level.csv"
+string png = PathUtil.ChangeExtension(save, "png");  // "/data/saves/level.png"
+```
 
 ## Random
 
@@ -275,8 +503,66 @@ var unpredictable = GameRandom.FromEntropy();       // seeded from the system
 ulong token = HardwareEntropy.NextUInt64();         // straight from the entropy source
 ```
 
-`GameRandom` gives `NextUInt64`, `NextUInt32`, `NextDouble` (0 to 1) and `Next(min, max)` (max
-exclusive). It is for gameplay, not for keys or tokens; take those from `HardwareEntropy`.
+`GameRandom` gives `NextUInt64`, `NextUInt32`, `NextDouble` (0 to 1), `Next(min, max)` (max exclusive),
+`NextSingle` (with an optional range), `NextBool`, `Pick` (one item from a set) and `Shuffle` (reorders a
+span in place). It is for gameplay, not for keys or tokens; take those from `HardwareEntropy`.
+
+## Vectors
+
+`Vector2` in `SharpProspero.Numerics` is a small value type for a position, a velocity or a direction,
+so movement and steering read as arithmetic rather than a pair of loose floats.
+
+```csharp
+var position = new Vector2(100f, 60f);
+var velocity = Vector2.UnitX * 240f;                 // 240 px/sec to the right
+position += velocity * (float)context.DeltaSeconds;  // advance by the frame time
+float away = Vector2.Distance(position, target);
+Vector2 toward = (target - position).Normalized();
+```
+
+It has the usual operators, `Length`/`LengthSquared`, `Normalized`, `Dot`, `Distance`, `Lerp` and
+`Rotate`, and the `Zero`, `One`, `UnitX` and `UnitY` constants.
+
+`RectF` is an axis-aligned rectangle for a bounding box or a hit area. It answers whether it holds a
+point or another rectangle, where two rectangles overlap, and pulls a point to the nearest spot inside;
+`Collision` adds the circle tests game code reaches for.
+
+```csharp
+var button = new RectF(x, y, w, h);
+if (button.Contains(cursor)) { }                       // point in rectangle
+
+var ball = new Vector2(bx, by);
+if (Collision.CircleOverlapsRect(ball, radius, paddle)) Bounce();
+if (Collision.CirclesOverlap(a, ra, b, rb)) Hit();
+```
+
+`RectF` has `Contains`, `Intersects`, `Intersection`, `Union`, `Inflate`, `Offset` and `Clamp`, plus
+`FromEdges` and `FromCenter`; edges follow the half-open rule, so rectangles that share an edge do not
+both claim it.
+
+`MathUtil` holds the small floating-point helpers that go with them: `Lerp` and `LerpClamped`,
+`InverseLerp` and `Remap` (mapping a value from one range to another), `SmoothStep`, `MoveTowards`,
+`Clamp`/`Clamp01`, `Approximately`, `Repeat` and `PingPong`, and angle helpers (`DegreesToRadians`,
+`RadiansToDegrees`, `WrapAngle`).
+
+When a scene holds many things, testing every pair is wasteful. `Quadtree<T>` indexes items by rectangle
+and answers "what is in this area" by visiting only the parts of the world near the query — collision
+broad-phase, off-screen culling, or picking under the cursor.
+
+```csharp
+var tree = new Quadtree<Entity>(worldBounds);
+foreach (Entity e in entities) tree.Insert(e, e.Bounds); // rebuild each frame for moving items
+foreach (Entity near in tree.Query(camera.VisibleWorldBounds)) near.Draw(surface);
+```
+
+For curved motion, `Spline` in `SharpProspero.Animation` evaluates quadratic and cubic Bezier curves and
+a Catmull-Rom spline that passes through a list of waypoints — a camera path, a projectile arc, a
+Ken-Burns pan. Pass a 0..1 position along the curve.
+
+```csharp
+Vector2 p = Spline.CatmullRom(waypoints, t);          // through every waypoint
+Vector2 q = Spline.Bezier(a, controlA, controlB, b, t); // cubic Bezier
+```
 
 ## Playing media
 
@@ -304,6 +590,83 @@ destination rectangle, so a movie draws full-screen or in a window.
 
 The player decodes on its own threads and calls back for every allocation, which the SDK answers from
 the unmanaged heap. It plays a path itself, so no file callbacks are needed.
+
+## Decoding compressed audio
+
+Where `MediaPlayer` plays a whole file, `AudioDecoder` turns compressed audio into samples so an
+application controls playback itself — a music player, a sound bank, or anything that needs the samples
+rather than the picture. It reads MPEG-1/2 Audio Layer III and MPEG-4 Advanced Audio Coding.
+
+Hand it a run of bytes and it finds the frame, reports how many bytes it used, and writes the sound.
+Advance by the consumed count and call again:
+
+```csharp
+SystemModule.Load(SystemModuleId.AudioDec);
+
+using var decoder = AudioDecoder.CreateMp3();
+using var device = AudioOutDevice.OpenStereo();
+
+byte[] pcm = new byte[decoder.SuggestedOutputSize];
+int read = 0;
+while (read < file.Length)
+{
+    AudioDecodeResult step = decoder.Decode(file.AsSpan(read), pcm);
+    if (step.BytesConsumed == 0)
+        break;                                   // needs more input than is left
+    read += step.BytesConsumed;
+    device.Output(MemoryMarshal.Cast<byte, short>(pcm.AsSpan(0, step.BytesProduced)));
+}
+```
+
+| Call | What it does |
+|---|---|
+| `CreateMp3(wordSize)` | A decoder for Layer III, writing signed 16-bit samples by default. |
+| `CreateAac(maxChannels, selfDescribingFrames, highEfficiency, wordSize)` | A decoder for Advanced Audio Coding; the default suits a file whose frames carry their own header. |
+| `Decode(input, output)` | Decode one frame; returns the bytes consumed and produced. |
+| `Reset()` | Drop what the decoder carried between frames, after seeking. |
+| `SuggestedOutputSize` | A comfortable output buffer size for one call. |
+| `SampleRate`, `ChannelCount` | What the decoder reported, once a frame has been read. |
+
+Because the decoder finds the frame itself, no frame splitter is needed — feed it the file and follow
+the consumed count. A consumed count of zero means the remaining input holds no complete frame.
+
+## Decoding compressed video
+
+`VideoDecoder` decodes H.264 a unit at a time and hands back each picture. Use it for a stream an
+application receives itself, or anywhere the frames are wanted rather than playback (`MediaPlayer`
+covers playing a file).
+
+The service provides no memory of its own, so the decoder reserves every region it needs — each of the
+kind the service expects — and offers a picture buffer per call:
+
+```csharp
+SystemModule.Load(SystemModuleId.AvPlayer);   // brings in the video decoder
+
+using var decoder = VideoDecoder.CreateAvc();          // 1080p by default
+using DirectMemoryRegion frame = decoder.AllocateFrameBuffer();
+
+foreach (ReadOnlyMemory<byte> unit in units)
+{
+    DecodedPicture? picture = decoder.Decode(unit.Span, frame);
+    if (picture is { } p)
+        Present(p.Width, p.Height, p.PitchInBytes, p.AsSpan());
+}
+
+while (decoder.Flush(frame) is { } tail)                // pictures still held back
+    Present(tail.Width, tail.Height, tail.PitchInBytes, tail.AsSpan());
+```
+
+| Call | What it does |
+|---|---|
+| `CreateAvc(maxWidth, maxHeight, profile, maxLevel)` | A decoder sized for the largest picture it must handle. |
+| `AllocateFrameBuffer()` | Reserve a picture buffer of the size and alignment this decoder asks for. |
+| `Decode(unit, frameBuffer, attachedData)` | Decode one unit; null while the decoder is still filling. |
+| `Flush(frameBuffer)` | Push out a picture still held back; call until it returns null. |
+| `Reset()` | Drop what the decoder carried, after seeking. |
+
+Keep one buffer per picture in flight. `DecodedPicture` reports the size and row stride and `AsSpan()`
+gives its bytes; the picture is written into the buffer that was offered for it, so hold that buffer
+until the picture has been used.
 
 `MediaPlayer.OpenUrl` plays a network stream instead of a file — pass an `http://` or `https://`
 address and the player opens the stream over its own network source. The console needs a working
@@ -372,6 +735,25 @@ if (m.IsButtonDown(MouseButton.Primary)) { }
 
 The keyboard reports the USB usage codes of the keys held and the modifier state; the mouse reports
 the movement since the last read, the buttons, and the wheel.
+
+A key code is a position on the keyboard, not a letter. `KeycodeConverter` turns one into the character
+it produces, applying the layout and the held modifiers, so a build can read typed text from a USB
+keyboard without the on-screen keyboard. It resolves from a system library at run time, so open it where
+the module is available.
+
+```csharp
+using KeycodeConverter? converter = KeycodeConverter.TryOpen();   // null without the library
+if (converter is not null)
+{
+    KeyboardLayout layout = converter.GetLayout();   // the user's chosen layout
+    char c = converter.ToCharacter(keycode, keys.Modifiers, layout);
+    if (c != '\0')
+        typed += c;
+}
+```
+
+`GetLayout` reads the user's layout so a build honors it; `ToCharacter` returns the null character for a
+key that makes none, such as a modifier or a function key.
 
 ## Network information
 
@@ -542,6 +924,49 @@ while (running)
 `OpenStereo` takes a grain (samples per block, 256 to 2048) and a sample rate. `SetVolume` sets both
 channels from 0 to `AudioOut.Volume0Db`. Disposing closes the port.
 
+`ToneGenerator` fills those blocks with a simple tone or effect — a beep, an alert, a coin, a hit —
+with no audio file. Set the wave, the pitch and the loudness; the phase carries across blocks, so a held
+tone is continuous.
+
+```csharp
+using var audio = AudioOutDevice.OpenStereo();
+var tone = new ToneGenerator { Waveform = Waveform.Square, Frequency = 880, Amplitude = 0.3f };
+short[] block = new short[audio.SamplesPerBlock];
+for (int i = 0; i < beepBlocks; i++)
+{
+    tone.Fill(block);
+    audio.Output(block);
+}
+```
+
+The waves are `Sine`, `Square`, `Triangle`, `Sawtooth` and `Noise`. `Render(seconds)` returns a whole
+short effect as one buffer instead of filling block by block, and `RenderClip(seconds)` returns it as a
+`PcmAudio` ready for the mixer below.
+
+`AudioMixer` plays several sounds at once — music under a run of effects, effects overlapping. Start a
+clip with `Play`, then fill each block from `Mix` instead of the port directly. A mono clip is spread to
+both channels and a clip recorded at another rate is retuned to the mixer's, so a sound from anywhere —
+a WAV, a `ToneGenerator` effect — plays at the right pitch; finished sounds drop out on their own.
+
+```csharp
+using var audio = AudioOutDevice.OpenStereo();
+var mixer = new AudioMixer();
+mixer.Play(WavAudio.Load("/app0/music.wav"), volume: 0.6f, loop: true);
+var coin = new ToneGenerator { Waveform = Waveform.Square, Frequency = 988 }.RenderClip(0.08);
+
+short[] block = new short[audio.SamplesPerBlock];
+while (running)
+{
+    mixer.Mix(block);      // overwrites the block with the mix of every playing sound
+    audio.Output(block);
+    if (collected)
+        mixer.Play(coin);  // layered over the music
+}
+```
+
+`MasterVolume` scales everything, `MaxVoices` caps how many play at once (the oldest drops to make room),
+and `StopAll` clears them.
+
 ## Controller output
 
 `GamePad` drives the controller's motors and light bar alongside reading input:
@@ -572,6 +997,29 @@ if (pad.Touch1.IsActive)
 each a `System.Numerics` value. `Touch1` and `Touch2` are the two touch-pad contacts, each with a
 position and a tracking id, and `TouchCount` reports how many are live. `IsConnected` and
 `TimestampMicroseconds` describe the sample itself.
+
+## Mapping buttons to actions
+
+`InputMap` names the controls, so game code asks whether the player jumped rather than whether cross is
+pressed — and the buttons stay in one place, ready to rebind. Bind an action to a button (or a chord of
+buttons, or several alternatives), feed it the controller sample each frame, then ask whether the action
+was pressed, is held, or was released.
+
+```csharp
+var input = new InputMap()
+    .Bind("Jump", ScePadButton.Cross)
+    .Bind("Fire", ScePadButton.R2)
+    .Bind("Special", ScePadButton.L1 | ScePadButton.R1)   // a chord: both held
+    .Bind("Confirm", ScePadButton.Cross).Bind("Confirm", ScePadButton.Options); // alternatives
+
+// each frame:
+input.Update(context.Input);
+if (input.WasPressed("Jump")) Jump();
+if (input.IsHeld("Fire")) Fire();
+```
+
+`WasPressed` and `WasReleased` count the edge once; `IsHeld` is true for as long as the action is down.
+`InputMap` keeps the previous sample itself, so it only needs this frame's.
 
 ## System modules
 

@@ -272,4 +272,22 @@ public readonly unsafe partial struct Surface(uint* pixels, int width, int heigh
         int x = (Width - MeasureText(text, scale)) / 2;
         DrawText(text, x, y, scale, color);
     }
+
+    /// <summary>
+    /// Draws <paramref name="text"/> in <paramref name="fill"/> over a one-pixel outline in
+    /// <paramref name="outline"/>, so it stays readable over a photo, a video frame, or any busy
+    /// background. It costs several passes, so use it for overlay text rather than a whole screen of it.
+    /// </summary>
+    public void DrawTextOutlined(ReadOnlySpan<char> text, int x, int y, int scale, Color fill, Color outline)
+    {
+        for (int dy = -1; dy <= 1; dy++)
+        {
+            for (int dx = -1; dx <= 1; dx++)
+            {
+                if (dx != 0 || dy != 0)
+                    DrawText(text, x + dx, y + dy, scale, outline);
+            }
+        }
+        DrawText(text, x, y, scale, fill);
+    }
 }

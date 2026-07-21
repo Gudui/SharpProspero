@@ -113,6 +113,26 @@ answered and its connection closed, which keeps it simple and robust. To dedicat
 instead of polling, call `Run(handler, keepRunning)`. Bind to the loopback address only, with
 `Start(port, loopbackOnly: true)`, for a server just this console reaches.
 
+## URL encoding and query strings
+
+`WebEncoding` in `SharpProspero.Platform` handles the URL text a client builds and a server reads:
+percent-encode a value so it is safe in a URL, decode one back, build a query string from name/value
+pairs, and parse a query string or an `application/x-www-form-urlencoded` request body into pairs.
+
+```csharp
+using SharpProspero.Platform;
+
+string url = "https://host/search?" + WebEncoding.BuildQuery([new("q", "hello world")]);
+
+// In an HTTP handler, read the posted form or the query:
+foreach ((string name, string value) in WebEncoding.ParseQuery(request.Body))
+    Apply(name, value);
+```
+
+`PercentEncode` keeps the unreserved characters and escapes the rest (a space becomes `%20`, or `+` in
+form style); `PercentDecode` reverses it. Text is handled as UTF-8, and a malformed escape raises a
+`FormatException`.
+
 ## UDP
 
 Datagrams need no connection. Bind to receive, send to an explicit destination.

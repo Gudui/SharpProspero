@@ -1,6 +1,8 @@
 // SharpProspero - a C# SDK for on-device application modules.
 // Copyright (C) 2026 SvenGDK
 
+using System;
+
 namespace SharpProspero.Numerics;
 
 /// <summary>
@@ -47,6 +49,35 @@ public sealed class GameRandom(ulong seed)
 
     /// <summary>An integer from 0 (inclusive) to <paramref name="max"/> (exclusive).</summary>
     public int Next(int max) => Next(0, max);
+
+    /// <summary>A value in the range 0 (inclusive) to 1 (exclusive).</summary>
+    public float NextSingle() => (NextUInt64() >> 40) * (1.0f / (1u << 24));
+
+    /// <summary>A value from <paramref name="min"/> (inclusive) to <paramref name="max"/> (exclusive).</summary>
+    public float NextSingle(float min, float max) => min + ((max - min) * NextSingle());
+
+    /// <summary>True with the given <paramref name="probability"/> (0 to 1); a coin flip by default.</summary>
+    public bool NextBool(double probability = 0.5) => NextDouble() < probability;
+
+    /// <summary>One item chosen at random from <paramref name="items"/>.</summary>
+    /// <exception cref="ArgumentException"><paramref name="items"/> is empty.</exception>
+    public T Pick<T>(ReadOnlySpan<T> items)
+    {
+        if (items.IsEmpty)
+            throw new ArgumentException("Cannot pick from an empty set.", nameof(items));
+        return items[Next(items.Length)];
+    }
+
+    /// <summary>Shuffles <paramref name="items"/> in place, so each order is equally likely.</summary>
+    public void Shuffle<T>(Span<T> items)
+    {
+        // Fisher-Yates: swap each item with one at or before it.
+        for (int i = items.Length - 1; i > 0; i--)
+        {
+            int j = Next(i + 1);
+            (items[i], items[j]) = (items[j], items[i]);
+        }
+    }
 
     // SplitMix64 mixes a counter into a well-distributed 64-bit value.
     private static ulong SplitMix(ref ulong x)

@@ -55,6 +55,8 @@ public static class StubCatalog
         new Entry("libSceJpegDec", JpegDec),
         new Entry("libSceJpegEnc", JpegEnc),
         new Entry("libSceAudioIn", AudioIn),
+        new Entry("libSceAudiodec", Audiodec),
+        new Entry("libSceVideodec2", Videodec2),
         new Entry("libSceRtc", Rtc),
         new Entry("libSceRandom", Random),
         new Entry("libSceZlib", Zlib),
@@ -371,6 +373,29 @@ public static class StubCatalog
         "sceAudioInInput",
         "sceAudioInGetSilentState",
         "sceAudioInClose",
+    ];
+
+    private static readonly string[] Audiodec =
+    [
+        "sceAudiodecInitLibrary",
+        "sceAudiodecTermLibrary",
+        "sceAudiodecCreateDecoder",
+        "sceAudiodecDeleteDecoder",
+        "sceAudiodecDecode",
+        "sceAudiodecClearContext",
+    ];
+
+    private static readonly string[] Videodec2 =
+    [
+        "sceVideodec2QueryComputeMemoryInfo",
+        "sceVideodec2AllocateComputeQueue",
+        "sceVideodec2ReleaseComputeQueue",
+        "sceVideodec2QueryDecoderMemoryInfo",
+        "sceVideodec2CreateDecoder",
+        "sceVideodec2DeleteDecoder",
+        "sceVideodec2Decode",
+        "sceVideodec2Flush",
+        "sceVideodec2Reset",
     ];
 
     private static readonly string[] Rtc =

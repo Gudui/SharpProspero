@@ -82,6 +82,8 @@
     <DirectPInvoke Include="libSceUserService" />
     <DirectPInvoke Include="libSceSystemService" />
     <DirectPInvoke Include="libSceAudioOut" />
+    <DirectPInvoke Include="libSceAudiodec" />
+    <DirectPInvoke Include="libSceVideodec2" />
     <DirectPInvoke Include="libSceSysmodule" />
     <DirectPInvoke Include="libScePngDec" />
     <DirectPInvoke Include="libScePngEnc" />

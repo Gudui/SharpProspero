@@ -6,6 +6,7 @@ using SharpProspero.Input;
 using SharpProspero.Interop;
 using SharpProspero.Interop.SystemService;
 using SharpProspero.Interop.UserService;
+using SharpProspero.Threading;
 using System;
 using System.Diagnostics;
 
@@ -32,6 +33,12 @@ public abstract class ProsperoApp(AppConfig? config = null) : IDisposable
 
     /// <summary>The controller, or null when none was opened.</summary>
     protected GamePad? GamePad => _gamePad;
+
+    /// <summary>
+    /// The hand-off point back to the frame thread, drained once per frame before <see cref="OnFrame"/>.
+    /// Post work here from a worker thread to apply a background result to the drawing state safely.
+    /// </summary>
+    protected Dispatcher Dispatcher => _context.Dispatcher;
 
     /// <summary>
     /// Opens the display and controller and runs the frame loop until an override requests exit. The
@@ -64,6 +71,9 @@ public abstract class ProsperoApp(AppConfig? config = null) : IDisposable
             _context.Surface = _display.BackBuffer;
             _context.PreviousInput = _context.Input;
             _context.Input = _gamePad?.Read() ?? GamePadState.Neutral;
+
+            // Apply anything a worker thread handed back before the frame draws.
+            _context.Dispatcher.RunPending();
 
             OnFrame(_context);
 
