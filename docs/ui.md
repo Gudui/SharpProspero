@@ -93,7 +93,9 @@ returns to the first screen.
 | `Button` | Activates on confirm and calls its action. Can be disabled. |
 | `Checkbox` | An on/off setting the user toggles with confirm. |
 | `Slider` | A value between a minimum and a maximum, adjusted with left and right. |
+| `Stepper` | A whole number in a range, adjusted with left and right; clamps at the ends and can format its value (for example "50%" or "x3"). |
 | `OptionSelector` | One choice from a fixed set, cycled with left and right (wraps at the ends). |
+| `Carousel` | A horizontal strip of items with one highlighted in the middle, moved with left and right and chosen with confirm - the shape a launcher uses. |
 | `RadioGroup` | One choice from a fixed set with every option shown at once, moved with up and down. |
 | `TextBox` | A field that raises its action on confirm, where the application opens the on-screen keyboard to edit the text. |
 | `ListView` | A vertical list the user moves through and opens with confirm; it scrolls to keep the selection in view. |

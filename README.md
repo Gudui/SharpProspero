@@ -16,7 +16,7 @@ an `eboot.bin` with no managed runtime to deploy alongside it.
   rounded rectangles, thin and thick
   lines, outlines, opaque, alpha-blended, scaled (nearest or smooth) and rotated surface copies, and
   sub-region clipping; in-place image effects (grayscale, invert,
-  brightness, contrast, tint, flip and blur); PNG, JPEG, BMP and TGA image decoding, PNG, JPEG, BMP and
+  brightness, contrast, tint, flip and blur); PNG, JPEG, BMP, TGA and animated GIF image decoding, PNG, JPEG, BMP and
   TGA encoding for screenshots; off-screen buffers you own for pre-rendering and caching; ellipses, arcs,
   pies and rings, connected lines, thick outlines and nine-part panel stretching; an 8x8 bitmap
   font and a scalable TrueType/OpenType font for antialiased text, with an outlined form that stays
@@ -27,6 +27,13 @@ an `eboot.bin` with no managed runtime to deploy alongside it.
   with tile-collision queries), a sprite-sheet animation player, a particle system for effects,
   A* grid pathfinding for routing around walls, a quadtree for fast range queries over a crowded scene,
   and Bezier and Catmull-Rom splines for curved motion paths.
+- **A GPU graphics layer (Agc)**: the complete flat-C command interface (192 command builders and 79
+  driver calls) under `SharpProspero.Interop.Agc`, and a managed layer over it: a `DrawCommandBuffer` that
+  records register writes, draws and synchronization; shader, format and device helpers; the present path;
+  surface layout for every tile mode (`AgcSurface`); the sixteen-register color render-target block with
+  typed field setters and a description-driven setup (`CxRenderTarget`, `AgcRenderTargetSetup`); and a
+  pixel tiler that converts an image between linear and hardware-tiled order for texture upload and
+  framebuffer read-back (`AgcTiler`). See [docs/graphics-and-memory.md](docs/graphics-and-memory.md).
 - **Text that fits**: wrap a paragraph to a width, place a line left, centred or right, measure the
   wrapped block, and shorten a label that will not fit. It measures through a font abstraction, so the
   same layout serves the built-in text and a loaded outline font.
@@ -54,7 +61,8 @@ an `eboot.bin` with no managed runtime to deploy alongside it.
   date and time, a reader for the assets bundled with the module, a filesystem layer
   that lists directories, walks and copies whole trees, and creates, moves and removes entries, path
   helpers that pull a path apart and join it back, an INI settings store for a module's own
-  configuration, a JSON reader and writer for a config file, a manifest or a reply from a service, a CSV
+  configuration, a JSON reader and writer for a config file, a manifest or a reply from a service, an XML
+  reader, writer and small document model for a config or data file, a CSV
   reader and writer for a table or an export, a tar reader for unpacking a bundle of assets, an in-memory
   data table to sort, filter and group those rows for a list or grid, a versioned save with forward
   migration, endian-aware binary buffers for reading and writing a save file, a header or a message, ring
@@ -86,6 +94,10 @@ an `eboot.bin` with no managed runtime to deploy alongside it.
   title id; list the photos and videos in the content library, export a file into it, and read a
   file's metadata; find connected USB drives and where they are mounted (mapping one on request), to
   browse them with the file APIs; and let the user pick a save through the save-data dialog.
+- **Trophies**: read a title's trophy set and the signed-in player's progress — the set title, the
+  unlocked count and completion, and each trophy's grade, name and unlock state — show the system trophy
+  list, and unlock a trophy or report an activity or statistic by posting an event through the
+  universal-data-system.
 - **Audio and input**: a stereo audio-output port that paces the caller to the audio clock; a tone and
   effect generator (sine, square, triangle, sawtooth, noise) for beeps and simple sound effects with no
   audio file; a mixer that layers several sounds at once, spreading mono to stereo and retuning a clip
@@ -97,7 +109,7 @@ an `eboot.bin` with no managed runtime to deploy alongside it.
 - **Networking**: TCP and UDP sockets for a client or a server, a poller for serving many connections
   from one thread, a small HTTP/1.1 server for a control panel or a file browser, and a name resolver,
   alongside the connection-status reader and the HTTP downloader.
-- **Integrity and capture**: file checksums and digests (SHA-256, SHA-512, SHA-1, MD5, CRC-32) and
+- **Integrity and capture**: file checksums and digests (SHA-256, SHA-512, SHA-1, MD5, CRC-32, SHA-3) and
   keyed digests (HMAC over any of them) with no module needed; screenshot and photo export of a
   drawing surface to PNG or JPEG; system capture of the whole
   composited screen to the gallery as a 2K or 4K screenshot or a video clip; live capture of the

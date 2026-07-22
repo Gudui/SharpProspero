@@ -3,6 +3,7 @@
 
 using SharpProspero.Interop;
 using SharpProspero.Interop.Kernel;
+using SharpProspero.Interop.Notification;
 using System;
 using System.Text;
 
@@ -38,5 +39,33 @@ public static unsafe class Notification
             KernelNotification.sceKernelSendNotificationRequest(
                 KernelNotification.ToastDevice, &request, KernelNotification.RequestSize, 0),
             nameof(KernelNotification.sceKernelSendNotificationRequest));
+    }
+
+    /// <summary>
+    /// Shows the persistent banner next to the PS button, through the notification service.
+    /// <paramref name="configJson"/> is the banner's JSON configuration, or an empty object when null.
+    /// Take it down with <see cref="HidePsButtonBanner"/>.
+    /// </summary>
+    /// <exception cref="ProsperoException">The banner could not be shown.</exception>
+    public static void ShowPsButtonBanner(string? configJson = null)
+    {
+        byte[] json = Encode(configJson ?? "{}");
+        fixed (byte* p = json)
+        {
+            SceResult.ThrowIfFailed(
+                SceNotification.sceNotificationShowPsButtonPersistentBanner(p),
+                nameof(SceNotification.sceNotificationShowPsButtonPersistentBanner));
+        }
+    }
+
+    /// <summary>Hides the persistent PS-button banner shown by <see cref="ShowPsButtonBanner"/>.</summary>
+    public static void HidePsButtonBanner() => SceNotification.sceNotificationHidePsButtonPersistentBanner();
+
+    private static byte[] Encode(string text)
+    {
+        int count = Encoding.UTF8.GetByteCount(text);
+        byte[] buffer = new byte[count + 1];
+        Encoding.UTF8.GetBytes(text, buffer);
+        return buffer;
     }
 }

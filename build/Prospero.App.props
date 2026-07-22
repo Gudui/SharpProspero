@@ -83,6 +83,11 @@
     <DirectPInvoke Include="libSceSystemService" />
     <DirectPInvoke Include="libSceAudioOut" />
     <DirectPInvoke Include="libSceAudiodec" />
+    <DirectPInvoke Include="libSceM4aacEnc" />
+    <DirectPInvoke Include="libSceAt9Enc" />
+    <DirectPInvoke Include="libSceNgs2" />
+    <DirectPInvoke Include="libSceDepth2" />
+    <DirectPInvoke Include="libSceMbus" />
     <DirectPInvoke Include="libSceVideodec2" />
     <DirectPInvoke Include="libSceSysmodule" />
     <DirectPInvoke Include="libScePngDec" />
@@ -115,6 +120,13 @@
     <DirectPInvoke Include="libSceMsgDialog" />
     <DirectPInvoke Include="libSceWebBrowserDialog" />
     <DirectPInvoke Include="libSceAvPlayer" />
+    <DirectPInvoke Include="libSceNpTrophy2" />
+    <DirectPInvoke Include="libSceNpUniversalDataSystem" />
+    <DirectPInvoke Include="libSceNotification" />
+    <DirectPInvoke Include="libSceBluetoothHid" />
+    <DirectPInvoke Include="libSceCffMgr" />
+    <DirectPInvoke Include="libSceAgc" />
+    <DirectPInvoke Include="libSceAgcDriver" />
   </ItemGroup>
 
 </Project>

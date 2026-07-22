@@ -19,9 +19,11 @@ internal sealed class Game : ProsperoApp
         var root = new StackPanel()
             .Add(new Label("APP_TITLE") { Scale = 4 })
             .Add(new Label("D-pad moves, Cross selects, Circle exits.") { TextColor = Color.FromRgb(0x8A, 0x94, 0xA0) })
+            .Add(new Carousel(["Forest", "Desert", "Ocean", "Volcano"], activated: i => { /* pick a level */ }))
             .Add(new Button("Play", () => { /* start something */ }))
             .Add(new Checkbox("Fullscreen", true))
             .Add(new Slider("Volume", 0, 100, 80, step: 5))
+            .Add(new Stepper("Lives", 3, 1, 9, format: n => "x" + n))
             .Add(new OptionSelector("Difficulty", ["Easy", "Normal", "Hard"], selected: 1));
 
         return new UiScreen(root) { Cancelled = () => _exit = true };

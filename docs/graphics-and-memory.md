@@ -204,6 +204,20 @@ BmpEncoder.Save(display.BackBuffer, "/data/shot.bmp");     // export a 24-bit BM
 `TgaImage` and `TgaEncoder` read and write TGA, a simple lossless format editors and asset pipelines
 export. Unlike BMP it keeps a proper alpha channel and reads run-length-compressed files, with no module.
 
+`GifImage` decodes GIF — static or animated — with no system module, so an interface can show an animated
+icon or a spinner. It handles the common forms (GIF87a and GIF89a, global and local colour tables,
+interlacing, transparency, and the frame-disposal methods), returning fully-composed frames each with the
+delay to show it, so an animation is just the frames drawn in order.
+
+```csharp
+using var gif = GifImage.Decode(PackageFile.ReadAllBytes("/app0/assets/spinner.gif"));
+GifFrame frame = gif.Frames[frameIndex % gif.Frames.Count];
+display.BackBuffer.BlitBlended(frame.AsSurface(), x, y);
+```
+
+Each `GifFrame` exposes `AsSurface` and `DelayMilliseconds`; the composed pixels carry transparency as an
+alpha of zero, so `BlitBlended` overlays a frame while `Blit` copies it opaquely. A still GIF is one frame.
+
 ```csharp
 using var texture = TgaImage.Load("/app0/texture.tga");     // 24- or 32-bit, plain or RLE
 display.BackBuffer.BlitBlended(texture.AsSurface(), x, y);
@@ -843,6 +857,155 @@ screen — to confirm a copy, report a finished install, or show a short message
 ```csharp
 Notification.Show("Installed successfully.");
 ```
+
+It also drives the persistent banner shown next to the PS button through the notification service.
+The banner stays up until you take it down, so it suits a background task that should stay visible:
+
+```csharp
+Notification.ShowPsButtonBanner();   // optional JSON config: ShowPsButtonBanner("{...}")
+// ... work continues, banner stays on screen ...
+Notification.HidePsButtonBanner();
+```
+
+## Trophies
+
+`SharpProspero.Platform.TrophySet` reads a title's trophies and the signed-in player's progress, and
+shows the system trophy list. Open it for a user, read the set-wide progress or the individual trophies,
+and dispose it.
+
+```csharp
+using var trophies = TrophySet.Open(userId);
+TrophyProgress progress = trophies.GetProgress();   // e.g. 12 of 34 unlocked, 41%
+foreach (TrophyInfo t in trophies.GetTrophies())
+    hud.AddRow(t.Name, t.Unlocked);
+trophies.ShowList();                                 // the system trophy screen
+```
+
+`TrophyProgress` gives the set title and unlocked count; each `TrophyInfo` carries the trophy's grade,
+name, description and whether the player has unlocked it. `TrophySet` is the read-and-display side, and it
+needs a signed-in user whose title has a registered trophy set.
+
+Unlocking a trophy — and reporting activities and statistics — is done through the universal-data-system,
+the write side. `UniversalDataSystem.PostEvent` posts a named event with its properties; a trophy set
+defines the event that unlocks each trophy.
+
+```csharp
+UniversalDataSystem.Initialize();
+using var uds = UniversalDataSystem.Open(userId);
+uds.PostEvent("_UnlockTrophy", e => e.Set("_trophy_id", trophyId));
+UniversalDataSystem.Terminate();
+```
+
+The build callback sets the event's properties (`Set` takes a string, integer, long, double or boolean),
+and the event is posted when the callback returns.
+
+## Bluetooth HID
+
+`SharpProspero.Platform.BluetoothHid` is the entry point to the Bluetooth human-interface-device driver.
+`Initialize` opens the device (privileged) and must run first; `Version` reads the module's build number.
+
+```csharp
+BluetoothHid.Initialize();
+```
+
+This is a low-level driver surface. The device, report, and callback calls take structures whose layout
+is device-specific, so they are exposed directly on `SharpProspero.Interop.Bluetooth.SceBluetoothHid`
+(get and set input, feature, and output reports; read the report descriptor, device name, and device
+info; register a device and a callback; interrupt output; disconnect) for advanced use. Each returns a
+status code.
+
+## Console feature flags
+
+`SharpProspero.Platform.FeatureFlag` reads the console's feature flags by number: whether a feature is
+enabled, and whether a change to it is waiting for a reboot.
+
+```csharp
+if (FeatureFlag.IsOn(featureId))
+    Enable();
+```
+
+## GPU graphics (Agc)
+
+The GPU graphics API is exposed in two layers. The lower layer, `SharpProspero.Interop.Agc`, is the
+complete flat-C command interface: `SceAgc` (192 command builders - draws, dispatches, register writes,
+synchronization, shader create and link) and `SceAgcDriver` (79 driver calls - submit, queue, display
+flip, wait). Every builder takes the command buffer as its first argument and returns the address of the
+packet it wrote.
+
+The higher layer, `SharpProspero.Graphics.Agc`, wraps that for everyday use:
+
+- `DrawCommandBuffer` records commands into GPU-readable memory. `Allocate` gives a ready buffer; the
+  record calls cover register writes, index state, draws, synchronization, and the present calls
+  (`WaitUntilSafeForDisplay`, `SetFlip`).
+- `AgcShader` creates a shader from its compiled binary (a header plus a code section). Shaders are
+  compiled ahead of time by the shader compiler; the runtime only loads them.
+- `AgcDevice` does the one-time `Initialize`, submits a buffer with `Submit`, and closes the frame with
+  `SuspendPoint`.
+- `AgcFormats` holds the surface-format and channel-select enumerations.
+
+A frame follows the shape of the graphics sample - wait for the display to release the buffer, record
+state and draws, set the flip, submit, and close the frame:
+
+```csharp
+AgcDevice.Initialize();
+using var dcb = DrawCommandBuffer.Allocate(1 << 20);
+// ... per frame:
+dcb.Reset();
+dcb.WaitUntilSafeForDisplay(videoOutHandle, backBufferIndex);
+// ... record register state and draws (see the render-target note below) ...
+dcb.SetFlip(videoOutHandle, backBufferIndex);
+AgcDevice.Submit(dcb);
+AgcDevice.SuspendPoint();
+```
+
+### Surface layout
+
+`AgcSurface.Compute` gives the memory layout of any surface - total size, base alignment, block
+dimensions, and per-mip offsets - for every tile mode, computed the way the graphics address library
+computes it. `LinearSurface.Compute` is the simpler linear-only helper (padded row pitch, size, 256-byte
+alignment). Use them to size and align a framebuffer, a depth buffer, or a texture:
+
+```csharp
+AgcSurfaceLayout layout = AgcSurface.Compute(new AgcSurfaceDescription(
+    AgcTileMode.RenderTarget, AgcSurfaceDimension.TwoD, width: 1920, height: 1080, bytesPerElement: 4));
+using var mem = DirectMemoryRegion.Allocate(layout.TotalSizeBytes, layout.BaseAlignBytes);
+```
+
+### Render-target registers
+
+`CxRenderTarget` is the sixteen-register color render-target block, with typed setters and getters for
+every field. `AgcRenderTargetSetup.Initialize` fills the whole block from a `RenderTargetSpec` - the same
+setup the graphics core performs, including the blend and rounding modes it derives from the channel type.
+The register offsets and reset values come from the driver at runtime, so load them into the block first:
+
+```csharp
+// defaults: sixteen CxRegister values from the driver (sceAgcGetRegisterDefaults).
+var rt = new CxRenderTarget().Init(defaults);
+AgcRenderTargetSetup.Initialize(rt, new RenderTargetSpec(
+    CxRenderTarget.Format.k8_8_8_8, CxRenderTarget.ChannelType.kUNorm, CxRenderTarget.ChannelOrder.kStandard,
+    width: 1920, height: 1080, dataAddress: (ulong)mem.Address));
+// rt.Registers is now ready to write into a command buffer.
+```
+
+`CxDepthRenderTarget` is the companion block for a depth and stencil buffer, with the same shape: typed
+setters for the depth and stencil formats, dimensions, clear values, and addresses, loaded from the driver
+defaults with `Init`.
+
+### Pixel tiling
+
+`AgcTiler` moves pixel bytes between plain row-major (linear) order and the hardware-tiled order the GPU
+reads - to upload a texture built in memory, or to read a rendered surface back into a linear image. It
+covers the render-target and depth tile modes; `LinearSizeBytes` sizes the linear buffer, and `Tile` /
+`Detile` convert one mip level of one slice:
+
+```csharp
+var linear = new byte[AgcTiler.LinearSizeBytes(desc)];   // fill with your image
+var tiled = new byte[AgcSurface.Compute(desc).TotalSizeBytes];
+AgcTiler.Tile(tiled, linear, desc);                       // now upload `tiled` to GPU memory
+```
+
+Optimal *textures* (as opposed to render and depth targets) are still built ahead of time by the texture
+tool - the same offline model as shaders.
 
 ## Install progress and app parameters
 

@@ -97,6 +97,12 @@ the method class name, and the library. The response files land under
 | `Interop.Compression` | Compression | inflate a zlib or deflate stream |
 | `Interop.Content` | Content library | delete by path or id, count, size, search photos and videos, export a file |
 | `Interop.Share` | System capture | initialize, capture a screenshot or a video clip of the composited screen, recording status, screenshot overlay, permit or prohibit a feature |
+| `Interop.Notification` | Notification service | send a message, send by id, show and hide the persistent PS-button banner |
+| `Interop.Np` | Trophies and events | trophy2: contexts, game and group and trophy info, icons, show list; universal data system: post named events with properties |
+| `Interop.Bluetooth` | Bluetooth HID driver | init; register callback and device; get report descriptor, device name, device info; get and set reports; interrupt output; disconnect (low-level, privileged) |
+| `Interop.FeatureFlag` | Console feature flags | is a feature on, is it waiting for a reboot |
+| `Interop.Agc` | Graphics command layer | 192 command builders: draw, dispatch, register writes, synchronization, shader create/link, register defaults, packet patching |
+| `Interop.Agc` (driver) | Graphics submission | 79 driver calls: submit, queue management, display flip, wait-until-safe, resource registration, workload streams |
 
 ## Result codes
 

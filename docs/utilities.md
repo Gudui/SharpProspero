@@ -12,7 +12,7 @@ export, microphone capture, and the app-loop control an application needs to beh
 
 `SharpProspero.Security` computes message digests and checksums with no system module, so a tool can
 verify a downloaded file against a published checksum or compare two files. The algorithms are
-`Sha256`, `Sha512`, `Sha1`, `Md5` and `Crc32`.
+`Sha256`, `Sha512`, `Sha1`, `Md5`, `Crc32` and `Sha3` (SHA3-256/384/512, the Keccak family).
 
 ```csharp
 using SharpProspero.Security;
@@ -33,7 +33,12 @@ byte[] digest = hash.Finish();
 ```
 
 Prefer `Sha256` (or `Sha512` for a wider digest) to guard against tampering; `Md5` and `Sha1` are for
-matching sums that other tools publish, and `Crc32` is a fast check for accidental corruption.
+matching sums that other tools publish, and `Crc32` is a fast check for accidental corruption. `Sha3` is
+the newer Keccak-based standard for a tool that needs it — pick the width with `Sha3Variant`:
+
+```csharp
+string sha3 = Sha3.HashHex(bytes, Sha3Variant.Bits512);
+```
 
 To prove a message was not changed by anyone without a shared key, use a keyed digest (HMAC) over any of
 those hashes:
@@ -143,6 +148,63 @@ WavAudio.Save("/data/recording.wav", new PcmAudio(recorded, 48000, 2));
 
 `PcmAudio` reports its `FrameCount` and `DurationMilliseconds`. Only uncompressed 16-bit mono or stereo
 is handled, which is the format the audio ports use, so what is read is always ready to play.
+
+## Encoding audio to AAC
+
+`AacEncoder` compresses 16-bit or floating-point PCM into AAC-LC, one 1024-sample frame at a time, for a
+recording or an export. Create it for a channel count and bit rate, feed it frames, and flush at the end.
+
+```csharp
+using SharpProspero.Platform;
+
+using var encoder = AacEncoder.Create(channels: 2, bitRate: 128000);
+var block = new byte[Interop.Audio.M4aacEnc.MaxOutputBufferSize];
+foreach (ReadOnlyMemory<byte> frame in frames)            // 1024 samples per channel each
+{
+    int written = encoder.Encode(frame.Span, block);
+    output.Write(block, 0, written);
+}
+output.Write(block, 0, encoder.Flush(block));             // any trailing block
+```
+
+The lower-level bindings for the AAC and ATRAC9 encoders (`SharpProspero.Interop.Audio.M4aacEnc` and
+`At9Enc`) are there for finer control; the existing `Audiodec` covers the decode side.
+
+## Audio synthesis and mixing (Ngs2)
+
+`SharpProspero.Interop.Audio.Ngs2` binds the audio synthesis and mixing engine: a system owns racks
+(sampler, submixer, reverb, mastering), a rack owns voices that play waveforms, and a render pass mixes
+them into an output buffer. It is the full flat interface - system, rack, voice, stream, and waveform
+calls - for building a multi-voice mixer with effects. The engine works in a buffer the caller sizes with
+the query-buffer-size calls; handles are opaque, and the sized option and command structures are built
+against the reset-option and query-info calls.
+
+## Camera depth
+
+`SharpProspero.Interop.Vision.Depth2` binds the stereo-camera depth-generation library: it turns the
+camera's two images into a 16-bit depth map. Query the working memory a configuration needs, initialize
+the library into that buffer to get a handle, then per frame set the source images, submit, wait, and read
+back the depth image. Its parameter structures, enums, and error codes come from the vision header.
+
+## Watching for device changes
+
+`DeviceMonitor` notices when the set of connected devices changes, through the message bus. Start it, then
+compare `Generation` against the last value you saw (it advances on any change), or read the pending event
+bitmask with `PeekEvents` / `ConsumeEvents`. The lower-level `SharpProspero.Interop.Device.DeviceService`
+also exposes the device-info query.
+
+```csharp
+using SharpProspero.Platform;
+
+using var devices = DeviceMonitor.Start();
+int seen = devices.Generation;
+// each frame:
+if (devices.Generation != seen)
+{
+    seen = devices.Generation;
+    OnDevicesChanged();
+}
+```
 
 ## Keeping the console awake and reacting to the system
 
@@ -390,6 +452,30 @@ string compact = reply.Write();                           // or a compact string
 `AsNumber`, `AsInt`, `AsBool` read a value with a fallback, and `GetString`, `GetInt`, `GetNumber` and
 `GetBool` read a named value from an object in one step. `Write(indented: true)` lays the output out over
 several lines.
+
+## XML
+
+`SharpProspero.Xml` reads and writes XML with no system module, for a configuration or data file. It never
+loads an external DTD or entity, so it is safe on the console. `XmlDocument.Parse` builds a small tree that
+is checked for well-formedness (matching tags, a single root) and has its entity references resolved;
+`ToXml` writes it back, optionally indented.
+
+```csharp
+using SharpProspero.Xml;
+
+var doc = XmlDocument.Parse(PackageFile.ReadAllText("/app0/level.xml"));
+string name = doc.Root.Attribute("name") ?? "untitled";
+foreach (XmlElement enemy in doc.Root.Element("enemies")!.Elements("enemy"))
+    Spawn(enemy.Attribute("type")!, int.Parse(enemy.Attribute("x")!));
+
+var save = new XmlElement("save").SetAttribute("slot", "1");
+save.AddElement("score").Text = "1200";
+string xml = new XmlDocument(save).ToXml(indent: true);
+```
+
+For streaming, `XmlReader` is a forward-only pull parser: call `Read` and inspect `NodeType`, `Name`,
+`Value`, and `Attributes`. `XmlWriter` builds output directly, escaping text and attributes and
+self-closing empty elements. A malformed document throws an `XmlException` that carries the line and column.
 
 ## CSV
 
