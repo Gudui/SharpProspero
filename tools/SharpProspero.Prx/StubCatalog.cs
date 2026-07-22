@@ -59,6 +59,10 @@ public static class StubCatalog
         new Entry("libSceM4aacEnc", M4aacEnc),
         new Entry("libSceAt9Enc", At9Enc),
         new Entry("libSceNgs2", Ngs2),
+        new Entry("libSceAudio3d", Audio3d),
+        new Entry("libSceAjm", Ajm),
+        new Entry("libSceVideoRecording", VideoRecording),
+        new Entry("libSceCesCs", Ces),
         new Entry("libSceDepth2", Depth2),
         new Entry("libSceMbus", Mbus),
         new Entry("libSceVideodec2", Videodec2),
@@ -130,6 +134,13 @@ public static class StubCatalog
         "sceKernelAllocateDirectMemory",
         "sceKernelReleaseDirectMemory",
         "sceKernelMapDirectMemory",
+        "sceKernelMapFlexibleMemory",
+        "sceKernelMapNamedFlexibleMemory",
+        "sceKernelReleaseFlexibleMemory",
+        "sceKernelMprotect",
+        "sceKernelAvailableFlexibleMemorySize",
+        "sceKernelAvailableDirectMemorySize",
+        "sceKernelVirtualQuery",
         "sceKernelGetDirectMemorySize",
         "sceKernelMapNamedFlexibleMemory",
         "sceKernelMunmap",
@@ -270,6 +281,9 @@ public static class StubCatalog
         "sceUserServiceInitialize",
         "sceUserServiceTerminate",
         "sceUserServiceGetInitialUser",
+        "sceUserServiceGetLoginUserIdList",
+        "sceUserServiceGetUserName",
+        "sceUserServiceGetUserNumber",
     ];
 
     private static readonly string[] SystemService =
@@ -569,6 +583,96 @@ public static class StubCatalog
         "sceNgs2CalcWaveformBlock",
         "sceNgs2GetWaveformFrameInfo",
         "sceNgs2JobSchedulerResetOption",
+    ];
+
+    private static readonly string[] Audio3d =
+    [
+        "sceAudio3dInitialize",
+        "sceAudio3dTerminate",
+        "sceAudio3dPortOpen",
+        "sceAudio3dPortClose",
+        "sceAudio3dPortSetAttribute",
+        "sceAudio3dPortAdvance",
+        "sceAudio3dPortPush",
+        "sceAudio3dPortGetAttributesSupported",
+        "sceAudio3dPortGetQueueLevel",
+        "sceAudio3dObjectReserve",
+        "sceAudio3dObjectUnreserve",
+        "sceAudio3dObjectSetAttributes",
+        "sceAudio3dBedWrite",
+        "sceAudio3dBedWrite2",
+        "sceAudio3dGetSpeakerArrayMemorySize",
+        "sceAudio3dCreateSpeakerArray",
+        "sceAudio3dDeleteSpeakerArray",
+        "sceAudio3dGetSpeakerArrayMixCoefficients",
+        "sceAudio3dGetSpeakerArrayMixCoefficients2",
+        "sceAudio3dAudioOutOpen",
+        "sceAudio3dAudioOutClose",
+        "sceAudio3dAudioOutOutput",
+        "sceAudio3dAudioOutOutputs",
+        "sceAudio3dPortCreate",
+        "sceAudio3dPortDestroy",
+        "sceAudio3dPortFlush",
+    ];
+
+    private static readonly string[] Ajm =
+    [
+        "sceAjmInitialize",
+        "sceAjmFinalize",
+        "sceAjmMemoryRegister",
+        "sceAjmMemoryUnregister",
+        "sceAjmModuleRegister",
+        "sceAjmModuleUnregister",
+        "sceAjmInstanceCreate",
+        "sceAjmInstanceExtend",
+        "sceAjmInstanceSwitch",
+        "sceAjmInstanceDestroy",
+        "sceAjmBatchInitialize",
+        "sceAjmBatchJobInitialize",
+        "sceAjmBatchJobClearContext",
+        "sceAjmBatchJobDecode",
+        "sceAjmBatchJobDecodeSingle",
+        "sceAjmBatchJobDecodeSplit",
+        "sceAjmBatchJobEncode",
+        "sceAjmBatchJobGetInfo",
+        "sceAjmBatchJobGetCodecInfo",
+        "sceAjmBatchJobSetGaplessDecode",
+        "sceAjmBatchJobGetGaplessDecode",
+        "sceAjmBatchJobSetResampleParameters",
+        "sceAjmBatchJobSetResampleParametersEx",
+        "sceAjmBatchJobGetResampleInfo",
+        "sceAjmBatchStart",
+        "sceAjmBatchWait",
+        "sceAjmBatchCancel",
+        "sceAjmBatchErrorDump",
+        "sceAjmBatchJobGetStatistics",
+        "sceAjmBatchJobControl",
+        "sceAjmBatchJobRun",
+        "sceAjmBatchJobRunSplit",
+    ];
+
+    private static readonly string[] VideoRecording =
+    [
+        "sceVideoRecordingGetStatus",
+        "sceVideoRecordingQueryMemSize",
+        "sceVideoRecordingOpen",
+        "sceVideoRecordingStart",
+        "sceVideoRecordingStop",
+        "sceVideoRecordingClose",
+    ];
+
+    private static readonly string[] Ces =
+    [
+        "sceCesUtf8ToUtf16",
+        "sceCesUtf16ToUtf8",
+        "sceCesUtf8ToUtf32",
+        "sceCesUtf32ToUtf8",
+        "sceCesUtf16ToUtf32",
+        "sceCesUtf32ToUtf16",
+        "sceCesEucJpToUtf8",
+        "sceCesEucKrToUtf8",
+        "sceCesBig5ToUtf8",
+        "sceCesUhcToUtf8",
     ];
 
     private static readonly string[] Depth2 =

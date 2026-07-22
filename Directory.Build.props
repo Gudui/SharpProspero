@@ -19,11 +19,4 @@
     <NeutralLanguage>en-US</NeutralLanguage>
   </PropertyGroup>
 
-  <!-- Path to the runtime pack (the folder that holds the runtime archives compiled for the device
-       ABI). The value falls back to the PROSPERO_RUNTIME_PACK environment variable so machine-specific
-       paths stay out of the project files. The link needs nothing else on disk. -->
-  <PropertyGroup>
-    <ProsperoRuntimePack Condition="'$(ProsperoRuntimePack)' == ''">$(PROSPERO_RUNTIME_PACK)</ProsperoRuntimePack>
-  </PropertyGroup>
-
 </Project>

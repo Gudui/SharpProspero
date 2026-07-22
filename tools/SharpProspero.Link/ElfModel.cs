@@ -27,7 +27,7 @@ public static class ShFlags
 
 /// <summary>Symbol binding and type nibbles.</summary>
 public static class SymBind { public const int Local = 0; public const int Global = 1; public const int Weak = 2; }
-public static class SymType { public const int NoType = 0; public const int Object = 1; public const int Func = 2; public const int Section = 3; public const int Tls = 6; }
+public static class SymType { public const int NoType = 0; public const int Object = 1; public const int Func = 2; public const int Section = 3; public const int Tls = 6; public const int GnuIfunc = 10; }
 
 /// <summary>x86-64 relocation types.</summary>
 public static class RelType
@@ -41,8 +41,23 @@ public static class RelType
     public const uint R32 = 10;
     public const uint R32S = 11;
     public const uint JumpSlot = 7;
+    public const uint Pc64 = 24;
     public const uint TpOff64 = 18;
     public const uint TpOff32 = 23;
+
+    /// <summary>Initial-exec thread-local load through the GOT: the slot holds the symbol's thread-pointer
+    /// offset. In a self-contained executable that offset is known at link time.</summary>
+    public const uint GotTpOff = 22;
+
+    /// <summary>Relaxable global-offset-table load; the default RIP-relative GOT encoding modern
+    /// compilers emit. It resolves exactly like <see cref="GotPcRel"/> when left unrelaxed.</summary>
+    public const uint GotPcRelX = 41;
+
+    /// <summary>Relaxable global-offset-table load with a REX prefix; resolved like <see cref="GotPcRel"/>.</summary>
+    public const uint RexGotPcRelX = 42;
+
+    /// <summary>True for the plain and both relaxable GOT-relative load relocations.</summary>
+    public static bool IsGotPcRel(uint type) => type is GotPcRel or GotPcRelX or RexGotPcRelX;
 }
 
 /// <summary>One section of an input object.</summary>

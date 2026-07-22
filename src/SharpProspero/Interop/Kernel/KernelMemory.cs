@@ -83,4 +83,49 @@ public static unsafe partial class KernelMemory
     /// <summary>Releases a reserved region previously obtained from the allocate call.</summary>
     [LibraryImport(Lib)]
     public static partial int sceKernelReleaseDirectMemory(long start, nuint length);
+
+    /// <summary>
+    /// Maps <paramref name="length"/> bytes of flexible memory into the address space with
+    /// <paramref name="protection"/>, writing the mapped pointer to <paramref name="address"/>. Flexible
+    /// memory is drawn from a pool the system may move, so it needs no reserve step; it suits general
+    /// working buffers rather than the GPU-visible framebuffers that direct memory backs.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceKernelMapFlexibleMemory(void** address, nuint length, int protection, int flags);
+
+    /// <summary>
+    /// Maps flexible memory as <see cref="sceKernelMapFlexibleMemory"/> does, tagging the mapping with
+    /// <paramref name="name"/> so a memory report can name it. The name is at most 31 characters.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceKernelMapNamedFlexibleMemory(void** address, nuint length, int protection, int flags, byte* name);
+
+    /// <summary>Releases a flexible mapping starting at <paramref name="start"/>.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceKernelReleaseFlexibleMemory(void* start, nuint length);
+
+    /// <summary>Changes the protection of an existing mapping to <paramref name="protection"/>.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceKernelMprotect(void* address, nuint length, int protection);
+
+    /// <summary>On success writes the flexible memory still available to the module, in bytes.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceKernelAvailableFlexibleMemorySize(nuint* outSize);
+
+    /// <summary>
+    /// Finds the largest free run of direct memory within [<paramref name="searchStart"/>,
+    /// <paramref name="searchEnd"/>) aligned to <paramref name="alignment"/>, writing its physical offset
+    /// to <paramref name="physicalAddressOut"/> and its size to <paramref name="sizeOut"/>.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceKernelAvailableDirectMemorySize(
+        long searchStart, long searchEnd, nuint alignment, long* physicalAddressOut, nuint* sizeOut);
+
+    /// <summary>
+    /// Describes the mapping that covers <paramref name="address"/>, writing a query-info record to
+    /// <paramref name="info"/> (a buffer of <paramref name="infoSize"/> bytes). Use it to learn a region's
+    /// bounds and protection.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceKernelVirtualQuery(void* address, int flags, void* info, nuint infoSize);
 }

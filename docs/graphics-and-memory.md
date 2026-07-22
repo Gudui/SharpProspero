@@ -362,6 +362,35 @@ between the CPU and GPU, and maps it CPU-readable, CPU-writable and GPU-readable
 protection and alignment for other uses. `Dispose` releases the reservation; the region is released
 once and is safe to dispose more than once.
 
+## Flexible memory
+
+Working buffers that the GPU does not read come from flexible memory instead. It is drawn from a pool
+the system manages, so it needs no physical reservation. `FlexibleMemoryRegion` maps and releases it in
+one disposable object, and `Protect` changes the protection later.
+
+```csharp
+using var region = FlexibleMemoryRegion.Allocate(bytes: 1u * 1024 * 1024);
+// region.Pointer is CPU read-write by default; region.Protect(...) to change it.
+```
+
+`SystemMemory` reports how much is left, so a build that streams or grows a cache can check an
+allocation fits before it attempts it:
+
+```csharp
+nuint flexible = SystemMemory.AvailableFlexibleBytes();
+nuint largestDirect = SystemMemory.LargestFreeDirectBytes();
+```
+
+## GPU texture and sampler descriptors
+
+To sample a texture from a shader, describe it to the graphics processor. `AgcTextureDescriptor` builds
+the eight-word image descriptor (base address, format, size, channel order, mip and array ranges, tiling)
+and `AgcSamplerDescriptor` the four-word sampler (address modes, filters, level-of-detail range, border
+color); write each with `WriteTo` into GPU-readable memory and point a shader slot at it.
+`AgcViewport` maps clip space onto a pixel rectangle and sets the scissor, emitting the context-register
+writes to record before a draw. These are advanced building blocks for shader-based rendering; the 2D
+`Surface` path above needs none of them.
+
 ## The managed heap
 
 The application runs with a small, non-concurrent collector and a hard ceiling baked into the image.

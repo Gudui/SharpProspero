@@ -75,13 +75,20 @@ the method class name, and the library. The response files land under
 
 | Namespace | Service | Key entry points |
 |---|---|---|
-| `Interop.Kernel` | Direct memory, files, timing, modules, system version | reserve, map, release, open, read, seek, clock, load module, system software version, allowed SDK version |
+| `Interop.Kernel` | Direct and flexible memory, memory info, files, timing, modules, system version | reserve, map, release direct memory; map, release, protect flexible memory; available flexible and direct memory, virtual query; open, read, seek, clock, load module, system software version, allowed SDK version |
 | `Interop.VideoOut` | Display output | open, set attribute, register, submit flip, wait vblank |
 | `Interop.Pad` | Controller | init, open, read, vibration, light bar, close |
 | `Interop.Keyboard` | USB keyboard | init, open, read state, close |
 | `Interop.Mouse` | USB mouse | init, open, read, close |
 | `Interop.Net` | Network status, sockets, HTTP download, TLS | status; socket, bind, listen, accept, connect, send, receive, poller, name resolver; pool, ssl, request, read |
-| `Interop.Audio` | Audio output and input | output: init, open, output, set volume; input: open, capture, silent state, close |
+| `Interop.Audio` | Audio output, input, decode, encode, synthesis | output: init, open, output, set volume; input: open, capture, silent state, close; decode (AAC/ATRAC9/MP3) create, decode; encode AAC-LC and ATRAC9; Ngs2 synthesis and mixing (system, rack, voice, stream) |
+| `Interop.Audio` (spatial) | Object-based spatial audio (Audio3d) | initialize, open a port, reserve objects, set position and attributes, write a bed, mix to the audio-out |
+| `Interop.Audio` (jobs) | The audio job manager (Ajm) | initialize, register memory and modules, create instances, build/start/wait batches for Opus, AAC, MP3, ATRAC9 decode and encode |
+| `Interop.Text` | Character-encoding conversion (Ces) | UTF-8/16/32 interconversion; EUC-JP, EUC-KR, Big5 and UHC to UTF-8 |
+| `Interop.Video` | Video decode and recording | decode: create decoder, decode, flush, reset, query memory (H.264 and HEVC via the codec type); recording: status, query memory, open, start, stop, close |
+| `Interop.Vision` | Camera depth | query memory, initialize, set command, submit, wait, get image, load calibration |
+| `Interop.AvCapture` | Audio-video capture | open, start, read frames, stop, close |
+| `Interop.Device` | Message-bus device service | initialize, generation counter, event state, query device info |
 | `Interop.Sysmodule` | System modules | load, unload, is-loaded |
 | `Interop.Image` | Image decode and encode | PNG and JPEG decode; PNG and JPEG encode (for a screenshot) |
 | `Interop.Font` | Scalable text | load a TrueType or OpenType font, scale it, render antialiased glyphs |

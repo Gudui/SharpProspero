@@ -29,6 +29,29 @@ public sealed class SelfContainerTests
     }
 
     [Fact]
+    public void CheckIntegrity_MatchesAFreshlySignedContainer()
+    {
+        byte[] signed = SelfContainer.Sign(BuildModule());
+        SelfIntegrity integrity = SelfContainer.CheckIntegrity(signed);
+        Assert.True(integrity.HasDigest);
+        Assert.True(integrity.Matches);
+        Assert.Equal(32, integrity.Stored.Length);
+        Assert.Equal(integrity.Stored, integrity.Computed);
+    }
+
+    [Fact]
+    public void CheckIntegrity_DetectsATamperedPayload()
+    {
+        byte[] signed = SelfContainer.Sign(BuildModule());
+        // Flip a byte in the trailing payload region, past the header; the recomputed digest no longer
+        // matches the one stored in the extended info.
+        signed[^1] ^= 0xFF;
+        SelfIntegrity integrity = SelfContainer.CheckIntegrity(signed);
+        Assert.True(integrity.HasDigest);
+        Assert.False(integrity.Matches);
+    }
+
+    [Fact]
     public void Sign_DoesNotMutateTheCallersBuffer()
     {
         byte[] module = BuildModule();

@@ -28,9 +28,17 @@ Linux (via WSL on Windows).
 
 ## 1. Create a project
 
-The quickest start is the project template. Install it once, then create an application:
+The quickest start is the project template. Install it once, then create an application. On Windows
+(PowerShell):
 
+```powershell
+dotnet new install $env:SHARPPROSPERO_ROOT/templates/prospero-app
+dotnet new prospero-app -n MyGame --title "My Game" --titleId PPSA99099
 ```
+
+On Linux or macOS (bash), the root is `$SHARPPROSPERO_ROOT` instead:
+
+```bash
 dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-app
 dotnet new prospero-app -n MyGame --title "My Game" --titleId PPSA99099
 ```

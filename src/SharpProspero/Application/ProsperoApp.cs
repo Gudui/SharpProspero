@@ -57,34 +57,42 @@ public abstract class ProsperoApp(AppConfig? config = null) : IDisposable
 
         OnLoad();
 
-        long previous = Stopwatch.GetTimestamp();
-        double frequency = Stopwatch.Frequency;
-        _context.Input = GamePadState.Neutral;
-
-        while (true)
+        // Once loading has run, its teardown must run too, whether the loop ends by request or because a
+        // frame threw. The exception still propagates so the caller sees it (and Dispose releases the
+        // display and controller), but the override's own cleanup is not skipped on the way out.
+        try
         {
-            long now = Stopwatch.GetTimestamp();
-            _context.DeltaSeconds = (now - previous) / frequency;
-            _context.TotalSeconds += _context.DeltaSeconds;
-            previous = now;
+            long previous = Stopwatch.GetTimestamp();
+            double frequency = Stopwatch.Frequency;
+            _context.Input = GamePadState.Neutral;
 
-            _context.Surface = _display.BackBuffer;
-            _context.PreviousInput = _context.Input;
-            _context.Input = _gamePad?.Read() ?? GamePadState.Neutral;
+            while (true)
+            {
+                long now = Stopwatch.GetTimestamp();
+                _context.DeltaSeconds = (now - previous) / frequency;
+                _context.TotalSeconds += _context.DeltaSeconds;
+                previous = now;
 
-            // Apply anything a worker thread handed back before the frame draws.
-            _context.Dispatcher.RunPending();
+                _context.Surface = _display.BackBuffer;
+                _context.PreviousInput = _context.Input;
+                _context.Input = _gamePad?.Read() ?? GamePadState.Neutral;
 
-            OnFrame(_context);
+                // Apply anything a worker thread handed back before the frame draws.
+                _context.Dispatcher.RunPending();
 
-            _display.Present(Config.FlipMode);
-            _context.FrameIndex++;
+                OnFrame(_context);
 
-            if (_context.ExitRequested)
-                break;
+                _display.Present(Config.FlipMode);
+                _context.FrameIndex++;
+
+                if (_context.ExitRequested)
+                    break;
+            }
         }
-
-        OnUnload();
+        finally
+        {
+            OnUnload();
+        }
     }
 
     /// <summary>Called once after the display opens and before the first frame. Load resources here.</summary>

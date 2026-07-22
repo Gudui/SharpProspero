@@ -58,6 +58,7 @@ toolchain produces an `eboot.bin` with no managed runtime to deploy alongside it
 
 A program and a library each have an unsigned and a signed form: `.elf`/`.self` and `.prx`/`.sprx`.
 [Signed and unsigned](signed-and-unsigned.md) explains what each is and how to read and convert them.
+[The param.json fields](param-json.md) describes the package metadata a title carries.
 
 ## Requirements
 

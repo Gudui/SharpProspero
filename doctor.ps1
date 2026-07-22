@@ -12,6 +12,7 @@
 
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ok = $true
+$wslReady = $true   # non-Windows hosts compile locally; Windows sets this from the WSL check below
 
 function Report([string]$name, [bool]$present, [string]$detail, [string]$fix, [bool]$required) {
     $mark = if ($present) { "[ ok ]" } elseif ($required) { "[fail]" } else { "[warn]" }
@@ -43,6 +44,7 @@ if ($isWindows) {
     }
     Report "Linux compile host (WSL + .NET 10)" $wslDotnet $(if ($wsl) { "wsl present" } else { "" }) `
         "Install WSL (wsl --install) and the .NET 10 SDK inside it; the build runs the compile step there automatically." $false
+    $wslReady = $wslDotnet
 }
 
 # SDK root for templates
@@ -52,7 +54,11 @@ Report "SDK root (SHARPPROSPERO_ROOT)" $rootOk $root "Set SHARPPROSPERO_ROOT to 
 
 Write-Host "-------------------------------"
 if ($ok) {
-    Write-Host "Ready to build and test. Building a module runs the compile step on Linux (via WSL on Windows)."
+    if (-not $wslReady) {
+        Write-Host "Ready to build and test the SDK. Producing a module also needs the WSL + .NET 10 compile host above; set it up before packaging."
+    } else {
+        Write-Host "Ready to build and test. Building a module runs the compile step on Linux (via WSL on Windows)."
+    }
     exit 0
 } else {
     Write-Host "A required item is missing. Fix the [fail] lines above."

@@ -88,6 +88,43 @@ public readonly struct Vector2(float x, float y) : IEquatable<Vector2>
     public static Vector2 Lerp(Vector2 a, Vector2 b, float t)
         => new(a.X + ((b.X - a.X) * t), a.Y + ((b.Y - a.Y) * t));
 
+    /// <summary>
+    /// The two-dimensional cross product (perpendicular dot product), <c>a.X * b.Y - a.Y * b.X</c>. Its
+    /// sign tells which way <paramref name="b"/> turns from <paramref name="a"/> and its magnitude is the
+    /// area of the parallelogram they span, useful for winding and turn-direction tests.
+    /// </summary>
+    public static float Cross(Vector2 a, Vector2 b) => (a.X * b.Y) - (a.Y * b.X);
+
+    /// <summary>The vector turned a quarter turn (its perpendicular), <c>(-Y, X)</c>.</summary>
+    public Vector2 Perpendicular() => new(-Y, X);
+
+    /// <summary>Moves <paramref name="current"/> toward <paramref name="target"/> by at most <paramref name="maxDelta"/>, stopping exactly on it.</summary>
+    public static Vector2 MoveTowards(Vector2 current, Vector2 target, float maxDelta)
+    {
+        Vector2 delta = target - current;
+        float distance = delta.Length;
+        if (distance <= maxDelta || distance <= 1e-6f)
+            return target;
+        return current + (delta / distance * maxDelta);
+    }
+
+    /// <summary>This vector shortened to <paramref name="maxLength"/> when it is longer, and unchanged otherwise.</summary>
+    public Vector2 ClampLength(float maxLength)
+    {
+        float lengthSquared = LengthSquared;
+        if (lengthSquared <= maxLength * maxLength || lengthSquared <= 1e-12f)
+            return this;
+        float scale = maxLength / MathF.Sqrt(lengthSquared);
+        return new Vector2(X * scale, Y * scale);
+    }
+
+    /// <summary>A vector pointing at <paramref name="radians"/> (measured from the x-axis) with the given length.</summary>
+    public static Vector2 FromAngle(float radians, float length = 1f)
+        => new(MathF.Cos(radians) * length, MathF.Sin(radians) * length);
+
+    /// <summary>The direction of the vector as an angle from the x-axis, in radians (-pi to pi).</summary>
+    public float ToAngle() => MathF.Atan2(Y, X);
+
     /// <inheritdoc/>
     public bool Equals(Vector2 other) => X == other.X && Y == other.Y;
 

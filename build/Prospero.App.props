@@ -86,6 +86,10 @@
     <DirectPInvoke Include="libSceM4aacEnc" />
     <DirectPInvoke Include="libSceAt9Enc" />
     <DirectPInvoke Include="libSceNgs2" />
+    <DirectPInvoke Include="libSceAudio3d" />
+    <DirectPInvoke Include="libSceAjm" />
+    <DirectPInvoke Include="libSceVideoRecording" />
+    <DirectPInvoke Include="libSceCesCs" />
     <DirectPInvoke Include="libSceDepth2" />
     <DirectPInvoke Include="libSceMbus" />
     <DirectPInvoke Include="libSceVideodec2" />

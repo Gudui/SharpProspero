@@ -44,7 +44,13 @@ public sealed class GameRandom(ulong seed)
         if (max <= min)
             return min;
         uint range = (uint)((long)max - min);
-        return min + (int)(NextUInt32() % range);
+        // Reject the values in the highest partial block so every result is equally likely. A plain
+        // modulo would favour the low end of the range whenever it does not divide 2^32, which biases
+        // Shuffle and Pick; discarding the remainder above the largest whole multiple removes it.
+        uint threshold = (0u - range) % range; // 2^32 mod range
+        uint x;
+        do { x = NextUInt32(); } while (x < threshold);
+        return min + (int)(x % range);
     }
 
     /// <summary>An integer from 0 (inclusive) to <paramref name="max"/> (exclusive).</summary>

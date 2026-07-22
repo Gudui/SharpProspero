@@ -81,6 +81,17 @@ function ConvertTo-WslPath([string]$p) {
 # before that link is exactly what is needed, so a non-zero publish result is expected; the object's
 # presence is the real check.
 Write-Host "== Compile =="
+# Name the object the project produces, and clear any object a previous build left behind. The publish
+# below ends in a host link that is expected to fail (the device modules are absent on the build host),
+# so its exit code cannot signal success; the freshly written object is the real check. Removing the
+# stale object first means a compile that fails before writing it (a source error) is caught here rather
+# than silently linking the old one.
+$targetName = (& dotnet msbuild $ProjectPath -getProperty:TargetName `
+    -p:Configuration=$Configuration -p:RuntimeIdentifier=$rid "-p:SharpProsperoRoot=$SdkRoot" --nologo | Out-String).Trim()
+if (-not $targetName) { throw "Could not resolve the project's target name." }
+$objectPath = Join-Path $projectDir "obj/$Configuration/net10.0/$rid/native/$targetName.o"
+if (Test-Path $objectPath) { Remove-Item $objectPath -Force }
+
 if ($onWindows) {
     if (-not $haveWsl) {
         throw "The compile step needs a Linux host. Install WSL (wsl --install) so this runs automatically, or build on Linux."
@@ -92,13 +103,8 @@ if ($onWindows) {
     & dotnet publish $ProjectPath -c $Configuration -r $rid "-p:SharpProsperoRoot=$SdkRoot" --nologo 2>&1 | Out-Host
 }
 
-# Name the object the project actually produces, rather than picking a file out of the folder.
-$targetName = (& dotnet msbuild $ProjectPath -getProperty:TargetName `
-    -p:Configuration=$Configuration -p:RuntimeIdentifier=$rid "-p:SharpProsperoRoot=$SdkRoot" --nologo | Out-String).Trim()
-if (-not $targetName) { throw "Could not resolve the project's target name." }
-$objectPath = Join-Path $projectDir "obj/$Configuration/net10.0/$rid/native/$targetName.o"
 if (-not (Test-Path $objectPath)) {
-    throw "No compiled object was produced at $objectPath. The ahead-of-time compile did not run; check the publish output above."
+    throw "No compiled object was produced at $objectPath. The ahead-of-time compile did not run to completion; check the publish output above for a compile error."
 }
 
 # 2. Gather the ahead-of-time runtime archives. They are restored by the publish above (the .NET SDK's

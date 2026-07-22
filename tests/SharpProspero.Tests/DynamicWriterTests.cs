@@ -257,7 +257,7 @@ public sealed class DynamicWriterTests
 
     // An object whose .text reads a thread-local variable through a TPOFF32 relocation. The template
     // is .tdata (8 bytes) then .tbss (4 bytes), align 4, so the aligned template size is 12.
-    private static LinkResolution BuildTlsResolution()
+    private static LinkResolution BuildTlsResolution(uint relType = RelType.TpOff32)
     {
         var text = new ElfSection { Name = ".text", Type = ShType.ProgBits, Flags = ShFlags.Alloc | ShFlags.Execute, Address = 0, Size = 0x10, Link = 0, Info = 0, AddrAlign = 16, EntSize = 0, Data = new byte[0x10] };
         var tdata = new ElfSection { Name = ".tdata", Type = ShType.ProgBits, Flags = ShFlags.Alloc | ShFlags.Write | ShFlags.Tls, Address = 0, Size = 8, Link = 0, Info = 0, AddrAlign = 4, EntSize = 0, Data = new byte[8] };
@@ -266,7 +266,7 @@ public sealed class DynamicWriterTests
         var main = new ElfSymbol { Name = "main", Info = (SymBind.Global << 4) | SymType.Func, Other = 0, SectionIndex = 1, Value = 0, Size = 0 };
         var tlsVar = new ElfSymbol { Name = "tlsVar", Info = (SymBind.Global << 4) | SymType.Tls, Other = 0, SectionIndex = 2, Value = 4, Size = 0 };
         var nullSym = new ElfSymbol { Name = "", Info = 0, Other = 0, SectionIndex = 0, Value = 0, Size = 0 };
-        var relocs = new List<ElfRelocation> { new(Offset: 0, SymbolIndex: 2, Type: RelType.TpOff32, Addend: 0) };
+        var relocs = new List<ElfRelocation> { new(Offset: 0, SymbolIndex: 2, Type: relType, Addend: 0) };
         var obj = new ElfObject
         {
             Origin = "synthetic",
@@ -397,5 +397,234 @@ public sealed class DynamicWriterTests
         // directly rather than index the section table at 0xFFF1, which would throw.
         byte[] file = DynamicWriter.Write(BuildAbsoluteSymbolResolution(), "main");
         Assert.Equal(0xFE10, BinaryPrimitives.ReadUInt16LittleEndian(file.AsSpan(0x10)));
+    }
+
+    // A single-object resolution whose one relocation reaches the given symbol at .text offset 0. The
+    // symbol is either a defined local target (at .text+0x10) or an imported/weak name, per the flags.
+    private static LinkResolution BuildSingleReloc(ElfSymbol sym, uint relType, bool defineTarget, ImportSymbol[]? imports = null)
+    {
+        var text = new ElfSection { Name = ".text", Type = ShType.ProgBits, Flags = ShFlags.Alloc | ShFlags.Execute, Address = 0, Size = 0x20, Link = 0, Info = 0, AddrAlign = 16, EntSize = 0, Data = new byte[0x20] };
+        var nullSec = new ElfSection { Name = "", Type = ShType.Null, Flags = 0, Address = 0, Size = 0, Link = 0, Info = 0, AddrAlign = 0, EntSize = 0, Data = [] };
+        var main = new ElfSymbol { Name = "main", Info = (SymBind.Global << 4) | SymType.Func, Other = 0, SectionIndex = 1, Value = 0, Size = 0 };
+        var nullSym = new ElfSymbol { Name = "", Info = 0, Other = 0, SectionIndex = 0, Value = 0, Size = 0 };
+        var relocs = new List<ElfRelocation> { new(Offset: 0, SymbolIndex: 2, Type: relType, Addend: 0) };
+        var obj = new ElfObject
+        {
+            Origin = "synthetic",
+            Sections = [nullSec, text],
+            Symbols = [nullSym, main, sym],
+            Relocations = new Dictionary<int, IReadOnlyList<ElfRelocation>> { [1] = relocs },
+        };
+        var defined = new Dictionary<string, ElfObject> { ["main"] = obj };
+        if (defineTarget) defined[sym.Name] = obj;
+        return new LinkResolution { Included = [obj], Defined = defined, Imports = imports ?? [], Unresolved = [] };
+    }
+
+    [Fact]
+    public void Write_RelaxableGotLoad_ResolvesThroughTheGotLikeThePlainForm()
+    {
+        // GOTPCRELX is the default RIP-relative GOT encoding modern compilers emit; unrelaxed it must be
+        // handled exactly like GOTPCREL, producing a GOT slot and a dynamic relocation for the import.
+        var import = new ElfSymbol { Name = "sceKernelData", Info = (SymBind.Global << 4) | SymType.Object, Other = 0, SectionIndex = 0, Value = 0, Size = 0 };
+        LinkResolution res = BuildSingleReloc(import, RelType.GotPcRelX, defineTarget: false,
+            imports: [new ImportSymbol("sceKernelData", "libkernel", "libkernel", "libkernel.prx")]);
+        byte[] file = DynamicWriter.Write(res, "main");
+
+        int ph = 0x40; ulong dynOff = 0, dynSz = 0;
+        int phnum = BinaryPrimitives.ReadUInt16LittleEndian(file.AsSpan(0x38));
+        for (int i = 0; i < phnum; i++, ph += 0x38)
+            if (BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan(ph)) == 2)
+            { dynOff = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 8)); dynSz = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 40)); }
+        bool hasRela = false;
+        for (ulong d = dynOff; d + 16 <= dynOff + dynSz; d += 16)
+            if (BinaryPrimitives.ReadInt64LittleEndian(file.AsSpan((int)d)) == 7) hasRela = true;
+        Assert.True(hasRela, "Expected a DT_RELA entry for the relaxable GOT load.");
+    }
+
+    [Fact]
+    public void Write_Pc64Relocation_ResolvesRelativeToThePlace()
+    {
+        var target = new ElfSymbol { Name = "target", Info = (SymBind.Global << 4) | SymType.Func, Other = 0, SectionIndex = 1, Value = 0x10, Size = 0 };
+        byte[] file = DynamicWriter.Write(BuildSingleReloc(target, RelType.Pc64, defineTarget: true), "main");
+
+        // The reloc sits at .text+0, so the value is target(.text+0x10) - place(.text+0) = 0x10.
+        ulong textOffset = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(0x40 + 8));
+        Assert.Equal(0x10ul, BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan((int)textOffset)));
+    }
+
+    [Fact]
+    public void Write_Pc64FieldPastSectionEnd_IsSkippedNotCrashed()
+    {
+        // A 64-bit PC-relative field writes eight bytes; a relocation whose offset leaves fewer than
+        // eight bytes to the section end must be skipped by the bounds guard, exactly as the other
+        // reloc types are, rather than aborting the link with an out-of-range write. This guards the
+        // width the guard reserves for Pc64 against a truncated or crafted object.
+        var text = new ElfSection { Name = ".text", Type = ShType.ProgBits, Flags = ShFlags.Alloc | ShFlags.Execute, Address = 0, Size = 8, Link = 0, Info = 0, AddrAlign = 16, EntSize = 0, Data = new byte[8] };
+        var nullSec = new ElfSection { Name = "", Type = ShType.Null, Flags = 0, Address = 0, Size = 0, Link = 0, Info = 0, AddrAlign = 0, EntSize = 0, Data = [] };
+        var main = new ElfSymbol { Name = "main", Info = (SymBind.Global << 4) | SymType.Func, Other = 0, SectionIndex = 1, Value = 0, Size = 0 };
+        var target = new ElfSymbol { Name = "target", Info = (SymBind.Global << 4) | SymType.Func, Other = 0, SectionIndex = 1, Value = 0, Size = 0 };
+        var nullSym = new ElfSymbol { Name = "", Info = 0, Other = 0, SectionIndex = 0, Value = 0, Size = 0 };
+        // Offset 4 in an 8-byte section leaves only four bytes for an eight-byte field.
+        var relocs = new List<ElfRelocation> { new(Offset: 4, SymbolIndex: 2, Type: RelType.Pc64, Addend: 0) };
+        var obj = new ElfObject
+        {
+            Origin = "synthetic",
+            Sections = [nullSec, text],
+            Symbols = [nullSym, main, target],
+            Relocations = new Dictionary<int, IReadOnlyList<ElfRelocation>> { [1] = relocs },
+        };
+        var res = new LinkResolution { Included = [obj], Defined = new Dictionary<string, ElfObject> { ["main"] = obj, ["target"] = obj }, Imports = [], Unresolved = [] };
+
+        byte[] file = DynamicWriter.Write(res, "main");
+        Assert.NotEmpty(file);
+    }
+
+    [Fact]
+    public void Write_UnsupportedRelocationType_ThrowsRatherThanMiscompiling()
+    {
+        // A relocation the linker does not implement (here GOTPCREL64 = 25) must fail the link loudly
+        // instead of silently leaving the target bytes at their compiler placeholder.
+        var target = new ElfSymbol { Name = "target", Info = (SymBind.Global << 4) | SymType.Func, Other = 0, SectionIndex = 1, Value = 0x10, Size = 0 };
+        Assert.Throws<ElfLinkException>(() => DynamicWriter.Write(BuildSingleReloc(target, 25, defineTarget: true), "main"));
+    }
+
+    [Fact]
+    public void Write_WeakUndefinedAbsoluteReference_EmitsNoRelativeRelocation()
+    {
+        // An address-taken weak-undefined symbol resolves to absolute zero; it must not gain a
+        // base-relative dynamic relocation, which would make the loader read the load base instead of
+        // null and break the "if (&weak_sym)" idiom. With no dynamic relocations, DT_RELASZ stays zero.
+        var weak = new ElfSymbol { Name = "weak_opt", Info = (SymBind.Weak << 4) | SymType.Object, Other = 0, SectionIndex = 0, Value = 0, Size = 0 };
+        byte[] file = DynamicWriter.Write(BuildSingleReloc(weak, RelType.R64, defineTarget: false), "main");
+
+        ulong textOffset = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(0x40 + 8));
+        Assert.Equal(0ul, BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan((int)textOffset)));
+
+        int ph = 0x40; ulong dynOff = 0, dynSz = 0;
+        int phnum = BinaryPrimitives.ReadUInt16LittleEndian(file.AsSpan(0x38));
+        for (int i = 0; i < phnum; i++, ph += 0x38)
+            if (BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan(ph)) == 2)
+            { dynOff = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 8)); dynSz = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 40)); }
+        // DT_RELACOUNT (0x6ffffff9) is written only when there is at least one base-relative record.
+        bool hasRelaCount = false;
+        for (ulong d = dynOff; d + 16 <= dynOff + dynSz; d += 16)
+            if (BinaryPrimitives.ReadInt64LittleEndian(file.AsSpan((int)d)) == 0x6ffffff9) hasRelaCount = true;
+        Assert.False(hasRelaCount, "A weak-undefined reference must not emit a base-relative relocation.");
+    }
+
+    [Fact]
+    public void Write_ReferenceToAnIndirectFunction_EmitsAnIrelativeRecord()
+    {
+        // An absolute reference to a resolver-backed indirect function (STT_GNU_IFUNC) must produce an
+        // R_X86_64_IRELATIVE (37) dynamic relocation, so the loader calls the resolver and stores the
+        // result, rather than a plain relative record that would leave the resolver address in place.
+        var ifunc = new ElfSymbol { Name = "memcpy_impl", Info = (SymBind.Global << 4) | SymType.GnuIfunc, Other = 0, SectionIndex = 1, Value = 0x10, Size = 0 };
+        byte[] file = DynamicWriter.Write(BuildSingleReloc(ifunc, RelType.R64, defineTarget: true), "main");
+
+        int phnum = BinaryPrimitives.ReadUInt16LittleEndian(file.AsSpan(0x38));
+        ulong dynOff = 0, dynSz = 0, relaVaddr = 0, relaSz = 0;
+        int ph = 0x40;
+        var loads = new List<(ulong Vaddr, ulong Off, ulong Filesz)>();
+        for (int i = 0; i < phnum; i++, ph += 0x38)
+        {
+            uint t = BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan(ph));
+            if (t == 2) { dynOff = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 8)); dynSz = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 40)); }
+            if (t == 1) loads.Add((BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 16)), BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 8)), BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 32))));
+        }
+        for (ulong d = dynOff; d + 16 <= dynOff + dynSz; d += 16)
+        {
+            long tag = BinaryPrimitives.ReadInt64LittleEndian(file.AsSpan((int)d));
+            if (tag == 7) relaVaddr = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan((int)d + 8));  // DT_RELA
+            if (tag == 8) relaSz = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan((int)d + 8));     // DT_RELASZ
+        }
+        (ulong Vaddr, ulong Off, ulong Filesz) seg = loads.Find(l => relaVaddr >= l.Vaddr && relaVaddr < l.Vaddr + l.Filesz);
+        ulong relaFile = seg.Off + (relaVaddr - seg.Vaddr);
+        bool foundIrelative = false;
+        for (ulong r = 0; r + 24 <= relaSz; r += 24)
+        {
+            ulong info = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan((int)(relaFile + r) + 8));
+            if ((uint)(info & 0xffffffff) == 37) foundIrelative = true;
+        }
+        Assert.True(foundIrelative, "Expected an R_X86_64_IRELATIVE record for the indirect function.");
+    }
+
+    [Fact]
+    public void Write_WithInitialExecTls_FillsTheGotSlotWithTheThreadOffset()
+    {
+        // A .text that reads tlsVar through a GOTTPOFF (initial-exec) relocation. The GOT slot must hold
+        // the thread-pointer offset -8 (tlsVar at template offset 4, aligned template size 12), the same
+        // value the local-exec path computes, and the link must succeed.
+        LinkResolution resolution = BuildTlsResolution(RelType.GotTpOff);
+        byte[] file = DynamicWriter.Write(resolution, "main");
+        Assert.Equal(0x464C457Fu, BinaryPrimitives.ReadUInt32LittleEndian(file));
+
+        // Locate DT_PLTGOT (3) to find the GOT, and the writable load segment to map it to a file offset.
+        int phnum = BinaryPrimitives.ReadUInt16LittleEndian(file.AsSpan(0x38));
+        ulong dynOff = 0, dynSz = 0, gotVaddr = 0;
+        int ph = 0x40;
+        var loads = new List<(ulong Vaddr, ulong Off, ulong Filesz)>();
+        for (int i = 0; i < phnum; i++, ph += 0x38)
+        {
+            uint t = BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan(ph));
+            if (t == 2) { dynOff = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 8)); dynSz = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 40)); }
+            if (t == 1) loads.Add((BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 16)), BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 8)), BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 32))));
+        }
+        for (ulong d = dynOff; d + 16 <= dynOff + dynSz; d += 16)
+            if (BinaryPrimitives.ReadInt64LittleEndian(file.AsSpan((int)d)) == 3)
+                gotVaddr = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan((int)d + 8));
+        Assert.NotEqual(0ul, gotVaddr);
+
+        // The first GOT data slot (after the 24-byte reserved header, no imports) holds the offset.
+        ulong slotVaddr = gotVaddr + 24;
+        (ulong Vaddr, ulong Off, ulong Filesz) seg = loads.Find(l => slotVaddr >= l.Vaddr && slotVaddr < l.Vaddr + l.Filesz);
+        ulong slotFile = seg.Off + (slotVaddr - seg.Vaddr);
+        Assert.Equal(unchecked((ulong)(-8L)), BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan((int)slotFile)));
+    }
+
+    [Fact]
+    public void Write_WithInitArray_EmitsTheInitArrayTags()
+    {
+        // An object with a .init_array of one 8-byte function pointer. The dynamic table must carry
+        // DT_INIT_ARRAY (25) and DT_INIT_ARRAYSZ (27) so the loader runs the constructor.
+        var text = new ElfSection { Name = ".text", Type = ShType.ProgBits, Flags = ShFlags.Alloc | ShFlags.Execute, Address = 0, Size = 0x10, Link = 0, Info = 0, AddrAlign = 16, EntSize = 0, Data = new byte[0x10] };
+        var initArray = new ElfSection { Name = ".init_array", Type = ShType.ProgBits, Flags = ShFlags.Alloc | ShFlags.Write, Address = 0, Size = 8, Link = 0, Info = 0, AddrAlign = 8, EntSize = 0, Data = new byte[8] };
+        var nullSec = new ElfSection { Name = "", Type = ShType.Null, Flags = 0, Address = 0, Size = 0, Link = 0, Info = 0, AddrAlign = 0, EntSize = 0, Data = [] };
+        var main = new ElfSymbol { Name = "main", Info = (SymBind.Global << 4) | SymType.Func, Other = 0, SectionIndex = 1, Value = 0, Size = 0 };
+        var nullSym = new ElfSymbol { Name = "", Info = 0, Other = 0, SectionIndex = 0, Value = 0, Size = 0 };
+        var obj = new ElfObject
+        {
+            Origin = "synthetic",
+            Sections = [nullSec, text, initArray],
+            Symbols = [nullSym, main],
+            Relocations = new Dictionary<int, IReadOnlyList<ElfRelocation>>(),
+        };
+        var resolution = new LinkResolution { Included = [obj], Defined = new Dictionary<string, ElfObject> { ["main"] = obj }, Imports = [], Unresolved = [] };
+        byte[] file = DynamicWriter.Write(resolution, "main");
+
+        int ph = 0x40; ulong dynOff = 0, dynSz = 0;
+        int phnum = BinaryPrimitives.ReadUInt16LittleEndian(file.AsSpan(0x38));
+        for (int i = 0; i < phnum; i++, ph += 0x38)
+            if (BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan(ph)) == 2)
+            { dynOff = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 8)); dynSz = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 40)); }
+        ulong initAddr = 0, initSize = 0;
+        for (ulong d = dynOff; d + 16 <= dynOff + dynSz; d += 16)
+        {
+            long tag = BinaryPrimitives.ReadInt64LittleEndian(file.AsSpan((int)d));
+            ulong val = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan((int)d + 8));
+            if (tag == 25) initAddr = val;      // DT_INIT_ARRAY
+            if (tag == 27) initSize = val;      // DT_INIT_ARRAYSZ
+        }
+        Assert.NotEqual(0ul, initAddr);
+        Assert.Equal(8ul, initSize);
+    }
+
+    [Fact]
+    public void Write_CommonSymbol_ReportsAClearError()
+    {
+        // A common (tentative) symbol carries the reserved section index 0xFFF2 and no storage. The
+        // linker reports it plainly rather than aborting with a bare section-index number.
+        var common = new ElfSymbol { Name = "tentative", Info = (SymBind.Global << 4) | SymType.Object, Other = 0, SectionIndex = 0xFFF2, Value = 4, Size = 4 };
+        var ex = Assert.Throws<ElfLinkException>(() => DynamicWriter.Write(BuildSingleReloc(common, RelType.R64, defineTarget: true), "main"));
+        Assert.Contains("-fno-common", ex.Message);
     }
 }

@@ -280,7 +280,9 @@ stats.DrawGraph(surface, 20, 60, 240, 60, Color.FromRgb(90, 160, 255));
 
 `Fps` comes from the mean frame time, and `LastMs`, `AvgMs`, `MinMs` and `MaxMs` report the window in
 milliseconds. The graph draws the recent frame times oldest-first, scaled so a slow frame stands out
-against a flat low line.
+against a flat low line. A mean hides the occasional stutter, so `PercentileMs(95f)` gives the time all
+but the slowest five percent of frames came in under, and `OnePercentLowFps` reports the rate a player
+feels during the worst frames.
 
 ## Scheduling callbacks
 
@@ -328,7 +330,9 @@ queue.Enqueue(() => WriteCache(entry));
 A job runs on another thread, so anything it shares with the main thread must be guarded (a `lock` or an
 `Interlocked` counter). `BackgroundOperation` reports `IsComplete`, `Failed` and `Error`, and reading
 `Result` waits and rethrows the work's exception. `WorkQueue.Dispose` finishes the queued jobs and stops
-the threads; set its `ErrorHandler` to see a job's exception.
+the threads; set its `ErrorHandler` to see a job's exception. To get a result back from a pooled job
+rather than spawn a thread per call, `queue.Enqueue(() => Decode(bytes))` returns a `WorkItem<T>` you poll
+for `IsComplete` and read `Result` from, the pooled counterpart to `BackgroundOperation<T>`.
 
 A drawing surface and most game state are not safe to touch from a worker thread, so a job should not
 apply its own result. Hand it back to the frame thread with a `Dispatcher`. `ProsperoApp` owns one and
@@ -404,6 +408,27 @@ string text = fr.Format("greeting", name); // "Bonjour, Sven", or the English te
 
 Load the entries from the INI or JSON readers; a missing key returns the key itself so it is visible. The
 current user language comes from `SystemParameters`.
+
+## Loading assets
+
+`AssetManager` gives one path space over several sources, so a build asks for an asset by a logical name
+and does not care whether it comes from a folder in the package, a tar archive bundled with the title, or
+bytes built at runtime. Mount the sources once, then read by name; the bytes are read on first use and
+kept, and a decoded asset is decoded once and kept too.
+
+```csharp
+using SharpProspero.Storage;
+
+var assets = new AssetManager();
+assets.MountDirectory("/app0/assets");                       // the package's assets folder, at the root
+assets.MountArchive(FileSystem.ReadAllBytes("/app0/levels.tar"), prefix: "levels");
+
+Image title = assets.Load("ui/title.bmp", BmpImage.Load);    // decoded once, then served from the cache
+byte[] level = assets.ReadBytes("levels/world1.dat");
+```
+
+A later mount covers an earlier one for the same name, so a patch or a user folder can override the base
+content. `Unload` forgets one asset and `ClearCache` forgets them all, keeping the mounts.
 
 ## Settings files
 

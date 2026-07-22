@@ -34,8 +34,10 @@ public static class DynamicWriter
     private const long DtSceStrTab = 0x61000035, DtSceStrSz = 0x61000037, DtSceSymTab = 0x61000039, DtSceSymEnt = 0x6100003b;
     private const long DtRela = 7, DtRelaSz = 8, DtRelaEnt = 9, DtRelaCount = 0x6ffffff9;
     private const long DtSceRela = 0x6100002f, DtSceRelaSz = 0x61000031;
-    private const uint RJumpSlot = 7, RGlobDat = 6, RRelative = 8, RAbs64 = 1;
+    private const long DtInitArray = 25, DtFiniArray = 26, DtInitArraySz = 27, DtFiniArraySz = 28;
+    private const uint RJumpSlot = 7, RGlobDat = 6, RRelative = 8, RAbs64 = 1, RIRelative = 37;
     private const ushort ShnAbs = 0xFFF1; // an absolute symbol: its value is its address, not a section offset
+    private const ushort ShnCommon = 0xFFF2; // a common (tentative, uninitialized global) symbol with no section
     private const string Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+-";
 
     // One entry in the dynamic relocation table: the slot to patch, the x86-64 relocation type, the
@@ -118,12 +120,38 @@ public static class DynamicWriter
         // sections are held out; they form a separate template laid out below.
         var sectionOffsetInGroup = new Dictionary<(ElfObject, int), ulong>();
         ulong textLen = 0, roLen = 0, dataLen = 0, dataMem = 0;
+
+        // The init and fini arrays are laid out first, contiguously, so their combined address and size can
+        // name a DT_INIT_ARRAY / DT_FINI_ARRAY for the loader to run global constructors and destructors.
+        // Data sections are position-independent (their pointers are relocated), so placing these first is
+        // safe. The runs stay contiguous because nothing else is placed into the data group between them.
+        ulong initArrayOff = 0, initArrayEnd = 0, finiArrayOff = 0, finiArrayEnd = 0;
+        bool haveInit = false, haveFini = false;
+        void PlaceArray(string name, ref ulong start, ref ulong end, ref bool have)
+        {
+            foreach (ElfObject obj in resolution.Included)
+                for (int i = 0; i < obj.Sections.Count; i++)
+                {
+                    ElfSection sec = obj.Sections[i];
+                    if (sec is not { IsAlloc: true, IsTls: false, IsWritable: true } || sec.Name != name)
+                        continue;
+                    ulong o = Align(dataMem, sec.AddrAlign);
+                    sectionOffsetInGroup[(obj, i)] = o;
+                    dataMem = o + sec.Size;
+                    if (!sec.IsNoBits) dataLen = dataMem;
+                    if (!have) { start = o; have = true; }
+                    end = dataMem;
+                }
+        }
+        PlaceArray(".init_array", ref initArrayOff, ref initArrayEnd, ref haveInit);
+        PlaceArray(".fini_array", ref finiArrayOff, ref finiArrayEnd, ref haveFini);
+
         foreach (ElfObject obj in resolution.Included)
         {
             for (int i = 0; i < obj.Sections.Count; i++)
             {
                 ElfSection sec = obj.Sections[i];
-                if (!sec.IsAlloc || sec.IsTls) continue;
+                if (!sec.IsAlloc || sec.IsTls || sectionOffsetInGroup.ContainsKey((obj, i))) continue;
                 if (sec.IsExecutable) { sectionOffsetInGroup[(obj, i)] = textLen = Align(textLen, sec.AddrAlign); textLen += sec.Size; }
                 else if (sec.IsWritable)
                 {
@@ -212,7 +240,9 @@ public static class DynamicWriter
                 {
                     if (r.SymbolIndex >= (uint)o.Symbols.Count)
                         continue;
-                    if (r.Type == RelType.GotPcRel)
+                    // A GOT-relative data load and an initial-exec thread-local load both need a GOT slot;
+                    // the thread-local slot holds a link-time offset rather than an address (filled below).
+                    if (RelType.IsGotPcRel(r.Type) || r.Type == RelType.GotTpOff)
                     {
                         string n = o.Symbols[(int)r.SymbolIndex].Name;
                         if (n.Length > 0 && gotDataIndex.TryAdd(n, gotDataOrder.Count))
@@ -221,7 +251,7 @@ public static class DynamicWriter
                             gotDataSym.Add((o, (int)r.SymbolIndex));
                         }
                     }
-                    else if (r.Type == RelType.R64)
+                    else if (r.Type == RelType.R64 && ProducesDynReloc(resolution, importByName, o.Symbols[(int)r.SymbolIndex]))
                         abs64Count++;
                 }
             }
@@ -254,7 +284,18 @@ public static class DynamicWriter
         byte[] dynsymBytes = [.. dynsym];
         byte[] hashBytes = BuildSysVHash(imports.Count + exports.Count + 1);
         byte[] relaBytes = new byte[imports.Count * 24];
-        byte[] relaDynBytes = new byte[(gotDataOrder.Count + abs64Count) * 24];
+        // A GOT-data slot carries a load-time relocation unless it targets an unresolved weak symbol,
+        // which stays null with no fixup; count the ones that actually emit a record so the table is
+        // sized exactly rather than padded with ignored entries.
+        int gotDataRelocCount = 0;
+        for (int i = 0; i < gotDataOrder.Count; i++)
+        {
+            ElfSymbol gs = gotDataSym[i].Obj.Symbols[gotDataSym[i].SymIndex];
+            // A thread-local slot holds a fixed link-time offset with no load-time fixup.
+            if (gs.Type != SymType.Tls && ProducesDynReloc(resolution, importByName, gs))
+                gotDataRelocCount++;
+        }
+        byte[] relaDynBytes = new byte[(gotDataRelocCount + abs64Count) * 24];
         byte[] pltBytes = new byte[16 + imports.Count * 16];
         byte[] gotBytes = new byte[24 + imports.Count * 8 + gotDataOrder.Count * 8];
         byte[] procParam = BuildProcParam();
@@ -305,8 +346,12 @@ public static class DynamicWriter
         ulong SectionAddr(ElfObject o, int i)
         {
             if (tlsOffset.TryGetValue((o, i), out ulong tlsO)) return tlsAddr + tlsO;
-            // A reserved or out-of-range section index (a common-block or otherwise unsupported symbol)
-            // has no section address; report it as a link error rather than indexing past the sections.
+            // A common (tentative) symbol carries no section; modern compilers place these in .bss by
+            // default, so a clear message beats indexing past the sections with a bare index number.
+            if (i == ShnCommon)
+                throw new ElfLinkException($"{o.Origin}: a common (uninitialized global) symbol has no storage. Compile the object with -fno-common, the default on current compilers.");
+            // A reserved or out-of-range section index has no section address; report it as a link
+            // error rather than indexing past the sections.
             if ((uint)i >= (uint)o.Sections.Count)
                 throw new ElfLinkException($"{o.Origin}: a symbol refers to section index {i}, which the object does not define.");
             ElfSection s = o.Sections[i];
@@ -321,14 +366,30 @@ public static class DynamicWriter
         for (int i = 0; i < gotDataOrder.Count; i++)
         {
             ulong slot = gotDataAddr + (ulong)i * 8;
+            (ElfObject tobj, int tsi) = gotDataSym[i];
+            ElfSymbol tsym = tobj.Symbols[tsi];
+            if (tsym.Type == SymType.Tls)
+            {
+                // Initial-exec: the slot holds a fixed thread-pointer offset (template offset minus the
+                // aligned template size, since the block sits below the thread pointer on this target), so
+                // it is written into the slot at link time and needs no load-time relocation.
+                if (!TryTlsTemplateOffset(resolution, tlsOffset, tobj, tsym, out ulong templateOffset))
+                    throw new ElfLinkException($"Thread-local symbol '{tsym.Name}' referenced through the GOT has no template section.");
+                int slotByte = 24 + imports.Count * 8 + i * 8;
+                BinaryPrimitives.WriteUInt64LittleEndian(gotBytes.AsSpan(slotByte), (ulong)((long)templateOffset - (long)tlsAlignedMem));
+                continue;
+            }
             if (importByName.TryGetValue(gotDataOrder[i], out Import? imp))
                 dynRelocs.Add(new DynReloc(slot, RGlobDat, (uint)imp.DynSymIndex, 0));
             else
             {
                 // Resolve with the defining object's context so a file-local symbol reaches its true
-                // address, not the global table (which holds only global and weak names).
+                // address, not the global table (which holds only global and weak names). An unresolved
+                // weak target keeps its zero-initialized slot, with no base-relative fixup, so that the
+                // address-taken idiom sees null rather than the load base.
                 (ElfObject o, int si) = gotDataSym[i];
-                dynRelocs.Add(new DynReloc(slot, RRelative, 0, SymbolValue(resolution, importByName, SectionAddr, o, o.Symbols[si])));
+                if (ProducesDynReloc(resolution, importByName, o.Symbols[si]))
+                    dynRelocs.Add(new DynReloc(slot, RRelative, 0, SymbolValue(resolution, importByName, SectionAddr, o, o.Symbols[si])));
             }
         }
 
@@ -361,11 +422,16 @@ public static class DynamicWriter
             BinaryPrimitives.WriteUInt64LittleEndian(dynsymBytes.AsSpan(index * 24 + 8),
                 SymbolValue(resolution, importByName, SectionAddr, obj, sym));
 
+        // The init/fini arrays sit in the data segment; give their runtime address and size so the loader
+        // runs the global constructors and destructors before the entry point and at teardown.
+        (ulong Address, ulong Size) initArray = haveInit ? (dataAddr + initArrayOff, initArrayEnd - initArrayOff) : (0, 0);
+        (ulong Address, ulong Size) finiArray = haveFini ? (dataAddr + finiArrayOff, finiArrayEnd - finiArrayOff) : (0, 0);
+
         byte[] dynamicBytes = BuildDynamic(moduleRecords, moduleInfoName,
             dynsymAddr, dynstrAddr, (ulong)dynstrBytes.Length, hashAddr, (ulong)hashBytes.Length,
             relaAddr, (ulong)relaBytes.Length, gotAddr, dynsymBytes.Length,
             relaDynAddr, (ulong)relaDynBytes.Length, relativeCount,
-            hasExports, origFileNameOff, moduleInfoName, exportLibId);
+            hasExports, origFileNameOff, moduleInfoName, exportLibId, initArray, finiArray);
 
         ulong entry = 0;
         if (!string.IsNullOrEmpty(entrySymbol) && resolution.Defined.TryGetValue(entrySymbol, out ElfObject? eo))
@@ -404,14 +470,17 @@ public static class DynamicWriter
                     ElfSymbol sym = obj.Symbols[(int)r.SymbolIndex];
                     ulong place = secAddr + r.Offset;
                     int at = (int)r.Offset;
-                    int width = r.Type is RelType.R64 or RelType.TpOff64 ? 8 : 4;
+                    int width = r.Type is RelType.R64 or RelType.TpOff64 or RelType.Pc64 ? 8 : 4;
                     if (at < 0 || at + width > bytes.Length) continue;
 
-                    if (r.Type == RelType.GotPcRel)
+                    if (RelType.IsGotPcRel(r.Type) || r.Type == RelType.GotTpOff)
                     {
-                        // The reference is fixed to point at the symbol's GOT entry, not the symbol.
-                        // Only named symbols get a GOT slot (the collection pass skips empty names), so
-                        // a GOT reference to an unnamed section symbol is unsupported rather than a crash.
+                        // The reference is fixed to point at the symbol's GOT entry, not the symbol. The
+                        // relaxable data variants (GOTPCRELX/REX_GOTPCRELX) and the initial-exec
+                        // thread-local variant (GOTTPOFF) all resolve to the same slot address; what the
+                        // slot holds (an address versus a thread-pointer offset) is filled separately.
+                        // Only named symbols get a GOT slot (the collection pass skips empty names), so a
+                        // GOT reference to an unnamed section symbol is unsupported rather than a crash.
                         if (!gotDataIndex.TryGetValue(sym.Name, out int gotDataSlot))
                             throw new ElfLinkException("GOT-relative relocation against an unnamed symbol is not supported.");
                         ulong gotSlot = gotDataAddr + (ulong)gotDataSlot * 8;
@@ -437,22 +506,37 @@ public static class DynamicWriter
                     ulong s = SymbolValue(resolution, importByName, sectionAddr, obj, sym);
                     switch (r.Type)
                     {
+                        case RelType.None:
+                            break;
                         case RelType.R64:
                             BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(at), s + (ulong)r.Addend);
                             // An absolute 64-bit reference needs a load-time fixup: a symbol record for
-                            // an imported target, a base-relative record for a defined one.
-                            if (sym.IsUndefined && importByName.TryGetValue(sym.Name, out Import? imp))
+                            // an imported target, a base-relative record for a defined one. An indirect
+                            // function is special: the loader calls its resolver and stores the result, so
+                            // the record is an irelative whose addend is the resolver address. An
+                            // unresolved weak reference resolves to absolute zero and needs no fixup, so
+                            // leave it out rather than read the load base.
+                            if (sym.Type == SymType.GnuIfunc && !sym.IsUndefined)
+                                dynRelocs.Add(new DynReloc(place, RIRelative, 0, s + (ulong)r.Addend));
+                            else if (sym.IsUndefined && importByName.TryGetValue(sym.Name, out Import? imp))
                                 dynRelocs.Add(new DynReloc(place, RAbs64, (uint)imp.DynSymIndex, (ulong)r.Addend));
-                            else
+                            else if (ProducesDynReloc(resolution, importByName, sym))
                                 dynRelocs.Add(new DynReloc(place, RRelative, 0, s + (ulong)r.Addend));
                             break;
                         case RelType.Pc32:
                         case RelType.Plt32:
                             BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(at), (uint)(long)(s + (ulong)r.Addend - place)); break;
+                        case RelType.Pc64:
+                            BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(at), (ulong)((long)(s + (ulong)r.Addend) - (long)place)); break;
                         case RelType.R32:
                         case RelType.R32S:
                             throw new ElfLinkException(
                                 $"A 32-bit absolute relocation on '{sym.Name}' cannot be fixed up in a relocatable module; compile position-independent code.");
+                        default:
+                            // Fail loudly on an unhandled type rather than silently leaving the target
+                            // bytes at their compiler placeholder, which would miscompile without warning.
+                            throw new ElfLinkException(
+                                $"{obj.Origin}: unsupported relocation type {r.Type} on '{sym.Name}'. The linker resolves absolute, PC-relative, PLT, GOT-relative and local-exec thread-local references.");
                     }
                 }
                 result[(obj, idx)] = bytes;
@@ -481,6 +565,13 @@ public static class DynamicWriter
         if (sym.IsWeak) return 0;
         throw new ElfLinkException($"Unresolved symbol '{sym.Name}'.");
     }
+
+    // Whether an absolute or GOT-data reference to this symbol emits a load-time dynamic relocation.
+    // A symbol defined here or in another included object needs a base-relative fixup, and an imported
+    // one resolves through the dynamic symbol table. An unresolved weak reference resolves to absolute
+    // zero and emits nothing, so an address-taken weak symbol reads as null rather than the load base.
+    private static bool ProducesDynReloc(LinkResolution resolution, Dictionary<string, Import> importByName, ElfSymbol sym)
+        => !sym.IsUndefined || importByName.ContainsKey(sym.Name) || resolution.Defined.ContainsKey(sym.Name);
 
     // The address of a section-boundary symbol: the lowest start (for __start_) or the highest end (for
     // __stop_) of the allocated sections that carry the named section across every included object.
@@ -666,7 +757,8 @@ public static class DynamicWriter
         ulong symtab, ulong strtab, ulong strsz, ulong hash, ulong hashsz,
         ulong jmprel, ulong pltrelsz, ulong pltgot, int dynsymSize,
         ulong rela, ulong relasz, int relativeCount,
-        bool hasExports, int origFileNameOff, int exportLibNameOff, int exportLibId)
+        bool hasExports, int origFileNameOff, int exportLibNameOff, int exportLibId,
+        (ulong Address, ulong Size) initArray, (ulong Address, ulong Size) finiArray)
     {
         // Record value packs: nameOffset | (version << 32) | (id << 48). The module's own info and its
         // export library carry this module's version; each needed record carries the version that
@@ -695,6 +787,8 @@ public static class DynamicWriter
         e.Add((DtSymEnt, 24)); e.Add((DtSceSymEnt, 24));
         e.Add((DtStrTab, strtab)); e.Add((DtSceStrTab, strtab)); e.Add((DtStrSz, strsz)); e.Add((DtSceStrSz, strsz));
         e.Add((DtPltGot, pltgot)); e.Add((DtPltRel, 7 /* DT_RELA */)); e.Add((DtPltRelSz, pltrelsz)); e.Add((DtJmpRel, jmprel));
+        if (initArray.Size > 0) { e.Add((DtInitArray, initArray.Address)); e.Add((DtInitArraySz, initArray.Size)); }
+        if (finiArray.Size > 0) { e.Add((DtFiniArray, finiArray.Address)); e.Add((DtFiniArraySz, finiArray.Size)); }
         if (relasz > 0)
         {
             e.Add((DtRela, rela)); e.Add((DtSceRela, rela));

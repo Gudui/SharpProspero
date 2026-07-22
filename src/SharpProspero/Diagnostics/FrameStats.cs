@@ -25,6 +25,7 @@ namespace SharpProspero.Diagnostics;
 public sealed class FrameStats
 {
     private readonly float[] _samples;
+    private readonly float[] _sorted;
     private readonly (int X, int Y)[] _points;
     private int _count;
     private int _head;
@@ -35,6 +36,7 @@ public sealed class FrameStats
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(window, 2);
         _samples = new float[window];
+        _sorted = new float[window];
         _points = new (int, int)[window];
     }
 
@@ -53,8 +55,41 @@ public sealed class FrameStats
     /// <summary>The frame rate from the mean frame time, in frames per second.</summary>
     public float Fps => AvgMs > 0f ? 1000f / AvgMs : 0f;
 
+    /// <summary>
+    /// The frame rate of the one-percent-low frames: the slowest frames the window holds, reported as the
+    /// rate a player feels during a stutter rather than the smooth average. Zero until the window fills a
+    /// little. This is the ninety-ninth-percentile frame time turned into a rate.
+    /// </summary>
+    public float OnePercentLowFps
+    {
+        get
+        {
+            float ms = PercentileMs(99f);
+            return ms > 0f ? 1000f / ms : 0f;
+        }
+    }
+
     /// <summary>How many frames the window currently holds.</summary>
     public int SampleCount => _count;
+
+    /// <summary>
+    /// The frame time at the given <paramref name="percentile"/> (0 to 100) of the window, in
+    /// milliseconds: the ninety-fifth percentile, say, is the time all but the slowest five percent of
+    /// frames came in under. Returns zero when the window is empty. A high percentile exposes the slow
+    /// frames that a mean hides.
+    /// </summary>
+    public float PercentileMs(float percentile)
+    {
+        if (_count == 0)
+            return 0f;
+        Array.Copy(_samples, _sorted, _count);
+        Array.Sort(_sorted, 0, _count);
+        float clamped = Math.Clamp(percentile, 0f, 100f);
+        // Nearest-rank: the smallest sample at or above the requested share of the window.
+        int rank = (int)MathF.Ceiling(clamped / 100f * _count);
+        int index = Math.Clamp(rank - 1, 0, _count - 1);
+        return _sorted[index];
+    }
 
     /// <summary>Adds a frame of <paramref name="deltaSeconds"/>. A negative or zero delta is ignored.</summary>
     public void Record(float deltaSeconds)

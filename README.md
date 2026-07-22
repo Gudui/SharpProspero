@@ -192,8 +192,9 @@ setx SHARPPROSPERO_ROOT "<this folder>"
 pwsh MyGame/build.ps1
 ```
 
-The other templates are `prospero-game` (a real-time game), `prospero-ui`, `prospero-tool`,
-`prospero-media` (a media player), `prospero-server` (an HTTP control panel) and `prospero-prx`; see
+The other templates are `prospero-game` (a real-time game), `prospero-ui`, `prospero-launcher` (a
+carousel launcher front end), `prospero-filemanager` (a file browser), `prospero-tool`, `prospero-media`
+(a media player), `prospero-server` (an HTTP control panel) and `prospero-prx`; see
 [docs/templates.md](docs/templates.md).
 
 Or build the sample. Pick the output you want:

@@ -69,6 +69,13 @@ public sealed record SelfImage(
     byte[] Elf,
     SelfExtInfo? ExtInfo);
 
+/// <summary>The result of a container integrity check.</summary>
+/// <param name="HasDigest">Whether the container carried an extended-info digest to check against.</param>
+/// <param name="Matches">Whether the recomputed digest equals the stored one.</param>
+/// <param name="Stored">The digest stored in the extended info.</param>
+/// <param name="Computed">The digest recomputed from the embedded ELF.</param>
+public readonly record struct SelfIntegrity(bool HasDigest, bool Matches, byte[] Stored, byte[] Computed);
+
 /// <summary>Options for <see cref="SelfContainer.Sign"/>.</summary>
 public sealed class SelfSignOptions
 {
@@ -323,6 +330,22 @@ public static class SelfContainer
     }
 
     /// <summary>
+    /// Recomputes the SHA-256 of the container's embedded ELF and compares it with the digest stored in
+    /// the extended info, so a reader can tell whether the container is intact. The result's
+    /// <c>HasDigest</c> is false when the container carries no extended-info digest to check against.
+    /// </summary>
+    /// <param name="data">The container file bytes.</param>
+    public static SelfIntegrity CheckIntegrity(ReadOnlySpan<byte> data)
+    {
+        SelfImage image = Parse(data);
+        if (image.ExtInfo is not SelfExtInfo ext || ext.Digest is null || ext.Digest.Length != 32)
+            return new SelfIntegrity(false, false, [], []);
+        byte[] computed = SHA256.HashData(ExtractElf(data));
+        bool matches = computed.AsSpan().SequenceEqual(ext.Digest);
+        return new SelfIntegrity(true, matches, ext.Digest, computed);
+    }
+
+    /// <summary>
     /// Wraps an ELF in a signed container whose digest and signature slots are zero-filled, which a
     /// development console accepts. The extended-info digest is a SHA-256 over the embedded ELF, so
     /// the output is fully determined by the input and the options.
@@ -331,6 +354,7 @@ public static class SelfContainer
     /// <param name="options">Version and authority overrides.</param>
     /// <returns>The container file bytes.</returns>
     /// <exception cref="PrxFormatException">The input is not a supported ELF.</exception>
+
     public static byte[] Sign(byte[] elf, SelfSignOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(elf);

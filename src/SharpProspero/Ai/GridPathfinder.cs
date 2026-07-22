@@ -69,11 +69,25 @@ public sealed class GridPathfinder
     public List<(int Column, int Row)> FindPath((int Column, int Row) start, (int Column, int Row) goal, Func<int, int, bool> isWalkable)
     {
         ArgumentNullException.ThrowIfNull(isWalkable);
+        return FindPath(start, goal, (column, row) => isWalkable(column, row) ? 1f : 0f);
+    }
+
+    /// <summary>
+    /// Finds the cheapest path from <paramref name="start"/> to <paramref name="goal"/> when cells cost
+    /// different amounts to cross, such as mud that is slower than a road. <paramref name="cost"/> returns
+    /// the cost to enter a cell; a value of one is normal ground, higher is slower, and zero or less means
+    /// the cell is blocked. The returned list runs from the start cell to the goal cell inclusive, or is
+    /// empty when there is no path. Keep costs at one or above so the search stays optimal.
+    /// </summary>
+    /// <exception cref="ArgumentNullException"><paramref name="cost"/> is null.</exception>
+    public List<(int Column, int Row)> FindPath((int Column, int Row) start, (int Column, int Row) goal, Func<int, int, float> cost)
+    {
+        ArgumentNullException.ThrowIfNull(cost);
         var path = new List<(int, int)>();
 
         if (!InBounds(start.Column, start.Row) || !InBounds(goal.Column, goal.Row))
             return path;
-        if (!isWalkable(start.Column, start.Row) || !isWalkable(goal.Column, goal.Row))
+        if (cost(start.Column, start.Row) <= 0f || cost(goal.Column, goal.Row) <= 0f)
             return path;
 
         Array.Fill(_gScore, float.PositiveInfinity);
@@ -107,19 +121,22 @@ public sealed class GridPathfinder
 
                 (int dx, int dy) = Offsets[direction];
                 int nx = cx + dx, ny = cy + dy;
-                if (!InBounds(nx, ny) || !isWalkable(nx, ny))
+                if (!InBounds(nx, ny))
+                    continue;
+                float cellCost = cost(nx, ny);
+                if (cellCost <= 0f)
                     continue;
 
                 // A diagonal step is only taken when both orthogonal cells beside it are open, so a path
                 // never slips through the corner of a wall.
-                if (diagonal && (!isWalkable(cx + dx, cy) || !isWalkable(cx, cy + dy)))
+                if (diagonal && (cost(cx + dx, cy) <= 0f || cost(cx, cy + dy) <= 0f))
                     continue;
 
                 int neighbor = (ny * _columns) + nx;
                 if (_closed[neighbor])
                     continue;
 
-                float tentative = _gScore[current] + (diagonal ? DiagonalCost : 1f);
+                float tentative = _gScore[current] + (cellCost * (diagonal ? DiagonalCost : 1f));
                 if (tentative < _gScore[neighbor])
                 {
                     _gScore[neighbor] = tentative;

@@ -236,6 +236,24 @@ screen.Update(repeater.Update(context.Input, (float)context.DeltaSeconds));
 Confirm and cancel are still reported once, so they never repeat. Call `repeater.Reset()` when focus
 jumps somewhere new so a held direction does not carry a repeat into it.
 
+## More controls than fit
+
+When a settings form has more controls than the screen has room for, put them in a `ScrollMenu`. It holds
+focus as one unit and moves a highlight through its controls with up and down, scrolling to keep the
+focused control in view; confirm and adjust reach whichever control is focused. Up on the first control
+and down on the last are left for the screen, so focus can move out of the window.
+
+```csharp
+var options = new ScrollMenu { ViewHeight = 320 }
+    .Add(new Checkbox("Fullscreen", true))
+    .Add(new Slider("Volume", 0, 100, 80))
+    .Add(new Button("Reset", () => ResetSettings()));
+var screen = new UiScreen(options);
+```
+
+`ScrollView` scrolls read-only content as a block and `ListView` scrolls a list of items to pick from;
+`ScrollMenu` is for a column of controls the user operates in place.
+
 ## Theming
 
 `UiTheme` holds the colors and spacing. Use `UiTheme.Default` for a dark theme, or change what you want

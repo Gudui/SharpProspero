@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Concurrent;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 
 namespace SharpProspero.Threading;
@@ -70,6 +71,21 @@ public sealed class WorkQueue : IDisposable
         }
     }
 
+    /// <summary>
+    /// Adds a result-producing <paramref name="job"/> and returns a handle the frame loop can poll for
+    /// the result. This runs on the shared pool rather than a thread of its own, so it is the pooled
+    /// counterpart to <see cref="BackgroundOperation{T}"/> when many results are produced over a run.
+    /// </summary>
+    /// <exception cref="ArgumentNullException"><paramref name="job"/> is null.</exception>
+    /// <exception cref="ObjectDisposedException">The queue has been disposed.</exception>
+    public WorkItem<T> Enqueue<T>(Func<T> job)
+    {
+        ArgumentNullException.ThrowIfNull(job);
+        var item = new WorkItem<T>();
+        Enqueue(() => item.Run(job));
+        return item;
+    }
+
     /// <summary>Stops taking new jobs, waits for the queued and running ones to finish, and stops the threads.</summary>
     public void Dispose()
     {
@@ -103,6 +119,65 @@ public sealed class WorkQueue : IDisposable
                 try { ErrorHandler?.Invoke(e); }
                 catch { }
             }
+        }
+    }
+}
+
+/// <summary>
+/// A handle to a result-producing job running on a <see cref="WorkQueue"/>. Poll <see cref="IsComplete"/>
+/// from the frame loop, then read <see cref="Result"/>; reading the result before it is ready waits for
+/// it, and if the job threw, reading the result throws that same exception.
+/// </summary>
+/// <typeparam name="T">The type of result the job produces.</typeparam>
+public sealed class WorkItem<T>
+{
+    private readonly ManualResetEventSlim _done = new(false);
+    private T? _result;
+    private Exception? _error;
+    private volatile bool _complete;
+
+    /// <summary>Whether the job has finished (whether it succeeded or threw).</summary>
+    public bool IsComplete => _complete;
+
+    /// <summary>Whether the job finished by throwing.</summary>
+    public bool Failed => _error is not null;
+
+    /// <summary>The exception the job threw, or null.</summary>
+    public Exception? Error => _error;
+
+    /// <summary>The result, waiting for the job if it has not finished. Rethrows the exception the job threw.</summary>
+    public T Result
+    {
+        get
+        {
+            _done.Wait();
+            if (_error is not null)
+                ExceptionDispatchInfo.Throw(_error);
+            return _result!;
+        }
+    }
+
+    /// <summary>Waits for the job to finish.</summary>
+    public void Wait() => _done.Wait();
+
+    /// <summary>Waits up to <paramref name="timeout"/> for the job to finish; returns whether it did.</summary>
+    public bool Wait(TimeSpan timeout) => _done.Wait(timeout);
+
+    // Run by a worker thread: capture the result or the exception, then release anyone waiting.
+    internal void Run(Func<T> work)
+    {
+        try
+        {
+            _result = work();
+        }
+        catch (Exception e)
+        {
+            _error = e;
+        }
+        finally
+        {
+            _complete = true;
+            _done.Set();
         }
     }
 }

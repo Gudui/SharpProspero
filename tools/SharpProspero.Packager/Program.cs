@@ -5,6 +5,7 @@
 // compiled eboot.bin and an optional sce_sys metadata tree, and it writes the finished *.pkg.
 
 using LibProsperoPkg;
+using LibProsperoPkg.Content;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -52,6 +53,7 @@ internal static class Program
             Console.WriteLine();
             Console.WriteLine($"Package: {result.OutputPath}");
             Console.WriteLine($"Module:  {result.ModulePath}");
+            PrintReadiness(result.LaunchReadiness);
             PrintWarnings(result.Warnings);
             return 0;
         }
@@ -64,6 +66,28 @@ internal static class Program
         {
             Console.Error.WriteLine($"File error: {ex.Message}");
             return 3;
+        }
+    }
+
+    // The builder classifies every module and the metadata for the launch service; surface that so the
+    // author knows whether the package will start before they copy it to a console.
+    private static void PrintReadiness(ProsperoLaunchReadinessReport report)
+    {
+        Console.WriteLine();
+        Console.WriteLine($"Launch readiness: {(report.IsLaunchReady ? "ready" : "not ready")}");
+        Console.WriteLine($"  eboot.bin:   {(report.HasEboot ? "present" : "missing")}");
+        Console.WriteLine($"  param.json:  {(report.HasParamJson ? "present" : "missing")}");
+        if (report.HasParamSfo)
+            Console.WriteLine("  param.sfo:   present (the launch service refuses this metadata form)");
+        if (report.RequiresDebugConsole)
+            Console.WriteLine("  console:     starts on a debug-mode console only (fake-authority or raw modules)");
+        foreach (ModuleLaunchReadiness module in report.Modules)
+            Console.WriteLine($"  module {module.Path}: {module.Note}");
+        if (report.Issues.Count > 0)
+        {
+            Console.WriteLine("  Blocking issues:");
+            foreach (string issue in report.Issues)
+                Console.WriteLine($"    - {issue}");
         }
     }
 

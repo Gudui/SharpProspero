@@ -15,6 +15,7 @@ dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-app
 dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-game
 dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-ui
 dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-launcher
+dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-filemanager
 dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-tool
 dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-media
 dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-server
@@ -29,6 +30,7 @@ dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-prx
 | `prospero-game` | A real-time game paced by the frame time: a paddle and a ball, a score, and a frame-rate overlay. | A game or anything with delta-timed movement, physics, and a live score. |
 | `prospero-ui` | An application built from the interface toolkit (labels, buttons, sliders, steppers, carousels, option pickers). | A menu-driven application, a settings screen, a launcher. |
 | `prospero-launcher` | An app launcher: a carousel of entries that launches the chosen title id. | A homebrew launcher or a front-end that starts other applications. |
+| `prospero-filemanager` | A file browser that walks the file system with the controller, opening folders. | A file explorer, a save-data browser, a content picker. |
 | `prospero-tool` | A toolbox application that shows a checksum, the console name, and the network status. | A system utility or toolbox that uses the SDK's tool surfaces. |
 | `prospero-media` | A media player that plays a bundled file, drawing the video and pacing the loop to the decoded audio. | A video or music player, or anything that plays a media file. |
 | `prospero-server` | A network service that serves an HTTP control panel and a JSON status endpoint from the frame loop. | A control panel, a file browser, or any service reached over the network. |
@@ -41,6 +43,7 @@ The application templates take the package identity as options:
 ```
 dotnet new prospero-app  -n MyGame   --title "My Game"      --titleId PPSA99099
 dotnet new prospero-ui   -n MyMenu    --title "My Menu"      --titleId PPSA99098
+dotnet new prospero-filemanager -n MyFiles --title "My Files" --titleId PPSA99098
 dotnet new prospero-tool -n MyToolbox --title "My Toolbox"   --titleId PPSA99097
 ```
 
@@ -73,7 +76,7 @@ An application writes an installable `*.pkg` (or a folder with `-Output Folder`)
 
 ## What each template contains
 
-- **Applications** (`prospero-app`, `prospero-game`, `prospero-ui`, `prospero-launcher`, `prospero-tool`,
+- **Applications** (`prospero-app`, `prospero-game`, `prospero-ui`, `prospero-launcher`, `prospero-filemanager`, `prospero-tool`,
   `prospero-media`, `prospero-server`): `Program.cs`, the `sce_sys` package metadata (`param.json`, `icon0.png`), and
   `build.ps1`. Edit `Program.cs`, replace the icon, and set the title and ids in `param.json` (the
   `dotnet new` options fill these in).

@@ -12,6 +12,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Reflection;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
@@ -51,11 +52,31 @@ internal static class Program
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
+    private static readonly HashSet<string> KnownVerbs = new(StringComparer.Ordinal)
+    {
+        "prx", "stub", "crt", "compat", "nid", "elf", "self", "offsets", "retarget", "sysver", "link", "diff",
+    };
+
     private static int Main(string[] args)
     {
+        // Report the tool version for a bare `version`, or for `--version` only when no command leads:
+        // a leading command may take its own `--version` option (sysver settles a required system
+        // version), which must not be shadowed by the global flag.
+        bool versionQuery = (args.Length > 0 && string.Equals(args[0], "version", StringComparison.Ordinal))
+            || (HasFlag(args, "--version") && (args.Length == 0 || !KnownVerbs.Contains(args[0])));
+        if (versionQuery)
+        {
+            Console.WriteLine(ToolVersion());
+            return 0;
+        }
+
+        // A help flag prints the usage of the named command when one leads, or the whole list otherwise.
         if (HasFlag(args, "--help") || HasFlag(args, "-h"))
         {
-            PrintUsage();
+            if (args.Length > 0 && KnownVerbs.Contains(args[0]))
+                PrintVerbUsage(args[0]);
+            else
+                PrintUsage();
             return 0;
         }
 
@@ -104,6 +125,18 @@ internal static class Program
         // Resolves the symbol graph of a set of objects and archives.
         if (args.Length > 0 && string.Equals(args[0], "link", StringComparison.Ordinal))
             return RunLink(args);
+
+        // Compares the export surfaces of two modules, across firmware versions.
+        if (args.Length > 0 && string.Equals(args[0], "diff", StringComparison.Ordinal))
+            return RunDiff(args);
+
+        // A leading token that names no command is a mistyped verb: report it rather than falling through
+        // to the header-generation default, which would fail later with an unrelated SDK-path message.
+        if (args.Length > 0 && !args[0].StartsWith('-'))
+        {
+            Console.Error.WriteLine($"Unknown command '{args[0]}'. Run with --help for the list of commands.");
+            return 2;
+        }
 
         string toolRoot = AppContext.BaseDirectory;
         string sdkInclude = GetOption(args, "--sdk") ?? DefaultSdkInclude();
@@ -298,6 +331,15 @@ internal static class Program
             bindings.Add(binding);
         }
 
+        // With --strict a name the module does not export fails the run, so a build script catches a
+        // wrapper that would bind a symbol the module cannot resolve. Without it the run still succeeds
+        // and only warns, as before.
+        if (missing > 0 && HasFlag(args, "--strict"))
+        {
+            Console.Error.WriteLine($"{missing} requested name(s) are not exported by the module; refusing to emit under --strict.");
+            return 3;
+        }
+
         string source = PrxBindingsEmitter.Emit(ns, className, moduleFileName, bindings);
         string? outPath = GetOption(args, "--out");
         if (outPath is null)
@@ -403,6 +445,65 @@ internal static class Program
         }
     }
 
+    // Compares the export surfaces of two modules: which identifiers one has and the other does not, and
+    // which are present in both but at a different address. Useful for seeing what changed between two
+    // firmware builds of the same module.
+    private static int RunDiff(string[] args)
+    {
+        string? a = GetOption(args, "--a");
+        string? b = GetOption(args, "--b");
+        if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b) || !File.Exists(a) || !File.Exists(b))
+        {
+            Console.Error.WriteLine("Usage: diff --a <module> --b <module>");
+            Console.Error.WriteLine("  Reports the export identifiers added, removed, and moved from A to B.");
+            return 1;
+        }
+        try
+        {
+            PrxImage imageA = PrxImage.Parse(ModuleFile.Read(a).Elf);
+            PrxImage imageB = PrxImage.Parse(ModuleFile.Read(b).Elf);
+            var mapA = new Dictionary<string, PrxExport>(StringComparer.Ordinal);
+            foreach (PrxExport e in imageA.Exports) mapA[e.Nid] = e;
+            var mapB = new Dictionary<string, PrxExport>(StringComparer.Ordinal);
+            foreach (PrxExport e in imageB.Exports) mapB[e.Nid] = e;
+
+            var removed = new List<string>();
+            var moved = new List<string>();
+            foreach (KeyValuePair<string, PrxExport> kv in mapA)
+            {
+                if (!mapB.TryGetValue(kv.Key, out PrxExport other))
+                    removed.Add(Label(kv.Value));
+                else if (other.Value != kv.Value.Value)
+                    moved.Add($"{Label(kv.Value)}  0x{kv.Value.Value:x} -> 0x{other.Value:x}");
+            }
+            var added = new List<string>();
+            foreach (KeyValuePair<string, PrxExport> kv in mapB)
+                if (!mapA.ContainsKey(kv.Key))
+                    added.Add(Label(kv.Value));
+            removed.Sort(StringComparer.Ordinal);
+            added.Sort(StringComparer.Ordinal);
+            moved.Sort(StringComparer.Ordinal);
+
+            Console.WriteLine($"A: {Path.GetFileName(a)} ({imageA.Exports.Count} exports)");
+            Console.WriteLine($"B: {Path.GetFileName(b)} ({imageB.Exports.Count} exports)");
+            Console.WriteLine($"Removed (in A, not B): {removed.Count}");
+            foreach (string s in removed) Console.WriteLine($"  - {s}");
+            Console.WriteLine($"Added (in B, not A): {added.Count}");
+            foreach (string s in added) Console.WriteLine($"  + {s}");
+            Console.WriteLine($"Moved (same identifier, different address): {moved.Count}");
+            foreach (string s in moved) Console.WriteLine($"  ~ {s}");
+            return removed.Count > 0 || added.Count > 0 ? 1 : 0;
+        }
+        catch (Exception ex) when (ex is PrxFormatException or IOException)
+        {
+            Console.Error.WriteLine($"Could not read a module: {ex.Message}");
+            return 2;
+        }
+
+        static string Label(PrxExport e)
+            => string.IsNullOrEmpty(e.LibraryName) ? e.Nid : $"{e.Nid} [{e.LibraryName}]";
+    }
+
     // Prints the header, program headers, dependencies and, with --exports, the exported symbols of an
     // ELF module, without an external tool.
     private static int RunElf(string[] args)
@@ -504,11 +605,20 @@ internal static class Program
             string kind;
             if (sign)
             {
+                // A version or authority given but not a valid hex number is a mistake (a dotted "9.00",
+                // say); reject it rather than signing with a silently defaulted zero.
+                if (!ValidHexOrAbsent(args, "--app-version", out ulong appVersion)
+                    || !ValidHexOrAbsent(args, "--fw-version", out ulong firmwareVersion)
+                    || !ValidHexOrAbsent(args, "--authority", out ulong authority))
+                {
+                    Console.Error.WriteLine("--app-version, --fw-version and --authority take a hex value like 0x02000000.");
+                    return 1;
+                }
                 var options = new SelfSignOptions
                 {
-                    AppVersion = ParseHexOption(args, "--app-version"),
-                    FirmwareVersion = ParseHexOption(args, "--fw-version"),
-                    AuthorityId = TryParseHexOption(args, "--authority", out ulong id) ? id : null,
+                    AppVersion = appVersion,
+                    FirmwareVersion = firmwareVersion,
+                    AuthorityId = GetOption(args, "--authority") is not null ? authority : null,
                     NormalizeHeader = !HasFlag(args, "--no-normalize"),
                 };
                 result = SelfContainer.Sign(data, options);
@@ -541,12 +651,29 @@ internal static class Program
 
                 Console.WriteLine("Container: signed (.self / .sprx), readable");
                 Console.WriteLine($"Segments:  {image.Segments.Count}");
+                foreach (SelfSegment seg in image.Segments)
+                {
+                    var attrs = new List<string>();
+                    if (seg.Blocked) attrs.Add("payload");
+                    if (seg.Compressed) attrs.Add("compressed");
+                    if (seg.Encrypted) attrs.Add("encrypted");
+                    if (seg.Signed) attrs.Add("signed");
+                    Console.WriteLine($"  segment {seg.Id}: {seg.FileSize} bytes{(attrs.Count > 0 ? " (" + string.Join(", ", attrs) + ")" : "")}");
+                }
                 if (image.ExtInfo is SelfExtInfo ext)
+                {
                     Console.WriteLine($"Authority: 0x{ext.AuthorityId:X16}");
+                    Console.WriteLine($"Prog type: 0x{ext.ProgramType:X16}");
+                    Console.WriteLine($"App ver:   0x{ext.AppVersion:X16}");
+                    Console.WriteLine($"Fw ver:    0x{ext.FirmwareVersion:X16}");
+                    Console.WriteLine($"Digest:    {Convert.ToHexString(ext.Digest)}");
+                }
                 try
                 {
                     ElfInfo info = ElfInfo.Parse(SelfContainer.ExtractElf(data));
                     Console.WriteLine($"ELF type:  {info.TypeName}");
+                    SelfIntegrity integrity = SelfContainer.CheckIntegrity(data);
+                    Console.WriteLine($"Integrity: {(!integrity.HasDigest ? "no stored digest" : integrity.Matches ? "ok (digest matches the embedded ELF)" : "MISMATCH (the stored digest does not match)")}");
                 }
                 catch (PrxFormatException) { }
                 return 0;
@@ -838,8 +965,16 @@ internal static class Program
         return ushort.TryParse(text, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out value);
     }
 
-    private static ulong ParseHexOption(string[] args, string name)
-        => TryParseHexOption(args, name, out ulong value) ? value : 0UL;
+    // True when the option is absent (value stays zero) or present with a valid hex value; false only
+    // when it is present but does not parse, so a malformed value is caught rather than silently zeroed.
+    private static bool ValidHexOrAbsent(string[] args, string name, out ulong value)
+    {
+        value = 0;
+        string? text = GetOption(args, name);
+        if (string.IsNullOrEmpty(text))
+            return true;
+        return TryParseHexOption(args, name, out value);
+    }
 
     private static bool TryParseHexOption(string[] args, string name, out ulong value)
     {
@@ -1143,22 +1278,90 @@ internal static class Program
         return result.Length > 0 && char.IsLetter(result[0]) ? result : "Module" + result;
     }
 
+    // The tool's build version, for a build log to record which toolchain produced a module.
+    private static string ToolVersion()
+    {
+        Assembly assembly = typeof(Program).Assembly;
+        string? informational = assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+        string version = informational ?? assembly.GetName().Version?.ToString() ?? "unknown";
+        return $"sharpprospero-bindgen {version}";
+    }
+
+    // The full options of one command, shown for "<command> --help".
+    private static void PrintVerbUsage(string verb)
+    {
+        switch (verb)
+        {
+            case "prx":
+                Console.WriteLine("Usage: prx --module <file.prx> --inspect");
+                Console.WriteLine("       prx --module <file.prx> --names <file> [--class N] [--namespace NS] [--out F.cs] [--strict]");
+                Console.WriteLine("  Emits C# interop for the named exports. --strict fails when a name is not exported.");
+                break;
+            case "stub":
+                Console.WriteLine("Usage: stub --lib <libraryName> --names <file> --out <file.a>");
+                Console.WriteLine("       stub --module <file.prx> --names <file> --out <file.a>");
+                Console.WriteLine("  --lib assumes the usual module and library versions; --module reads them from the module.");
+                break;
+            case "crt":
+                Console.WriteLine("Usage: crt --out <file.o>    Writes the start object that carries the program entry point.");
+                break;
+            case "compat":
+                Console.WriteLine("Usage: compat --out <file.o>    Writes the compatibility object bridging the runtime's C calls.");
+                break;
+            case "nid":
+                Console.WriteLine("Usage: nid --name <symbol> [--name <symbol> ...] | nid --names <file>");
+                break;
+            case "elf":
+                Console.WriteLine("Usage: elf --file <module> [--exports]    Prints an ELF module's header (and its exports).");
+                break;
+            case "diff":
+                Console.WriteLine("Usage: diff --a <module> --b <module>    Reports the exports added, removed, and moved from A to B.");
+                break;
+            case "self":
+                Console.WriteLine("Usage: self --inspect --file <file>");
+                Console.WriteLine("       self --sign --in <file.elf|.prx> --out <file.self|.sprx> [--app-version 0xNN] [--fw-version 0xNN] [--authority 0xNN] [--no-normalize]");
+                Console.WriteLine("       self --extract --in <file.self|.sprx> --out <file.elf|.prx>");
+                break;
+            case "offsets":
+                Console.WriteLine("Usage: offsets --file <module> [--firmware NN.NN] [--coverage] [--library <name>] [--text]");
+                break;
+            case "retarget":
+                Console.WriteLine("Usage: retarget --file <module.prx|.sprx> [--to NN.NN] [--set-lib-version <name>=0xNNNN ...] [--out <file>]");
+                break;
+            case "sysver":
+                Console.WriteLine("Usage: sysver --folder <module-folder> [--policy match|upgrade|downgrade|keep] [--version NN.NN] [--apply]");
+                break;
+            case "link":
+                Console.WriteLine("Usage: link --obj <file.o> [--obj ...] [--lib <archive.a> ...] [--stub <stub.o> ...] [--self-contained]");
+                Console.WriteLine("            [--kind eboot|prx] [--entry <symbol>] [--export <name> ...] --out <module>");
+                Console.WriteLine("  --self-contained supplies the start object and the core module stubs.");
+                break;
+            default:
+                PrintUsage();
+                break;
+        }
+    }
+
     private static void PrintUsage()
     {
         Console.WriteLine("Usage: sharpprospero-bindgen [options]");
         Console.WriteLine("       sharpprospero-bindgen prx --module <file.prx> --inspect");
-        Console.WriteLine("       sharpprospero-bindgen prx --module <file.prx> --names <file> [--class N --namespace NS --out F.cs]");
+        Console.WriteLine("       sharpprospero-bindgen prx --module <file.prx> --names <file> [--class N --namespace NS --out F.cs --strict]");
         Console.WriteLine("       sharpprospero-bindgen stub --lib <libraryName> --names <file> --out <file.a>");
         Console.WriteLine("       sharpprospero-bindgen crt --out <file.o>");
-        Console.WriteLine("       sharpprospero-bindgen link --self-contained --obj <file.o> --lib <archive.a> --out <module>");
+        Console.WriteLine("       sharpprospero-bindgen compat --out <file.o>");
+        Console.WriteLine("       sharpprospero-bindgen link [--self-contained] --obj <file.o> [--lib <archive.a>] [--kind eboot|prx] [--entry <sym>] [--export <name>] --out <module>");
         Console.WriteLine("       sharpprospero-bindgen elf --file <module> [--exports]");
+        Console.WriteLine("       sharpprospero-bindgen diff --a <module> --b <module>");
         Console.WriteLine("       sharpprospero-bindgen self --inspect --file <file>");
-        Console.WriteLine("       sharpprospero-bindgen self --sign --in <file.elf|.prx> --out <file.self|.sprx>");
+        Console.WriteLine("       sharpprospero-bindgen self --sign --in <file.elf|.prx> --out <file.self|.sprx> [--app-version 0xNN --fw-version 0xNN --authority 0xNN --no-normalize]");
         Console.WriteLine("       sharpprospero-bindgen self --extract --in <file.self|.sprx> --out <file.elf|.prx>");
-        Console.WriteLine("       sharpprospero-bindgen offsets --file <module> [--firmware NN.NN] [--coverage] [--text]");
+        Console.WriteLine("       sharpprospero-bindgen offsets --file <module> [--firmware NN.NN] [--coverage] [--library <name>] [--text]");
         Console.WriteLine("       sharpprospero-bindgen retarget --file <module> [--to NN.NN] [--set-lib-version <name>=0xNNNN] [--out <file>]");
         Console.WriteLine("       sharpprospero-bindgen nid --name <symbol>");
         Console.WriteLine("       sharpprospero-bindgen sysver --folder <module-folder> [--policy P --version NN.NN --apply]");
+        Console.WriteLine();
+        Console.WriteLine("Run '<command> --help' for a command's full options, or --version for the tool version.");
         Console.WriteLine();
         Console.WriteLine("sysver settles the system version an application requires against the modules it ships:");
         Console.WriteLine("  --policy match        Require what the modules need. Never lowers. The default.");
