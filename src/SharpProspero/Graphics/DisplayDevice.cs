@@ -45,6 +45,18 @@ public sealed unsafe class DisplayDevice : IDisposable
     public Surface BackBuffer => _regions[_index].AsSurface(Width, Height);
 
     /// <summary>
+    /// The graphics-visible address of the framebuffer to draw the next frame into. The 3D renderer
+    /// points a render target at this so the graphics processor draws straight into the scan-out buffer.
+    /// </summary>
+    public unsafe void* BackBufferAddress => _regions[_index].Pointer;
+
+    /// <summary>The index of the framebuffer being drawn, within the swap chain.</summary>
+    public int CurrentBufferIndex => _index;
+
+    /// <summary>The output handle, for the renderer's flip.</summary>
+    public int OutputHandle => _handle;
+
+    /// <summary>
     /// Opens the main output and builds a swap chain of <paramref name="bufferCount"/> framebuffers.
     /// The row stride equals <paramref name="width"/>, so use a width that is a multiple of 64 to
     /// match the linear pitch the output derives; the standard 1920 and 1280 widths already are.
@@ -106,6 +118,23 @@ public sealed unsafe class DisplayDevice : IDisposable
     {
         int rc = VideoOut.sceVideoOutSubmitFlip(_handle, _index, (uint)mode, _frame);
         SceResult.ThrowIfFailed(rc, nameof(VideoOut.sceVideoOutSubmitFlip));
+        VideoOut.sceVideoOutWaitVblank(_handle);
+        long presented = _frame;
+        _index = (_index + 1) % _regions.Length;
+        _frame++;
+        return presented;
+    }
+
+    /// <summary>The running frame counter, used as a flip argument.</summary>
+    public long FrameIndex => _frame;
+
+    /// <summary>
+    /// Waits for the vertical blank and advances to the next framebuffer, for a caller that recorded the
+    /// flip on the graphics timeline itself (rather than through <see cref="Present"/>). Returns the
+    /// presented frame index.
+    /// </summary>
+    public long AdvanceFrame()
+    {
         VideoOut.sceVideoOutWaitVblank(_handle);
         long presented = _frame;
         _index = (_index + 1) % _regions.Length;

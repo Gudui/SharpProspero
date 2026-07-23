@@ -12,7 +12,7 @@
     <NoWarn>$(NoWarn);CS1591</NoWarn>
 
     <PackageId>SharpProspero</PackageId>
-    <Version>0.2.0</Version>
+    <Version>0.3.0</Version>
     <Description>A C# SDK for building applications that compile to standalone ELF modules and pack into installable packages.</Description>
     <PackageLicenseExpression>GPL-3.0-or-later</PackageLicenseExpression>
     <PackageTags>ps5;prospero;homebrew;sdk;aot;elf</PackageTags>
@@ -22,6 +22,13 @@
        focusable ones) so the interface logic can be checked without a display. -->
   <ItemGroup>
     <InternalsVisibleTo Include="SharpProspero.Tests" />
+  </ItemGroup>
+
+  <!-- The built-in mesh shaders, compiled ahead of time and embedded so a 3D application renders with
+       no shader tooling of its own. The .pssl sources sit beside them for reference. -->
+  <ItemGroup>
+    <EmbeddedResource Include="Graphics\Agc\Shaders\mesh_vs.sb" LogicalName="SharpProspero.Shaders.mesh_vs.sb" />
+    <EmbeddedResource Include="Graphics\Agc\Shaders\mesh_ps.sb" LogicalName="SharpProspero.Shaders.mesh_ps.sb" />
   </ItemGroup>
 
 </Project>

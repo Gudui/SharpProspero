@@ -153,8 +153,7 @@ To sample a texture in a shader you describe it to the GPU as two small descript
 var tex = new AgcTextureDescriptor();
 tex.SetType(AgcImageType.Texture2D);
 tex.SetBaseAddress(gpuTextureAddress);
-tex.SetDataFormat((uint)AgcFormats.ChannelLayout.k8_8_8_8);
-tex.SetChannelType(AgcTextureChannelType.UNorm);
+tex.SetFormat((uint)AgcFormats.TypedFormat.k8_8_8_8UNorm);
 tex.SetDimensions(1024, 1024);
 tex.SetChannelOrder(AgcChannelSource.Red, AgcChannelSource.Green, AgcChannelSource.Blue, AgcChannelSource.Alpha);
 tex.SetTilingIndex((int)AgcTileMode.RenderTarget);
@@ -217,6 +216,67 @@ where $w_b \times h_b$ is the block in elements (`BlockWidth`, `BlockHeight`), $
 ## Formats
 
 `AgcFormats` is the reference for the format and swizzle enumerations. `ChannelLayout` gives the bit widths per element, `ChannelType` gives how those bits are read (unorm, snorm, uint, sint, srgb, float), `TypedFormat` pairs a layout with an interpretation, and `ChannelSelect` names which source channel or constant a destination channel reads. The render-target block carries its own `CxRenderTarget.Format`, `CxRenderTarget.ChannelType`, and `CxRenderTarget.ChannelOrder` enums for the color-target register fields.
+
+## Building a texture file
+
+Textures are prepared ahead of time into GNF files - a header, a texture descriptor, and the pixel data
+in the layout the graphics processor samples. The toolchain's `gnf` command turns a PNG, TGA, or BMP
+image into a GNF with a single linear four-channel texture:
+
+```
+dotnet run --project tools/SharpProspero.Bindings.Generator -- gnf --input art/icon.png --output art/icon.gnf
+```
+
+Add `--srgb` to mark the colour channels as sRGB (the alpha stays linear); `--info <file.gnf>` reports a
+GNF's header and its first texture. The result is the file an application loads and points a
+`AgcTextureDescriptor` slot at to sample. The build is independent of the SDK, so it runs on any machine
+with the toolchain.
+
+## Drawing a 3D mesh
+
+Above the register layer there is a high-level path for geometry. `Renderer3D` draws a mesh with the
+built-in mesh shaders: give it a display, then each frame a mesh and a model-view-projection matrix.
+
+```csharp
+using System.Numerics;
+using SharpProspero.Graphics;
+using SharpProspero.Graphics.Agc;
+using SharpProspero.Numerics;
+
+using var display = DisplayDevice.Open(1920, 1080);
+using var renderer = new Renderer3D(display);
+using var cube = MeshBuffer.Upload(MeshData.Cube(1.5f, Color.FromRgb(0x4A, 0x9E, 0xFF)));
+
+var camera = new Camera3D { Position = new Vector3(0, 1.5f, 4.5f), Target = Vector3.Zero, AspectRatio = 1920f / 1080f };
+float angle = 0f;
+while (running)
+{
+    angle += 0.02f;
+    Matrix4x4 model = Matrix4x4.CreateRotationY(angle);
+    renderer.DrawMesh(cube, model * camera.ViewProjection, model);
+}
+```
+
+`MeshData` builds cube, sphere, plane, and quad geometry, or takes your own vertices and indices;
+`MeshBuffer.Upload` places it in graphics memory. `Camera3D` (in `SharpProspero.Numerics`) gives the
+view and projection matrices, with `Transform`, `Ray`, `BoundingBox`, `BoundingSphere`, and `Frustum`
+alongside it for placing, picking, and culling. The `prospero-3d` template is a running example.
+
+{: .note }
+> The built-in mesh shaders are compiled ahead of time and embedded, so a 3D application needs no shader
+> tooling of its own. A custom shader is a compiled shader binary loaded through `ShaderBinary`.
+
+## Inspecting a shader binary
+
+The `shader` command reports a compiled shader binary: its stage, version, header and code sizes, and the
+register writes it carries. It reads the header, so it needs no graphics device.
+
+```
+dotnet run --project tools/SharpProspero.Bindings.Generator -- shader --file mesh_ps.sb
+```
+
+Add `--registers` to list every context and shader register the program sets. This inspects a shader; it
+does not compile or disassemble one.
 
 ## Related pages
 

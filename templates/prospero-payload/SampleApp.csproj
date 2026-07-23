@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Point SharpProsperoRoot at the SDK checkout, or set the SHARPPROSPERO_ROOT environment
+       variable. Run `doctor.ps1` in the SDK to check the setup. -->
+  <PropertyGroup>
+    <SharpProsperoRoot Condition="'$(SharpProsperoRoot)' == ''">$(SHARPPROSPERO_ROOT)</SharpProsperoRoot>
+  </PropertyGroup>
+
+  <Import Project="$(SharpProsperoRoot)\build\Prospero.App.props" />
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>SampleApp</RootNamespace>
+    <AssemblyName>SampleApp</AssemblyName>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>14.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
+    <ProsperoHeapHardLimitBytes>134217728</ProsperoHeapHardLimitBytes>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(SharpProsperoRoot)\src\SharpProspero\SharpProspero.csproj" />
+  </ItemGroup>
+
+  <Import Project="$(SharpProsperoRoot)\build\Prospero.App.targets" />
+
+</Project>

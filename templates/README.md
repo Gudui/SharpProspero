@@ -13,6 +13,9 @@ in [docs/templates.md](../docs/templates.md).
 | `prospero-tool` | A toolbox application that shows a checksum, the console name and the network status. |
 | `prospero-media` | A media player that plays a bundled file, drawing the video and pacing to the audio. |
 | `prospero-server` | A network service that serves an HTTP control panel and a JSON status endpoint. |
+| `prospero-payload` | A payload (`.elf` a loader maps into a running process): a headless service that echoes on a port. |
+| `prospero-payload-httpd` | A payload web service that answers requests with a status page. |
+| `prospero-payload-beacon` | A one-shot payload that connects out, sends a short report, and returns. |
 | `prospero-prx` | A relocatable library module (`.prx`) that exports functions for another module. |
 
 ## Install

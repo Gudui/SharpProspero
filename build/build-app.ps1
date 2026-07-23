@@ -41,7 +41,8 @@ param(
     [string]$Configuration = "Release",
     [ValidateSet("Match", "Upgrade", "Downgrade", "Keep")][string]$SystemVersionPolicy = "Match",
     [string]$SystemVersion = "",
-    [string]$SdkRoot = ""
+    [string]$SdkRoot = "",
+    [switch]$Payload
 )
 
 $ErrorActionPreference = "Stop"
@@ -143,6 +144,28 @@ if ($onWindows) {
 }
 if (-not (Get-ChildItem -Path $supportDir -File -ErrorAction SilentlyContinue)) {
     throw "No runtime archives were gathered into $supportDir."
+}
+
+# A payload is a position-independent executable a loader maps and runs in an existing process. It links
+# to a single .elf with the payload output kind, resolves its outside references at run time, and is not
+# packaged, so the module link, the metadata, and the packaging steps below are skipped.
+if ($Payload) {
+    Write-Host "== Link (payload) =="
+    $name = [System.IO.Path]::GetFileNameWithoutExtension($ProjectPath)
+    New-Item -ItemType Directory -Force -Path $OutputFolder | Out-Null
+    $elf = Join-Path $OutputFolder "$name.elf"
+    $linkArgs = @("link", "--kind", "payload", "--self-contained", "--obj", $objectPath)
+    foreach ($o in Get-ChildItem -Path $supportDir -File -Filter *.o) { $linkArgs += @("--obj", $o.FullName) }
+    foreach ($a in Get-ChildItem -Path $supportDir -File -Filter *.a) { $linkArgs += @("--lib", $a.FullName) }
+    $linkArgs += @("--out", $elf)
+    & dotnet run --project (Join-Path $SdkRoot "tools/SharpProspero.Bindings.Generator/SharpProspero.Bindings.Generator.csproj") `
+        -c $Configuration -- @linkArgs
+    if ($LASTEXITCODE -ne 0) { throw "Payload link failed." }
+    Write-Host "== Done =="
+    Write-Host "Payload written to $elf"
+    Write-Host "Send it to a listening loader with:"
+    Write-Host "  dotnet run --project `"$SdkRoot/tools/SharpProspero.Bindings.Generator`" -- payload --send --host <address> --file `"$elf`""
+    return
 }
 
 # 3. Link the object and the runtime archives into the module. The gathered archives live in one folder,

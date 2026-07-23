@@ -57,7 +57,11 @@ public enum AgcChannelSource : uint
 /// </remarks>
 public struct AgcTextureDescriptor
 {
+    // Word 5 (mip count, low-detail warning, and sampler-modulation fields) has no setter yet, so it
+    // keeps its zero default; the other words are written by the setters below.
+#pragma warning disable CS0649
     private uint _w0, _w1, _w2, _w3, _w4, _w5, _w6, _w7;
+#pragma warning restore CS0649
 
     /// <summary>The number of 32-bit words in the descriptor.</summary>
     public const int WordCount = 8;
@@ -96,29 +100,27 @@ public struct AgcTextureDescriptor
     {
         ulong units = gpuByteAddress >> 8;
         _w0 = (uint)units;
-        Set(ref _w1, 0, 6, (uint)(units >> 32) & 0x3Fu); // the high address bits sit below the memory-type field
+        Set(ref _w1, 0, 8, (uint)(units >> 32) & 0xFFu); // the eight high address bits
     }
 
-    /// <summary>The pixel format, a six-bit surface-format value the surface was laid out with.</summary>
-    public void SetDataFormat(uint surfaceFormat) => Set(ref _w1, 20, 6, surfaceFormat & 0x3Fu);
-
-    /// <summary>How the stored channel values are interpreted (see <see cref="AgcTextureChannelType"/>).</summary>
-    public void SetChannelType(AgcTextureChannelType channelType) => Set(ref _w1, 26, 4, (uint)channelType);
+    /// <summary>
+    /// The pixel format: a nine-bit typed-format value that names the element size, channel layout, and
+    /// how the channels are read (for example 56 for four 8-bit unsigned-normalized channels, 130 for the
+    /// sRGB variant; see <see cref="AgcFormats.TypedFormat"/>).
+    /// </summary>
+    public void SetFormat(uint typedFormat) => Set(ref _w1, 20, 9, typedFormat & 0x1FFu);
 
     /// <summary>The surface width and height in texels (each at most 16384).</summary>
     public void SetDimensions(int width, int height)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(width, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(height, 1);
-        Set(ref _w2, 0, 14, (uint)(width - 1));
+        // Width less one is split: the low two bits sit at the top of the first word, the high twelve at
+        // the start of the second. Height less one is the fourteen bits above the reserved pair.
+        uint widthMinusOne = (uint)(width - 1);
+        Set(ref _w1, 30, 2, widthMinusOne & 0x3u);
+        Set(ref _w2, 0, 12, widthMinusOne >> 2);
         Set(ref _w2, 14, 14, (uint)(height - 1));
-    }
-
-    /// <summary>The row pitch in texels, when it differs from the width (each at most 16384).</summary>
-    public void SetPitch(int pitchInTexels)
-    {
-        ArgumentOutOfRangeException.ThrowIfLessThan(pitchInTexels, 1);
-        Set(ref _w4, 13, 14, (uint)(pitchInTexels - 1));
     }
 
     /// <summary>The depth of a volume texture, or the slice count of an array (at most 8192).</summary>
@@ -147,8 +149,9 @@ public struct AgcTextureDescriptor
     /// <summary>The first and last array slice the shader may sample.</summary>
     public void SetArrayRange(int baseSlice, int lastSlice)
     {
-        Set(ref _w5, 0, 13, (uint)baseSlice);
-        Set(ref _w5, 13, 13, (uint)lastSlice);
+        // The base slice sits in the upper half of the depth word; the last slice shares the depth field.
+        Set(ref _w4, 16, 13, (uint)baseSlice);
+        Set(ref _w4, 0, 13, (uint)lastSlice);
     }
 
     /// <summary>The tiling (swizzle) mode index the surface was laid out with.</summary>
@@ -164,26 +167,3 @@ public struct AgcTextureDescriptor
     public void SetMetadataEnabled(bool enabled) => Set(ref _w6, 21, 1, enabled ? 1u : 0u);
 }
 
-/// <summary>
-/// How a texture's stored channel values are read, the number-format field of an
-/// <see cref="AgcTextureDescriptor"/>. The values are the graphics-processor channel-type encoding.
-/// </summary>
-public enum AgcTextureChannelType : uint
-{
-    /// <summary>Unsigned, mapped to 0..1.</summary>
-    UNorm = 0,
-    /// <summary>Signed, mapped to -1..1.</summary>
-    SNorm = 1,
-    /// <summary>Unsigned scaled to its integer range as a float.</summary>
-    UScaled = 2,
-    /// <summary>Signed scaled to its integer range as a float.</summary>
-    SScaled = 3,
-    /// <summary>Unsigned integer.</summary>
-    UInt = 4,
-    /// <summary>Signed integer.</summary>
-    SInt = 5,
-    /// <summary>Floating point.</summary>
-    Float = 7,
-    /// <summary>Unsigned, mapped to 0..1, read as sRGB.</summary>
-    Srgb = 9,
-}

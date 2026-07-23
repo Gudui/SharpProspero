@@ -3,8 +3,22 @@
 
 using SharpProspero.Interop;
 using SharpProspero.Interop.Agc;
+using System;
 
 namespace SharpProspero.Graphics.Agc;
+
+/// <summary>The kind of resource a shader reads, used to find its slot in the shader's user data.</summary>
+public enum ShaderResourceKind
+{
+    /// <summary>A read-only buffer or texture (a structured/regular buffer, a sampled texture).</summary>
+    ReadOnly = 0,
+    /// <summary>A read-write buffer or texture.</summary>
+    ReadWrite = 1,
+    /// <summary>A sampler.</summary>
+    Sampler = 2,
+    /// <summary>A constant buffer.</summary>
+    ConstantBuffer = 3,
+}
 
 /// <summary>The pipeline stage a shader runs at.</summary>
 public enum ShaderStage : byte
@@ -42,6 +56,47 @@ public sealed unsafe class AgcShader
 
     /// <summary>The shader handle, as the register-binding and context calls expect it.</summary>
     public void* Handle { get; }
+
+    // The handle points at the prepared shader-program header. Its register arrays and its user-data
+    // layout are read here to build a draw. Field offsets are those of the shader-binary program header.
+    private byte* Header => (byte*)Handle;
+
+    /// <summary>
+    /// The context registers the shader sets, as offset-and-value pairs the command buffer loads. These
+    /// go into the draw's combined context state. The records share the layout of <see cref="CxRegister"/>.
+    /// </summary>
+    public ReadOnlySpan<CxRegister> ContextRegisters
+    {
+        get { var p = *(CxRegister**)(Header + 24); return new ReadOnlySpan<CxRegister>(p, Header[91]); }
+    }
+
+    /// <summary>The shader registers the program sets, as offset-and-value pairs the command buffer loads.</summary>
+    public ReadOnlySpan<CxRegister> ShaderRegisters
+    {
+        get { var p = *(CxRegister**)(Header + 32); return new ReadOnlySpan<CxRegister>(p, Header[92]); }
+    }
+
+    /// <summary>
+    /// Finds where in the shader's user data a resource of a kind and slot goes: the dword offset the
+    /// descriptor is written at, and whether it is a small (four-dword) descriptor. Returns false when the
+    /// shader declares no such resource.
+    /// </summary>
+    public bool TryGetResourceSlot(ShaderResourceKind kind, int slot, out int dwordOffset, out bool small)
+    {
+        dwordOffset = 0; small = true;
+        byte* userData = *(byte**)(Header + 8);        // m_userData (UserDataLayout*)
+        if (userData is null) return false;
+        ushort* counts = (ushort*)(userData + 46);     // m_sharpResourceCount[4]
+        if ((uint)slot >= counts[(int)kind]) return false;
+        ushort* sharps = *(ushort**)(userData + 8 + (int)kind * sizeof(void*)); // m_sharpResourceOffset[kind]
+        ushort entry = sharps[slot];                   // Sharp: offsetInDwords:15, small:1
+        dwordOffset = entry & 0x7FFF;
+        small = (entry & 0x8000) != 0;
+        return true;
+    }
+
+    /// <summary>The base shader-register offset for this shader stage's user-data slot zero.</summary>
+    public const uint GsUserDataBaseOffset = 0x008C;
 
     /// <summary>
     /// Prepares a shader from its compiled binary: <paramref name="header"/> is the binary's header

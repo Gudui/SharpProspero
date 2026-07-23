@@ -25,6 +25,8 @@ dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-synth
 dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-savedata
 dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-dialog
 dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-dashboard
+dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-3d
+dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-payload
 dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-prx
 ```
 
@@ -46,6 +48,10 @@ dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-prx
 | `prospero-savedata` | A save browser that mounts a save, reads a counter, increments it, and writes it back. | A save manager or a save editor. |
 | `prospero-dialog` | A menu that opens the system message, on-screen keyboard, and error dialogs and pumps them to completion. | Wiring the system overlays into an application. |
 | `prospero-dashboard` | A tabbed read-out of system, user, network, memory, and firmware facts, built from the interface toolkit. | A diagnostics or monitoring application. |
+| `prospero-3d` | A spinning, lit cube rendered on the graphics processor with the built-in mesh shaders. | A 3D application: a model viewer, a scene, or a game with real geometry. |
+| `prospero-payload` | A headless network service built as a payload: an `.elf` a loader maps and runs in a process over the network, echoing what it receives. | A payload: a network service, a bridge, or a tool loaded at run time rather than installed. |
+| `prospero-payload-httpd` | A payload web service that answers requests with a status page. | A control panel or status endpoint loaded into a running process. |
+| `prospero-payload-beacon` | A one-shot payload that connects out to a machine you run, sends a short report, and returns. | A one-shot action: report home, trigger something, or a bring-up check. |
 | `prospero-prx` | A relocatable library module (`.prx`) that exports functions for another module to load. | A shared library you load at run time from an application. |
 
 ## Create a project
@@ -96,6 +102,12 @@ An application writes an installable `*.pkg` (or a folder with `-Output Folder`)
 - **Library** (`prospero-prx`): `Library.cs` with `[UnmanagedCallersOnly]` exported functions, the
   matching `<ProsperoExportSymbol>` entries in the project file, and `build.ps1`. Add a function and its
   export symbol for each entry point.
+- **Payloads** (`prospero-payload`, `prospero-payload-httpd`, `prospero-payload-beacon`): `Program.cs`
+  with a plain `Main` and `build.ps1`. Each builds to a single `<name>.elf` (not a package), which a
+  loader maps and runs; `build.ps1` prints the command to send it. There is no `sce_sys` metadata and no
+  title or id options, because a payload is not installed. `prospero-payload` echoes on a port,
+  `prospero-payload-httpd` serves a web page, and `prospero-payload-beacon` runs once and reports out.
+  [Modules and payloads](modules-and-payloads.md) explains when a payload is the right form.
 
 ## Uninstall
 

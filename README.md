@@ -33,7 +33,9 @@ an `eboot.bin` with no managed runtime to deploy alongside it.
   surface layout for every tile mode (`AgcSurface`); the sixteen-register color render-target block with
   typed field setters and a description-driven setup (`CxRenderTarget`, `AgcRenderTargetSetup`); and a
   pixel tiler that converts an image between linear and hardware-tiled order for texture upload and
-  framebuffer read-back (`AgcTiler`). See [docs/graphics-and-memory.md](docs/graphics-and-memory.md).
+  framebuffer read-back (`AgcTiler`). Above it, `Renderer3D` draws a lit mesh with built-in shaders, and
+  the toolchain's `gnf` command builds texture files from PNG, TGA, and BMP images. See
+  [docs/graphics-and-memory.md](docs/graphics-and-memory.md).
 - **Text that fits**: wrap a paragraph to a width, place a line left, centred or right, measure the
   wrapped block, and shorten a label that will not fit. It measures through a font abstraction, so the
   same layout serves the built-in text and a loaded outline font.
@@ -150,7 +152,8 @@ an `eboot.bin` with no managed runtime to deploy alongside it.
 | `src/SharpProspero` | The SDK class library. |
 | `src/SharpProspero.Sample` | A sample module and its build script. |
 | `tools/SharpProspero.Prx` | Module reader, signed-container reader, identifier computer, and wrapper generator. |
-| `tools/SharpProspero.Bindings.Generator` | Header-to-C# binding generator and the `prx`, `elf`, `self`, `offsets` and `retarget` commands. |
+| `tools/SharpProspero.Bindings.Generator` | Header-to-C# binding generator and the `prx`, `elf` (with `--sizes`/`--symbols`/`--strings`/`--strip`), `self`, `offsets`, `retarget`, `gnf`, `shader`, and `payload` commands. |
+| `tools/SharpProspero.Texture` | Builds GNF texture files from PNG, TGA, and BMP images (the `gnf` command). |
 | `tools/SharpProspero.Packager` | Command-line packager over LibProsperoPkg. |
 | `tests/SharpProspero.Tests` | Unit tests for the drawing, memory, and module code. |
 | `build/` | The ahead-of-time compile and link pipeline (props and targets). |
@@ -194,8 +197,9 @@ pwsh MyGame/build.ps1
 
 The other templates are `prospero-game` (a real-time game), `prospero-ui`, `prospero-launcher` (a
 carousel launcher front end), `prospero-filemanager` (a file browser), `prospero-tool`, `prospero-media`
-(a media player), `prospero-server` (an HTTP control panel) and `prospero-prx`; see
-[docs/templates.md](docs/templates.md).
+(a media player), `prospero-server` (an HTTP control panel), `prospero-prx` (a library), and the payload
+templates `prospero-payload` (an echo service), `prospero-payload-httpd` (a web service) and
+`prospero-payload-beacon` (a one-shot report); see [docs/templates.md](docs/templates.md).
 
 Or build the sample. Pick the output you want:
 
@@ -237,6 +241,7 @@ Start with these:
 - [Templates](docs/templates.md) — starting points for each kind of project.
 - [Guides and tips](docs/guides.md) — everyday recipes and troubleshooting.
 - [Architecture](docs/architecture.md) and [Build pipeline](docs/build-pipeline.md) — how it all fits.
+- [Modules and payloads](docs/modules-and-payloads.md) — the two execution forms and which to build.
 
 The rest cover the drawing surface, networking, utilities, the interface toolkit, bindings, modules,
 firmware compatibility, and the signed and unsigned module forms.

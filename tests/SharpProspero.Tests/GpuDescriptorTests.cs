@@ -16,24 +16,38 @@ public sealed class GpuDescriptorTests
     {
         var texture = new AgcTextureDescriptor();
         texture.SetBaseAddress(0x100000);            // >> 8 = 0x1000 into word0
-        texture.SetDimensions(256, 128);             // (256-1) | (128-1)<<14 in word2
+        texture.SetFormat(56);                       // k8_8_8_8UNorm, nine bits at word1[20:29]
+        texture.SetDimensions(256, 128);             // width-1 split word1[30:32]+word2[0:12], height-1 word2[14:28]
         texture.SetType(AgcImageType.Texture2D);     // 9 in word3[28:31]
         texture.SetChannelOrder(AgcChannelSource.Red, AgcChannelSource.Green, AgcChannelSource.Blue, AgcChannelSource.Alpha);
         texture.SetMipRange(0, 8);                   // last level 8 in word3[16:19]
         texture.SetTilingIndex(13);                  // word3[20:24]
-        texture.SetPitch(256);                       // (256-1)<<13 in word4
-        texture.SetDataFormat(0xA);                  // word1[20:25]
 
         Span<uint> words = stackalloc uint[AgcTextureDescriptor.WordCount];
         texture.WriteTo(words);
 
         Assert.Equal(0x1000u, words[0]);                                  // base >> 8
-        Assert.Equal(0x00A00000u, words[1]);                             // data format at [20:25]
-        Assert.Equal(255u | (127u << 14), words[2]);                     // width-1, height-1
+        // word1: format 56 at [20:29], and the low two bits of width-1 (255 & 3 = 3) at [30:32].
+        Assert.Equal((56u << 20) | (3u << 30), words[1]);
+        // word2: the high twelve bits of width-1 (255 >> 2 = 63), then height-1 at [14:28].
+        Assert.Equal(63u | (127u << 14), words[2]);
         // word3: channel order 4|5<<3|6<<6|7<<9, last level 8<<16, tiling 13<<20, type 9<<28.
         uint expectedWord3 = (4u | (5u << 3) | (6u << 6) | (7u << 9)) | (8u << 16) | (13u << 20) | (9u << 28);
         Assert.Equal(expectedWord3, words[3]);
-        Assert.Equal(255u << 13, words[4]);                              // pitch-1 at [13:26]
+        Assert.Equal(0u, words[4]);                                      // no pitch field; word4 stays zero
+    }
+
+    [Fact]
+    public void TextureDescriptorArrayRangeIsInTheDepthWord()
+    {
+        var texture = new AgcTextureDescriptor();
+        texture.SetArrayRange(baseSlice: 2, lastSlice: 5);
+
+        Span<uint> words = stackalloc uint[AgcTextureDescriptor.WordCount];
+        texture.WriteTo(words);
+
+        // The base slice sits at word4[16:29]; the last slice shares the depth field at word4[0:13].
+        Assert.Equal(5u | (2u << 16), words[4]);
     }
 
     [Fact]

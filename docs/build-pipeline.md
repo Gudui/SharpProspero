@@ -116,6 +116,41 @@ module tables (`__start_<section>` / `__stop_<section>`), the way the system lin
 A plain `dotnet build` of the solution and the tests need none of this; it applies only to the link
 step, which runs after the compile step has restored the runtime pack.
 
+## Payloads
+
+Besides an application module and a library, the linker builds a *payload*: a position-independent
+executable a small loader maps into an existing process at run time and jumps to, over a network
+connection. A payload is not signed and not packaged; it has no dynamic linker, so it resolves the
+functions it calls at run time rather than importing them from modules. [Modules and
+payloads](modules-and-payloads.md) covers how the two forms differ and which one to build; this section
+covers the build command.
+
+Build one with the payload output kind. The link is self-contained, so it supplies its own start code:
+
+```
+sharpprospero-bindgen link --kind payload --self-contained --obj app.o --lib runtime.a --out app.elf
+```
+
+Every reference the objects leave open becomes a name the payload resolves at start-up through the
+resolver the loader hands it; the start code fills a table of these before calling `main`. The output is
+a plain shared-object executable with base-relative relocations only.
+
+Send a built payload to a listening loader:
+
+```
+sharpprospero-bindgen payload --send --host 192.168.1.10 --file app.elf
+```
+
+The loader reads the whole file, maps it, applies the relocations, and runs it. The default port is 9021.
+
+{: .note }
+> The file format of both an application module and a payload is checked against the console's own loader
+> and libraries: the header identification, the segment and dynamic-table layout, and the relocation
+> section are the forms the loader accepts. The payload start code resolves its references, allocates and
+> installs the managed runtime's thread-local storage, runs the global constructors, and marks the C
+> runtime threaded before `main`. Producing, sending, and running the file is the complete path; the
+> thread-local set-up runs on the entry thread and is exercised on hardware.
+
 ## Keeping the heap in bounds
 
 Memory maps are limited, so the heap ceiling matters. Set `ProsperoHeapHardLimitBytes` to the largest

@@ -8,6 +8,7 @@
 
 using SharpProspero.Link;
 using SharpProspero.Prx;
+using SharpProspero.Texture;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -54,7 +55,7 @@ internal static class Program
 
     private static readonly HashSet<string> KnownVerbs = new(StringComparer.Ordinal)
     {
-        "prx", "stub", "crt", "compat", "nid", "elf", "self", "offsets", "retarget", "sysver", "link", "diff",
+        "prx", "stub", "crt", "compat", "nid", "elf", "self", "offsets", "retarget", "sysver", "link", "diff", "gnf", "payload", "shader",
     };
 
     private static int Main(string[] args)
@@ -129,6 +130,17 @@ internal static class Program
         // Compares the export surfaces of two modules, across firmware versions.
         if (args.Length > 0 && string.Equals(args[0], "diff", StringComparison.Ordinal))
             return RunDiff(args);
+
+        // Builds a GNF texture from an image file, or reports a GNF's header.
+        if (args.Length > 0 && string.Equals(args[0], "shader", StringComparison.Ordinal))
+            return RunShader(args);
+
+        if (args.Length > 0 && string.Equals(args[0], "gnf", StringComparison.Ordinal))
+            return RunGnf(args);
+
+        // Sends a built payload to a listening loader over the network.
+        if (args.Length > 0 && string.Equals(args[0], "payload", StringComparison.Ordinal))
+            return RunPayload(args);
 
         // A leading token that names no command is a mistyped verb: report it rather than falling through
         // to the header-generation default, which would fail later with an unrelated SDK-path message.
@@ -376,7 +388,9 @@ internal static class Program
             return 1;
         }
 
-        ModuleKind kind = string.Equals(GetOption(args, "--kind"), "prx", StringComparison.OrdinalIgnoreCase)
+        string? kindArg = GetOption(args, "--kind");
+        bool payload = string.Equals(kindArg, "payload", StringComparison.OrdinalIgnoreCase);
+        ModuleKind kind = string.Equals(kindArg, "prx", StringComparison.OrdinalIgnoreCase)
             ? ModuleKind.Library : ModuleKind.Executable;
 
         // The self-contained link supplies its own start object and its own stubs for the modules the
@@ -384,17 +398,22 @@ internal static class Program
         // module has no program entry, so it takes the stubs but not the start object.
         if (HasFlag(args, "--self-contained"))
         {
-            if (kind == ModuleKind.Executable)
+            if (payload)
+                // A payload starts through its own resolver-driven start object and imports no modules;
+                // every outside reference is resolved at run time, so it needs no stub libraries.
+                options.ExtraObjects.Add(ElfObjectReader.Read(PayloadCrtEmitter.BuildStartObject(), "sharpprospero_payload_crt.o"));
+            else if (kind == ModuleKind.Executable)
                 options.ExtraObjects.Add(ElfObjectReader.Read(CrtEmitter.BuildStartObject(), "sharpprospero_crt.o"));
             // The compat object defines the C-library names the ahead-of-time runtime imports that the
             // device modules do not publish. It is needed only when the runtime archives are linked, so
             // a bare link (no runtime) does not carry it.
             if (options.Archives.Count > 0)
                 options.ExtraObjects.Add(ElfObjectReader.Read(CompatEmitter.BuildObject(), "sharpprospero_compat.o"));
-            foreach (StubCatalog.Entry entry in StubCatalog.Core)
-                options.ExtraStubs.Add(StubLibrary.Parse(
-                    PrxStubEmitter.BuildObject(entry.Library, entry.Exports, entry.ModuleVersion, entry.LibraryVersion, entry.ModuleName, entry.Soname),
-                    entry.Library + ".prx"));
+            if (!payload)
+                foreach (StubCatalog.Entry entry in StubCatalog.Core)
+                    options.ExtraStubs.Add(StubLibrary.Parse(
+                        PrxStubEmitter.BuildObject(entry.Library, entry.Exports, entry.ModuleVersion, entry.LibraryVersion, entry.ModuleName, entry.Soname),
+                        entry.Library + ".prx"));
         }
 
         try
@@ -418,20 +437,33 @@ internal static class Program
             string? outPath = GetOption(args, "--out");
             if (outPath is not null)
             {
-                if (result.Unresolved.Count > 0)
+                // A payload has no dynamic linker; its outside references resolve at run time, so an
+                // unresolved reference is expected. An application or library must resolve everything.
+                if (!payload && result.Unresolved.Count > 0)
                 {
                     Console.Error.WriteLine($"{result.Unresolved.Count} symbol(s) are unresolved; nothing written.");
                     return 2;
                 }
-                // A self-contained executable starts at the injected start object's entry, not at
-                // main; defaulting to main would set e_entry past the start object and skip the stack
-                // alignment and the exit call it performs.
-                string defaultEntry = HasFlag(args, "--self-contained") && kind == ModuleKind.Executable
-                    ? CrtEmitter.StartSymbol : "main";
-                string entry = GetOption(args, "--entry") ?? defaultEntry;
                 string full = Path.GetFullPath(outPath);
-                byte[] module = DynamicWriter.Write(result, entry, kind,
-                    exportNames.Count > 0 ? exportNames : null, Path.GetFileName(full));
+                byte[] module;
+                if (payload)
+                {
+                    // A payload starts at its resolver-driven start object; its outside references become
+                    // run-time-resolved names rather than module imports.
+                    string entry = GetOption(args, "--entry") ?? PayloadCrtEmitter.StartSymbol;
+                    module = PayloadWriter.Write(result, entry);
+                }
+                else
+                {
+                    // A self-contained executable starts at the injected start object's entry, not at
+                    // main; defaulting to main would set e_entry past the start object and skip the stack
+                    // alignment and the exit call it performs.
+                    string defaultEntry = HasFlag(args, "--self-contained") && kind == ModuleKind.Executable
+                        ? CrtEmitter.StartSymbol : "main";
+                    string entry = GetOption(args, "--entry") ?? defaultEntry;
+                    module = DynamicWriter.Write(result, entry, kind,
+                        exportNames.Count > 0 ? exportNames : null, Path.GetFileName(full));
+                }
                 File.WriteAllBytes(full, module);
                 Console.WriteLine($"Wrote {full} ({module.Length} bytes"
                     + (exportNames.Count > 0 ? $", {exportNames.Count} export(s)" : "") + ").");
@@ -504,14 +536,174 @@ internal static class Program
             => string.IsNullOrEmpty(e.LibraryName) ? e.Nid : $"{e.Nid} [{e.LibraryName}]";
     }
 
+    // Reports a compiled shader binary: its stage, version, sizes and the register writes it carries,
+    // and with --registers the full register lists.
+    private static int RunShader(string[] args)
+    {
+        string? file = GetOption(args, "--file") ?? GetOption(args, "--input") ?? GetOption(args, "-i");
+        if (string.IsNullOrEmpty(file) || !File.Exists(file))
+        {
+            Console.Error.WriteLine("Usage: shader --file <shader.sb> [--registers]");
+            return 1;
+        }
+        try
+        {
+            ShaderInfo info = ShaderInfo.Read(File.ReadAllBytes(file));
+            Console.WriteLine($"File:     {Path.GetFileName(file)}");
+            Console.WriteLine($"Valid:    {(info.IsValid ? "yes" : "no (unexpected header magic)")}");
+            Console.WriteLine($"Stage:    {info.StageName} (0x{info.Stage:X2})");
+            Console.WriteLine($"Version:  {info.Version}");
+            Console.WriteLine($"Header:   {info.DeclaredHeaderSize} bytes");
+            Console.WriteLine($"Code:     {info.CodeSectionSize} bytes ({info.DeclaredCodeSize} declared)");
+            Console.WriteLine($"Context registers: {info.ContextRegisters.Count}");
+            Console.WriteLine($"Shader registers:  {info.ShaderRegisters.Count}");
+            if (HasFlag(args, "--registers"))
+            {
+                PrintShaderRegisters("Context registers", info.ContextRegisters);
+                PrintShaderRegisters("Shader registers", info.ShaderRegisters);
+            }
+            return info.IsValid ? 0 : 2;
+        }
+        catch (PrxFormatException ex)
+        {
+            Console.Error.WriteLine(ex.Message);
+            return 2;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine(ex.Message);
+            return 3;
+        }
+    }
+
+    private static void PrintShaderRegisters(string title, IReadOnlyList<ShaderRegisterWrite> registers)
+    {
+        if (registers.Count == 0)
+            return;
+        Console.WriteLine($"{title}:");
+        foreach (ShaderRegisterWrite reg in registers)
+            Console.WriteLine($"  0x{reg.Offset:X4} = 0x{reg.Value:X8}");
+    }
+
     // Prints the header, program headers, dependencies and, with --exports, the exported symbols of an
     // ELF module, without an external tool.
+    // Builds a GNF texture from a PNG, TGA, or BMP image, or reports a GNF's header with --info.
+    private static int RunGnf(string[] args)
+    {
+        string? info = GetOption(args, "--info");
+        if (!string.IsNullOrEmpty(info))
+        {
+            if (!File.Exists(info))
+            {
+                Console.Error.WriteLine($"File not found: {info}");
+                return 1;
+            }
+            try
+            {
+                GnfInfo gnf = GnfReader.Read(File.ReadAllBytes(info));
+                Console.WriteLine($"File:      {Path.GetFileName(info)}");
+                Console.WriteLine($"Version:   {gnf.Version}");
+                Console.WriteLine($"Textures:  {gnf.TextureCount}");
+                Console.WriteLine($"Alignment: {gnf.Alignment} bytes");
+                Console.WriteLine($"Size:      {gnf.StreamSize} bytes");
+                Console.WriteLine($"Texture 0: {gnf.Width}x{gnf.Height}, format 0x{gnf.DataFormat:X2}, "
+                    + $"tiling {(gnf.TileMode == 0 ? "linear" : gnf.TileMode.ToString(CultureInfo.InvariantCulture))}, "
+                    + $"{gnf.PixelSize} pixel bytes");
+                return 0;
+            }
+            catch (Exception ex) when (ex is ImageFormatException or IOException or UnauthorizedAccessException)
+            {
+                Console.Error.WriteLine(ex.Message);
+                return 2;
+            }
+        }
+
+        string? input = GetOption(args, "--input") ?? GetOption(args, "-i");
+        string? output = GetOption(args, "--output") ?? GetOption(args, "-o");
+        bool srgb = HasFlag(args, "--srgb");
+        if (string.IsNullOrEmpty(input) || string.IsNullOrEmpty(output))
+        {
+            Console.Error.WriteLine("Usage: gnf --input <image.png|.tga|.bmp> --output <file.gnf> [--srgb]");
+            Console.Error.WriteLine("       gnf --info <file.gnf>");
+            return 1;
+        }
+        if (!File.Exists(input))
+        {
+            Console.Error.WriteLine($"Input image not found: {input}");
+            return 1;
+        }
+        try
+        {
+            DecodedImage image = DecodedImage.Load(input);
+            byte[] gnf = GnfWriter.Build(image, srgb);
+            File.WriteAllBytes(output, gnf);
+            Console.WriteLine($"Wrote {output}");
+            Console.WriteLine($"  {image.Width}x{image.Height}, four 8-bit channels, linear, {gnf.Length} bytes");
+            return 0;
+        }
+        catch (ImageFormatException ex)
+        {
+            Console.Error.WriteLine($"Cannot read image: {ex.Message}");
+            return 2;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine(ex.Message);
+            return 2;
+        }
+    }
+
+    // Sends a built payload to a listening loader over the network. The loader reads the whole ELF from
+    // the connection and runs it in place.
+    private static int RunPayload(string[] args)
+    {
+        string? file = GetOption(args, "--file");
+        string? host = GetOption(args, "--host");
+        if (!HasFlag(args, "--send") || string.IsNullOrEmpty(file) || string.IsNullOrEmpty(host))
+        {
+            Console.Error.WriteLine("Usage: payload --send --host <address> [--port 9021] --file <payload.elf>");
+            return 1;
+        }
+        if (!File.Exists(file))
+        {
+            Console.Error.WriteLine($"Payload not found: {file}");
+            return 1;
+        }
+        string? portText = GetOption(args, "--port");
+        int port = 9021;
+        if (portText is not null && (!int.TryParse(portText, NumberStyles.Integer, CultureInfo.InvariantCulture, out port) || port is < 1 or > 65535))
+        {
+            Console.Error.WriteLine("--port takes a number from 1 to 65535.");
+            return 1;
+        }
+        try
+        {
+            byte[] bytes = File.ReadAllBytes(file);
+            using var client = new System.Net.Sockets.TcpClient();
+            client.Connect(host, port);
+            using System.Net.Sockets.NetworkStream stream = client.GetStream();
+            stream.Write(bytes, 0, bytes.Length);
+            stream.Flush();
+            Console.WriteLine($"Sent {bytes.Length} bytes to {host}:{port}.");
+            return 0;
+        }
+        catch (Exception ex) when (ex is IOException or System.Net.Sockets.SocketException)
+        {
+            Console.Error.WriteLine($"Could not send the payload: {ex.Message}");
+            return 2;
+        }
+    }
+
     private static int RunElf(string[] args)
     {
         string? file = GetOption(args, "--file");
         if (string.IsNullOrEmpty(file) || !File.Exists(file))
         {
             Console.Error.WriteLine("Usage: elf --file <module> [--exports]");
+            Console.Error.WriteLine("       elf --file <module> --sizes            loadable size by kind");
+            Console.Error.WriteLine("       elf --file <module> --symbols          the dynamic symbol table");
+            Console.Error.WriteLine("       elf --file <module> --strings [--min N] printable strings (N defaults to 4)");
+            Console.Error.WriteLine("       elf --file <module> --strip --out <file> a smaller module without section headers");
             return 1;
         }
         try
@@ -519,6 +711,10 @@ internal static class Program
             // Reads the file once and classifies it: a signed container is unwrapped to its embedded
             // ELF, so a .self or .sprx reports the same fields as a .elf or .prx.
             ModuleFile mf = ModuleFile.Read(file);
+            if (HasFlag(args, "--sizes")) return ElfSizes(mf.Elf);
+            if (HasFlag(args, "--symbols")) return ElfSymbols(mf.Elf);
+            if (HasFlag(args, "--strings")) return ElfStrings(mf.Elf, args);
+            if (HasFlag(args, "--strip")) return ElfStrip(mf.Elf, args);
             ElfInfo info = ElfInfo.Parse(mf.Elf);
             Console.WriteLine($"File:      {Path.GetFileName(file)}");
             Console.WriteLine($"Container: {(mf.IsSigned ? "signed (.self / .sprx)" : "unsigned ELF (.elf / .prx)")}");
@@ -565,6 +761,79 @@ internal static class Program
         {
             Console.Error.WriteLine(ex.Message);
             return 2;
+        }
+    }
+
+    // The loadable footprint of a module, split by segment kind.
+    private static int ElfSizes(byte[] elf)
+    {
+        ElfSegmentSizes s = ElfTools.SegmentSizes(elf);
+        Console.WriteLine("Loadable size:");
+        Console.WriteLine($"  code       {s.Code,12:N0} bytes");
+        Console.WriteLine($"  read-only  {s.ReadOnly,12:N0} bytes");
+        Console.WriteLine($"  data       {s.Data,12:N0} bytes");
+        Console.WriteLine($"  zero-fill  {s.Bss,12:N0} bytes");
+        Console.WriteLine($"  file       {s.File,12:N0} bytes");
+        Console.WriteLine($"  memory     {s.Memory,12:N0} bytes");
+        return 0;
+    }
+
+    // The module's dynamic symbol table, defined entries and imports alike.
+    private static int ElfSymbols(byte[] elf)
+    {
+        IReadOnlyList<ElfSymbolEntry> symbols = ElfTools.DynamicSymbols(elf);
+        if (symbols.Count == 0)
+        {
+            Console.WriteLine("No dynamic symbol table (the module has no dynamic segment).");
+            return 0;
+        }
+        Console.WriteLine($"Dynamic symbols ({symbols.Count}):");
+        Console.WriteLine("  Value          Size  Type     Bind    Where     Name");
+        foreach (ElfSymbolEntry sym in symbols)
+        {
+            if (sym.Name.Length == 0 && sym.Value == 0 && sym.Size == 0)
+                continue; // the leading null entry
+            Console.WriteLine($"  0x{sym.Value:X12} {sym.Size,6}  {sym.TypeName,-7}  {sym.BindName,-6}  {(sym.IsImport ? "import" : "defined"),-8}  {sym.Name}");
+        }
+        return 0;
+    }
+
+    // The printable strings in the module, each with the offset it starts at.
+    private static int ElfStrings(byte[] elf, string[] args)
+    {
+        int min = int.TryParse(GetOption(args, "--min"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int m) && m > 0 ? m : 4;
+        foreach ((long offset, string text) in ElfTools.Strings(elf, min))
+            Console.WriteLine($"0x{offset:X8}  {text}");
+        return 0;
+    }
+
+    // Writes a smaller copy of the module without its section headers, which a dynamic loader does not read.
+    private static int ElfStrip(byte[] elf, string[] args)
+    {
+        string? outPath = GetOption(args, "--out");
+        if (string.IsNullOrEmpty(outPath))
+        {
+            Console.Error.WriteLine("Pass --out <file> for --strip.");
+            return 1;
+        }
+        try
+        {
+            byte[] stripped = ElfTools.Strip(elf);
+            string full = Path.GetFullPath(outPath);
+            Directory.CreateDirectory(Path.GetDirectoryName(full)!);
+            File.WriteAllBytes(full, stripped);
+            Console.WriteLine($"Wrote {full} ({stripped.Length:N0} bytes, was {elf.Length:N0}; removed {elf.Length - stripped.Length:N0} bytes).");
+            return 0;
+        }
+        catch (PrxFormatException ex)
+        {
+            Console.Error.WriteLine(ex.Message);
+            return 2;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine(ex.Message);
+            return 3;
         }
     }
 
@@ -1313,9 +1582,24 @@ internal static class Program
                 break;
             case "elf":
                 Console.WriteLine("Usage: elf --file <module> [--exports]    Prints an ELF module's header (and its exports).");
+                Console.WriteLine("       elf --file <module> --sizes | --symbols | --strings [--min N] | --strip --out <file>");
+                Console.WriteLine("  Reports the loadable size, the dynamic symbols, the printable strings, or writes a smaller stripped module.");
+                break;
+            case "shader":
+                Console.WriteLine("Usage: shader --file <shader.sb> [--registers]");
+                Console.WriteLine("  Reports a compiled shader's stage, version, sizes, and register writes.");
                 break;
             case "diff":
                 Console.WriteLine("Usage: diff --a <module> --b <module>    Reports the exports added, removed, and moved from A to B.");
+                break;
+            case "gnf":
+                Console.WriteLine("Usage: gnf --input <image.png|.tga|.bmp> --output <file.gnf> [--srgb]");
+                Console.WriteLine("       gnf --info <file.gnf>    Reports a GNF's header and first texture.");
+                Console.WriteLine("  Builds a linear texture the graphics processor samples. --srgb marks the colour channels sRGB.");
+                break;
+            case "payload":
+                Console.WriteLine("Usage: payload --send --host <address> [--port 9021] --file <payload.elf>");
+                Console.WriteLine("  Sends a payload built with 'link --kind payload' to a listening loader.");
                 break;
             case "self":
                 Console.WriteLine("Usage: self --inspect --file <file>");
@@ -1333,7 +1617,7 @@ internal static class Program
                 break;
             case "link":
                 Console.WriteLine("Usage: link --obj <file.o> [--obj ...] [--lib <archive.a> ...] [--stub <stub.o> ...] [--self-contained]");
-                Console.WriteLine("            [--kind eboot|prx] [--entry <symbol>] [--export <name> ...] --out <module>");
+                Console.WriteLine("            [--kind eboot|prx|payload] [--entry <symbol>] [--export <name> ...] --out <module>");
                 Console.WriteLine("  --self-contained supplies the start object and the core module stubs.");
                 break;
             default:
@@ -1350,9 +1634,11 @@ internal static class Program
         Console.WriteLine("       sharpprospero-bindgen stub --lib <libraryName> --names <file> --out <file.a>");
         Console.WriteLine("       sharpprospero-bindgen crt --out <file.o>");
         Console.WriteLine("       sharpprospero-bindgen compat --out <file.o>");
-        Console.WriteLine("       sharpprospero-bindgen link [--self-contained] --obj <file.o> [--lib <archive.a>] [--kind eboot|prx] [--entry <sym>] [--export <name>] --out <module>");
+        Console.WriteLine("       sharpprospero-bindgen link [--self-contained] --obj <file.o> [--lib <archive.a>] [--kind eboot|prx|payload] [--entry <sym>] [--export <name>] --out <module>");
         Console.WriteLine("       sharpprospero-bindgen elf --file <module> [--exports]");
         Console.WriteLine("       sharpprospero-bindgen diff --a <module> --b <module>");
+        Console.WriteLine("       sharpprospero-bindgen gnf --input <image.png|.tga|.bmp> --output <file.gnf> [--srgb]");
+        Console.WriteLine("       sharpprospero-bindgen payload --send --host <address> [--port 9021] --file <payload.elf>");
         Console.WriteLine("       sharpprospero-bindgen self --inspect --file <file>");
         Console.WriteLine("       sharpprospero-bindgen self --sign --in <file.elf|.prx> --out <file.self|.sprx> [--app-version 0xNN --fw-version 0xNN --authority 0xNN --no-normalize]");
         Console.WriteLine("       sharpprospero-bindgen self --extract --in <file.self|.sprx> --out <file.elf|.prx>");

@@ -11,6 +11,20 @@ namespace SharpProspero.Tests;
 
 public sealed class GameMathAndAudioTests
 {
+    // --- Transform ---
+
+    [Fact]
+    public void LookRotation_FacesTheTargetWithAProperRotation()
+    {
+        // Looking down +X: the local forward (-Z) must rotate to +X, and up must stay up. A reflection
+        // basis (the earlier defect) would leave forward pointing at -Z instead.
+        System.Numerics.Quaternion q = Transform.LookRotation(new System.Numerics.Vector3(1, 0, 0), System.Numerics.Vector3.UnitY);
+        System.Numerics.Vector3 forward = System.Numerics.Vector3.Transform(-System.Numerics.Vector3.UnitZ, q);
+        System.Numerics.Vector3 up = System.Numerics.Vector3.Transform(System.Numerics.Vector3.UnitY, q);
+        Assert.True((forward - new System.Numerics.Vector3(1, 0, 0)).Length() < 1e-4f, "forward faces the target");
+        Assert.True(up.Y > 0.9f, "up stays up (no roll, not mirrored)");
+    }
+
     // --- Vector2 ---
 
     [Fact]

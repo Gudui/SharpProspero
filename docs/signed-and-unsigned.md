@@ -1,6 +1,6 @@
 ---
 title: Signed and unsigned
-nav_order: 4
+nav_order: 5
 parent: Toolchain
 ---
 
@@ -67,6 +67,23 @@ cannot open:
 ```
 sharpprospero-bindgen self --inspect --file mylib.sprx
 ```
+
+## Inspecting and shrinking a module
+
+The `elf` command has a few reading modes beyond the header, each reading the file directly (a signed
+container is unwrapped first):
+
+```
+sharpprospero-bindgen elf --file eboot.bin --sizes            # loadable size by kind
+sharpprospero-bindgen elf --file eboot.bin --symbols          # the dynamic symbol table
+sharpprospero-bindgen elf --file eboot.bin --strings --min 6  # printable strings, at least 6 long
+sharpprospero-bindgen elf --file eboot.bin --strip --out slim.bin
+```
+
+`--sizes` splits the loadable footprint into code, read-only, data and zero-filled, which is what the heap
+ceiling and memory maps are measured against. `--strip` writes a smaller copy without the section-header
+table a dynamic loader does not read; it applies to a module with a dynamic segment (an `eboot.bin` or a
+`.prx`), not to a payload, whose section headers the loader reads.
 
 ## Converting between the forms
 

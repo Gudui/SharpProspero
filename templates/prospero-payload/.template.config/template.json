@@ -1,0 +1,17 @@
+{
+  "$schema": "http://json.schemastore.org/template",
+  "author": "SvenGDK",
+  "classifications": [ "Prospero", "Homebrew", "Console", "AOT", "Network", "Payload" ],
+  "identity": "SharpProspero.Payload.CSharp",
+  "name": "SharpProspero Payload",
+  "shortName": "prospero-payload",
+  "tags": {
+    "language": "C#",
+    "type": "project"
+  },
+  "sourceName": "SampleApp",
+  "preferNameDirectory": true,
+  "primaryOutputs": [
+    { "path": "SampleApp.csproj" }
+  ]
+}

@@ -19,6 +19,7 @@
     <ProjectReference Include="..\..\src\SharpProspero\SharpProspero.csproj" />
     <ProjectReference Include="..\..\tools\SharpProspero.Prx\SharpProspero.Prx.csproj" />
     <ProjectReference Include="..\..\tools\SharpProspero.Link\SharpProspero.Link.csproj" />
+    <ProjectReference Include="..\..\tools\SharpProspero.Texture\SharpProspero.Texture.csproj" />
   </ItemGroup>
 
 </Project>
