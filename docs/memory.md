@@ -1,0 +1,157 @@
+---
+title: Memory
+nav_order: 11
+---
+
+# Memory
+
+A module works with three kinds of memory: GPU-visible direct memory for framebuffers and command
+buffers, pool-managed flexible memory for general working buffers, and the managed heap that runs under
+a bounded garbage collector. The types here, all in `SharpProspero.Memory`, reserve and map the first
+two, report how much is left, and keep the third within a ceiling you set per project.
+
+## Direct memory
+
+GPU-visible buffers come from direct memory, not the managed heap. `DirectMemoryRegion` reserves, maps,
+and releases a region in one disposable object.
+
+```csharp
+using SharpProspero.Memory;
+using SharpProspero.Graphics;
+
+using var region = DirectMemoryRegion.Allocate(bytes: 8u * 1024 * 1024);
+Surface surface = region.AsSurface(1920, 1080);
+```
+
+`Allocate` rounds the size up to `alignment` (2 MiB by default), reserves cached memory shared between
+the CPU and GPU, and maps it CPU-readable, CPU-writable, and GPU-readable. Override `memoryType`,
+`protection`, and `alignment` for other uses. The region exposes its mapped base as `Pointer`, its
+rounded `Size`, and its `PhysicalOffset`. `AsSurface` views the region as a drawing surface, with an
+overload that takes an explicit row `stride`.
+
+`Dispose` releases the reservation; it is safe to call more than once, and the `using` above runs it at
+the end of the block. A region dropped without a `Dispose` releases from its finalizer, but rely on
+`using` so the memory comes back promptly.
+
+## Flexible memory
+
+Working buffers the GPU does not read come from flexible memory instead. It is drawn from a pool the
+system manages, so it needs no physical reservation. `FlexibleMemoryRegion` maps and releases it in one
+disposable object, and `Protect` changes the protection later.
+
+```csharp
+using SharpProspero.Memory;
+using SharpProspero.Interop.Kernel;
+
+using var region = FlexibleMemoryRegion.Allocate(bytes: 1u * 1024 * 1024);
+// region.Pointer is CPU read-write by default.
+region.Protect(KernelMemory.ProtCpuRead);   // make it read-only
+```
+
+`Allocate` rounds the request up to a page and maps it CPU read-write unless you pass a different
+`protection`. `Size` reports the rounded size and `Pointer` the mapped base. `Protect` throws once the
+region has been disposed.
+
+## Checking what is available
+
+`SystemMemory` reports how much room is left, so a build that streams levels or grows a cache can check
+that the next allocation fits before it attempts it.
+
+```csharp
+using SharpProspero.Memory;
+
+nuint flexible = SystemMemory.AvailableFlexibleBytes();
+nuint largestDirect = SystemMemory.LargestFreeDirectBytes();
+```
+
+`AvailableFlexibleBytes` returns the flexible memory the module still has. `LargestFreeDirectBytes`
+returns the largest single run of free direct memory across the pool for the given alignment (2 MiB by
+default) — the ceiling on a single `DirectMemoryRegion.Allocate`, which fails once no run is large
+enough.
+
+## The managed heap
+
+The application runs with a small, non-concurrent collector and a hard ceiling baked into the image.
+The default ceiling is 256 MiB; set your own per project with the `ProsperoHeapHardLimitBytes` MSBuild
+property.
+
+```xml
+<PropertyGroup>
+  <ProsperoHeapHardLimitBytes>268435456</ProsperoHeapHardLimitBytes>
+</PropertyGroup>
+```
+
+{: .important }
+> The device's memory maps are limited, and the heap ceiling is a hard wall: allocate past it and the
+> collector cannot grow the heap, so the allocation fails outright. Keep per-frame allocation flat
+> rather than relying on headroom. Draw into pre-allocated framebuffers instead of new buffers, reuse
+> arrays and objects across frames (the frame context is already reused for you), and prefer
+> `stackalloc` and pointers for short-lived unmanaged buffers.
+
+### Watching heap pressure
+
+`HeapMonitor` reads usage so a loop can react before it reaches the ceiling. `ExceedsBudget` compares
+the committed heap against a fraction of the limit, and `Collect` runs a blocking, compacting
+collection.
+
+```csharp
+using SharpProspero.Memory;
+
+if (HeapMonitor.ExceedsBudget(0.85))
+    HeapMonitor.Collect();
+```
+
+`Capture` returns a `HeapSnapshot` — a reading of `HeapSizeBytes`, `TotalAllocatedBytes`,
+`HardLimitBytes`, and `CollectionCount`, plus a `Pressure` ratio from 0 to 1 against the ceiling.
+
+```csharp
+HeapSnapshot heap = HeapMonitor.Capture();
+long committedMiB = heap.HeapSizeBytes >> 20;
+double pressure = heap.Pressure;   // 0 to 1 against the ceiling
+```
+
+Run `Collect` sparingly — after loading a scene rather than every frame. A blocking collection stalls
+the frame, so calling it in a hot loop trades one problem for another.
+
+### Pooling short-lived objects
+
+When a hot loop needs a steady supply of short-lived objects — scratch lists, particles, projectiles —
+an `ObjectPool<T>` reuses them instead of allocating each time, which keeps collection pressure down.
+Borrow with `Rent`, give back with `Return`.
+
+```csharp
+using SharpProspero.Memory;
+
+var scratch = new ObjectPool<List<int>>(() => new List<int>(), onReturn: l => l.Clear());
+List<int> work = scratch.Rent();
+// ... use work ...
+scratch.Return(work);
+```
+
+The constructor's `factory` is required. Pass `onRent` to prepare an object as it goes out and
+`onReturn` to reset it as it comes back, `prewarm` to make some up front, and `maxRetained` to cap how
+many idle objects the pool keeps — a returned object is kept up to that limit and dropped past it, so a
+burst does not grow the pool without bound. `IdleCount` reports how many are ready to hand out without
+allocating, and `Clear` drops every idle object.
+
+{: .warning }
+> Return each borrowed object exactly once, and drop your reference to it afterward. Returning the same
+> object twice, or keeping it after returning it, lets two callers write the same instance at once.
+
+## How the three fit together
+
+```mermaid
+flowchart TD
+    A[Need a buffer] --> B{GPU reads it?}
+    B -->|Yes| C[DirectMemoryRegion]
+    B -->|No, raw bytes| D[FlexibleMemoryRegion]
+    B -->|No, C# objects| E[Managed heap]
+    C --> F[AsSurface, command buffers]
+    D --> G[Protect to set access]
+    E --> H[HeapMonitor + ObjectPool keep it flat]
+```
+
+Direct and flexible regions live outside the managed heap and do not count against
+`ProsperoHeapHardLimitBytes`, so moving large buffers off the heap is one of the most effective ways to
+stay under the ceiling. See [Graphics](graphics.md) for how a `Surface` draws into a direct region, and
+[Guides](guides.md) for the same discipline in context.

@@ -1,6 +1,6 @@
 ---
 title: Templates
-nav_order: 11
+nav_order: 4
 ---
 
 # Templates
@@ -19,6 +19,12 @@ dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-filemanager
 dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-tool
 dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-media
 dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-server
+dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-input
+dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-scene
+dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-synth
+dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-savedata
+dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-dialog
+dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-dashboard
 dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-prx
 ```
 
@@ -34,6 +40,12 @@ dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-prx
 | `prospero-tool` | A toolbox application that shows a checksum, the console name, and the network status. | A system utility or toolbox that uses the SDK's tool surfaces. |
 | `prospero-media` | A media player that plays a bundled file, drawing the video and pacing the loop to the decoded audio. | A video or music player, or anything that plays a media file. |
 | `prospero-server` | A network service that serves an HTTP control panel and a JSON status endpoint from the frame loop. | A control panel, a file browser, or any service reached over the network. |
+| `prospero-input` | An input tester that draws the live controller, keyboard, and mouse state each frame. | A hardware test, a controller-heavy application, or learning the input API. |
+| `prospero-scene` | A scrolling 2D scene: a camera that follows a sprite, a tile map with collision, and a particle burst. | A 2D game or a map viewer with a moving camera. |
+| `prospero-synth` | An audio synthesizer that generates and mixes tones and streams them to the output. | A soundboard, an instrument, or anything that makes sound rather than plays a file. |
+| `prospero-savedata` | A save browser that mounts a save, reads a counter, increments it, and writes it back. | A save manager or a save editor. |
+| `prospero-dialog` | A menu that opens the system message, on-screen keyboard, and error dialogs and pumps them to completion. | Wiring the system overlays into an application. |
+| `prospero-dashboard` | A tabbed read-out of system, user, network, memory, and firmware facts, built from the interface toolkit. | A diagnostics or monitoring application. |
 | `prospero-prx` | A relocatable library module (`.prx`) that exports functions for another module to load. | A shared library you load at run time from an application. |
 
 ## Create a project
@@ -77,7 +89,8 @@ An application writes an installable `*.pkg` (or a folder with `-Output Folder`)
 ## What each template contains
 
 - **Applications** (`prospero-app`, `prospero-game`, `prospero-ui`, `prospero-launcher`, `prospero-filemanager`, `prospero-tool`,
-  `prospero-media`, `prospero-server`): `Program.cs`, the `sce_sys` package metadata (`param.json`, `icon0.png`), and
+  `prospero-media`, `prospero-server`, `prospero-input`, `prospero-scene`, `prospero-synth`, `prospero-savedata`,
+  `prospero-dialog`, `prospero-dashboard`): `Program.cs`, the `sce_sys` package metadata (`param.json`, `icon0.png`), and
   `build.ps1`. Edit `Program.cs`, replace the icon, and set the title and ids in `param.json` (the
   `dotnet new` options fill these in).
 - **Library** (`prospero-prx`): `Library.cs` with `[UnmanagedCallersOnly]` exported functions, the

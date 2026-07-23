@@ -1,6 +1,6 @@
 ---
 title: Modules and libraries
-nav_order: 13
+nav_order: 16
 ---
 
 # Modules and libraries
@@ -59,6 +59,7 @@ Write the exports you use, one per line, with an optional call signature, then g
 
 ```
 # name = returnType(parameterTypes)
+
 sceMyLibDoThing = int(int)
 sceMyLibReset = void()
 sceMyLibTable

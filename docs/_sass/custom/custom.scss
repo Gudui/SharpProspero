@@ -1,0 +1,42 @@
+// Site-specific style on top of the theme.
+
+// Light/dark toggle button in the header.
+.theme-toggle {
+  margin: 0 0.6rem 0 auto;
+  align-self: center;
+  padding: 0.25rem 0.7rem;
+  font-size: 0.72rem;
+  line-height: 1;
+  cursor: pointer;
+  color: $link-color;
+  background-color: transparent;
+  border: 1px solid $border-color;
+  border-radius: 0.25rem;
+  white-space: nowrap;
+
+  &:hover {
+    background-color: $code-background-color;
+  }
+}
+
+// Center mermaid diagrams and give them breathing room.
+.mermaid {
+  margin: 1.25rem auto;
+  text-align: center;
+}
+
+// Slightly tighter callout bodies so single-line notes do not look oversized.
+.callout {
+  p:last-child {
+    margin-bottom: 0;
+  }
+}
+
+// Keep wide tables and code from forcing horizontal page scroll on small screens.
+.main-content {
+  table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+  }
+}

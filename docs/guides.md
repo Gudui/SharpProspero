@@ -1,6 +1,6 @@
 ---
 title: Guides and tips
-nav_order: 12
+nav_order: 5
 ---
 
 # Guides and tips
@@ -76,7 +76,7 @@ Log.AddSink(new ConsoleLogSink());   // also to the development console, if atta
 Log.Information("started");
 ```
 
-See [Utilities](utilities.md) for the full logging surface.
+See [Diagnostics](diagnostics.md) for the full logging surface.
 
 ## Run across firmware versions
 
@@ -109,6 +109,63 @@ nint doThing = lib.GetExport("myLibDoThing");
 ```
 
 See [Modules and libraries](modules.md).
+
+## Read the controller
+
+Inside a `ProsperoApp`, the frame context already carries this frame's controller sample as a
+`GamePadState`, with the previous one for edge detection. Read sticks and triggers as recentred floats,
+and test buttons with `ScePadButton`:
+
+```csharp
+GamePadState pad = context.Input;
+(float x, float y) = pad.LeftStick;              // -1..1, 0 at rest
+if (context.Pressed(ScePadButton.Cross)) Jump(); // true only on the frame it goes down
+```
+
+Start from `prospero-input` for a full tester, and see [Input](input.md) for motion, touch, rumble, the
+light bar, and named-action mapping.
+
+## Make and mix sound
+
+Generate tones with a `ToneGenerator`, layer them with an `AudioMixer`, and stream the mix to an
+`AudioOutDevice`. Because writing a block blocks until it plays, run the mix loop on its own thread.
+Start from `prospero-synth`, and see [Audio](audio.md) for decoding, encoding, and the microphone.
+
+## Save and load player data
+
+Mount the user's save area, read and write files under the mount point, and let the `using` block
+commit on unmount:
+
+```csharp
+using var saves = SaveDataManager.Open();
+using MountedSave slot = saves.Mount("save0", readOnly: false);
+string path = slot.MountPoint + "/state.json";
+FileSystem.WriteAllText(path, json);
+```
+
+Start from `prospero-savedata`, and see [Save data](save-data.md).
+
+## Show a system dialog
+
+The on-screen dialogs are opened, then pumped to completion in the frame loop — one at a time, so the
+loop never blocks:
+
+```csharp
+_dialog ??= MessageDialog.ShowMessage("Delete this save?", MessageDialogButtons.YesNo);
+if (_dialog.Update() == MessageDialogState.Finished)
+{
+    if (_dialog.ChosenButton == MsgDialogButtonId.Ok) Delete();  // Ok is the Yes/first button
+    _dialog = null;
+}
+```
+
+Start from `prospero-dialog`, and see [Dialogs and overlays](dialogs.md).
+
+## Do work without stalling the frame loop
+
+Long work — decoding a large file, a network round-trip — must not run inside `OnFrame`. Hand it to a
+`BackgroundOperation` or a `WorkQueue` and poll the result each frame, marshalling anything that touches
+the screen back with a `Dispatcher`. See [Threading](threading.md).
 
 ## Troubleshooting the build
 

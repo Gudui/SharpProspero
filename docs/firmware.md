@@ -1,6 +1,7 @@
 ---
 title: Firmware compatibility
-nav_order: 15
+nav_order: 7
+parent: System services
 ---
 
 # Firmware compatibility

@@ -1,6 +1,7 @@
 ---
 title: Working with module offsets
-nav_order: 16
+nav_order: 5
+parent: Toolchain
 ---
 
 # Working with module offsets

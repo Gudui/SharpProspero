@@ -1,0 +1,156 @@
+---
+title: System information
+parent: System services
+nav_order: 1
+---
+
+# System information
+
+`SystemInfo`, `SystemParameters` and `Users` read what the console is and who is signed in; `SystemControl` and `SystemSettings` act on the running system. All of these live in `SharpProspero.Platform`, and a system or diagnostics utility usually touches every one of them.
+
+## Console facts
+
+`SystemInfo` reports facts about the machine the module runs on. A diagnostics or settings tool shows the system software version the way the console displays it:
+
+```csharp
+using SharpProspero.Platform;
+
+string firmware = SystemInfo.SystemSoftwareVersion;   // for example "11.020.000"
+```
+
+`SystemSoftwareVersionValue` returns the same version packed into a word — major byte then minor byte, as it reads — which is the form a package's requirement is compared against. `ConsoleId` returns the console's open identifier as a 32-character hex string, and `ProcessorCount` returns the number of cores available to the application.
+
+```csharp
+uint versionValue = SystemInfo.SystemSoftwareVersionValue;  // 11.20 sits as 0x1120 in the high half
+string id = SystemInfo.ConsoleId;                           // stable per-console value
+int cores = SystemInfo.ProcessorCount;
+```
+
+{: .note }
+> Any of these can throw `ProsperoException` if the underlying value cannot be read. For matching a build against a firmware window, see [Firmware compatibility](firmware.md).
+
+## Language, date and time
+
+`SystemParameters` reads the user's console settings so a title can match its own presentation to them.
+
+```csharp
+if (SystemParameters.Language == SystemLanguage.French)
+    LoadStrings("fr");
+
+int minutesFromUtc = SystemParameters.TimeZoneMinutes;
+bool dst = SystemParameters.IsSummerTime;
+```
+
+`Language` is a `SystemLanguage` (the full set of console languages, from `Japanese` and `EnglishUS` through `ChineseSimplified`, `PortugueseBrazil` and the rest). `DateFormat` describes the order date fields are shown in, and `TimeFormat` whether the clock is 12- or 24-hour:
+
+```csharp
+string pattern = SystemParameters.DateFormat switch
+{
+    DateFormat.YearMonthDay => "yyyy/MM/dd",
+    DateFormat.DayMonthYear => "dd/MM/yyyy",
+    DateFormat.MonthDayYear => "MM/dd/yyyy",
+    _ => "yyyy/MM/dd",
+};
+
+bool use24Hour = SystemParameters.TimeFormat == TimeFormat.TwentyFourHour;
+```
+
+`TimeZoneMinutes` is the offset from UTC in minutes, `IsSummerTime` reports daylight saving, and `SystemName` is the name the user gave the console — useful for showing whose system a title is running on.
+
+## Signed-in users
+
+`Users` lists the signed-in profiles, so an application can greet the player by name or offer a choice of accounts. A `UserProfile` pairs the numeric id the system tracks a user by with the display name.
+
+```csharp
+int me = Users.InitialUserId;                 // the user who started this application
+string myName = Users.InitialUserName;
+
+foreach (UserProfile profile in Users.LoggedInUsers)
+    DrawProfileRow(profile.Id, profile.Name);
+
+string name = Users.GetUserName(otherId);
+```
+
+`InitialUserId` is the id you pass to the controller, save data and dialog services to act on behalf of the launching user. `LoggedInUserIds` is the raw id list for the console's slots, and `LoggedInUsers` pairs each id with its name in one call.
+
+{: .note }
+> The user service must be running first. `ProsperoApp` starts it at startup, so a normal application need do nothing; a module that runs without the app host initializes the user service once before reading these.
+
+## Keeping the console awake and reacting to events
+
+`SystemControl` is the app-loop plumbing a real application and a system tool both need: hold off the idle shutdown, read system events such as resuming from sleep, learn whether the application is backgrounded, and take the audio output for the module alone.
+
+During a long operation with no controller activity — a download or an install — call `KeepAwake` periodically so the console does not shut down on its idle timer:
+
+```csharp
+while (installing)
+{
+    SystemControl.KeepAwake();
+    // do a slice of work
+}
+```
+
+Poll `TryReceiveEvent` each frame to react to system events. It returns `false` once the queue is empty, so a `while` loop drains a burst in one pass. `SystemEventType` names `Resume` (the application came back from a suspended state) and `AppLaunched` (another application was launched over this one); an unrecognized event keeps its raw number so nothing is silently dropped. After a `Resume`, the clock and inputs may have moved on, so anything time-based should resynchronize:
+
+```csharp
+while (SystemControl.TryReceiveEvent(out SystemEventType type))
+{
+    if (type == SystemEventType.Resume)
+        ResyncClock();
+}
+```
+
+`GetStatus` returns a `SystemStatus` snapshot — the number of `PendingEvents`, whether a system dialog is drawn over the application (`IsSystemUiOverlaid`), and whether the module is `IsInBackground`. The `IsInBackground` property is a shortcut for the same flag.
+
+```csharp
+SystemStatus status = SystemControl.GetStatus();
+if (status.IsSystemUiOverlaid)
+    PauseInput();
+```
+
+The remaining members cover the rest of the loop:
+
+| Member | What it does |
+|---|---|
+| `DisplaySafeAreaRatio` | Fraction of the screen (0 to 1) safe for important content; multiply screen dimensions by it and centre. |
+| `SilenceBackgroundMedia` / `RestoreBackgroundMedia` | Stop and later restore the background media player so the module owns the audio. |
+| `LoadExecutable(path)` | Replace the running module with another executable for chain-loading; on success it does not return. |
+
+## Stored system settings
+
+`SystemSettings` reads and writes the values the system itself keeps, which no other service exposes. Each entry is addressed by a numeric identifier the system defines, so a tool supplies the identifier it is interested in; the class does not name them, because an identifier's meaning belongs to the system version in use.
+
+```csharp
+using SharpProspero.Platform;
+using SharpProspero.Diagnostics;
+
+if (SystemSettings.TryOpen(out SystemSettings? settings))
+{
+    using (settings)
+    {
+        if (settings!.TryGetInt32(id, out int value))
+            Log.Information($"setting {id} = {value}");
+
+        settings.SetInt32(id, value + 1);
+        string text = settings.GetString(otherId);
+    }
+}
+```
+
+| Call | What it does |
+|---|---|
+| `TryOpen(out settings)` | Load the service, reporting whether it could be reached. |
+| `Open()` | Load it, raising when it could not be reached. |
+| `GetInt32(id)` / `TryGetInt32(id, out value)` | Read a whole-number setting. |
+| `SetInt32(id, value)` | Write a whole-number setting. |
+| `GetString(id, maxLength)` / `TryGetString(id, out value, maxLength)` | Read a text setting. |
+| `SetString(id, value)` | Write a text setting. |
+
+The service is loaded at run time and unloaded when you dispose the object, so open it once, use it, and let the `using` block close it.
+
+{: .important }
+> Reaching this service depends on what the running build is permitted to do. `TryOpen` and the `Try` forms report a refusal rather than throwing, so a tool can offer the feature only where it works and carry on where it does not. `Log` lives in `SharpProspero.Diagnostics` — see [Diagnostics](diagnostics.md).
+
+## Related pages
+
+Installing and inspecting titles, and reading the parameters a title was packaged with, are covered in [Packages and devices](packages-devices.md). For the overview of console services and the permission model behind them, see the [System services](system-services.md) landing page.

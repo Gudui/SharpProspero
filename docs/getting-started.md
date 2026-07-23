@@ -79,7 +79,7 @@ internal static class Program
 ```
 
 `ProsperoApp` opens the display and controller, runs a paced loop that calls `OnFrame`, and tears
-everything down on exit. From here, [Graphics and memory](graphics-and-memory.md) covers drawing and the
+everything down on exit. From here, [Graphics](graphics.md) covers drawing and the
 [Interface toolkit](ui.md) builds screens out of widgets instead of drawing by hand.
 
 ## 3. Build the package

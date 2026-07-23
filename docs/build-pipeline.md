@@ -1,6 +1,7 @@
 ---
 title: Build pipeline
-nav_order: 5
+nav_order: 2
+parent: Toolchain
 ---
 
 # Build pipeline
@@ -40,7 +41,7 @@ dotnet publish -c Release -r linux-x64
 ```
 
 The compiler writes an object under `obj/Release/net10.0/linux-x64/native`. It targets the x86_64
-instruction set; the native runtime it links against (below) matches the device ABI.
+instruction set; the runtime it links against (below) matches the device ABI.
 
 One constraint on this step: the ahead-of-time compiler emits an object only for the operating system
 it runs on, so it does not cross-compile to Linux from a Windows host. `build.ps1` therefore runs the

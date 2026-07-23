@@ -1,0 +1,55 @@
+{
+  "$schema": "http://json.schemastore.org/template",
+  "author": "SvenGDK",
+  "classifications": [
+    "Prospero",
+    "Homebrew",
+    "Console",
+    "AOT"
+  ],
+  "identity": "SharpProspero.Input.CSharp",
+  "name": "SharpProspero Input Tester",
+  "shortName": "prospero-input",
+  "tags": {
+    "language": "C#",
+    "type": "project"
+  },
+  "sourceName": "SampleApp",
+  "preferNameDirectory": true,
+  "symbols": {
+    "title": {
+      "type": "parameter",
+      "datatype": "text",
+      "defaultValue": "My Application",
+      "replaces": "APP_TITLE",
+      "description": "The display title shown for the application."
+    },
+    "titleId": {
+      "type": "parameter",
+      "datatype": "text",
+      "defaultValue": "PPSA99099",
+      "replaces": "APP_TITLEID",
+      "description": "The nine-character title id."
+    },
+    "conceptId": {
+      "type": "parameter",
+      "datatype": "text",
+      "defaultValue": "99099",
+      "replaces": "APP_CONCEPTID",
+      "description": "The concept id."
+    },
+    "contentId": {
+      "type": "parameter",
+      "datatype": "text",
+      "defaultValue": "UP9000-PPSA99099_00-PROSPERO00000000",
+      "replaces": "APP_CONTENTID",
+      "description": "The 36-character content id."
+    }
+  },
+  "primaryOutputs": [
+    {
+      "path": "SampleApp.csproj"
+    }
+  ],
+  "description": "An on-screen controller, keyboard and mouse tester."
+}

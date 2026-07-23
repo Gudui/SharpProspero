@@ -1,0 +1,17 @@
+{%- comment -%}
+Loads MathJax so pages can typeset inline math with \( ... \) and display math with $$ ... $$.
+Used by the graphics GPU, hashing, and pathfinding pages for their formulas. Rendered inside <head>.
+{%- endcomment -%}
+<script>
+  window.MathJax = {
+    tex: {
+      inlineMath: [['\\(', '\\)']],
+      displayMath: [['$$', '$$'], ['\\[', '\\]']]
+    },
+    options: {
+      skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+    },
+    svg: { fontCache: 'global' }
+  };
+</script>
+<script async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
