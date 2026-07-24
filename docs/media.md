@@ -5,6 +5,11 @@ nav_order: 9
 
 # Media
 
+`MediaMetadata.Read` returns the tags a track carries - title, artist, album, track number, year and
+genre - as a `MediaTags` record, reading the tag block at the front of the file (or the short fixed tag
+some files keep at the end) so a music player lists a folder by name and artist without decoding any
+audio.
+
 The `SharpProspero.Media` namespace has two entry points. `MediaPlayer` plays a whole file or network
 stream end to end, decoding on its own threads while you pull the frames it produces. `VideoDecoder`
 works one unit at a time and hands back each picture, for cases where you receive the stream yourself
@@ -23,6 +28,13 @@ flowchart LR
       F --> G[DecodedPicture]
     end
 ```
+
+<details open markdown="block">
+  <summary>On this page</summary>
+  {: .text-delta }
+- TOC
+{:toc}
+</details>
 
 ## Playing a file or stream
 

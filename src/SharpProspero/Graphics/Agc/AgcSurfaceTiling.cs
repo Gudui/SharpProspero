@@ -6,67 +6,39 @@ namespace SharpProspero.Graphics.Agc;
 // The per-mip fields the address computation needs, beyond the size/alignment that AgcSurfaceLayout
 // surfaces: the byte offset of each mip within a slice, and - for mips packed into the mip tail - the
 // element coordinate of the mip within its tail block.
-internal readonly struct AgcTilingMip
+internal readonly struct AgcTilingMip(uint width, uint height, uint depth, uint paddedWidth, ulong offsetInBytes, uint mipTailCoordX, uint mipTailCoordY)
 {
-    public AgcTilingMip(uint width, uint height, uint depth, uint paddedWidth, ulong offsetInBytes, uint mipTailCoordX, uint mipTailCoordY)
-    {
-        Width = width;
-        Height = height;
-        Depth = depth;
-        PaddedWidth = paddedWidth;
-        OffsetInBytes = offsetInBytes;
-        MipTailCoordX = mipTailCoordX;
-        MipTailCoordY = mipTailCoordY;
-    }
-
-    public uint Width { get; }
-    public uint Height { get; }
-    public uint Depth { get; }
-    public uint PaddedWidth { get; }
-    public ulong OffsetInBytes { get; }
-    public uint MipTailCoordX { get; }
-    public uint MipTailCoordY { get; }
+    public uint Width { get; } = width;
+    public uint Height { get; } = height;
+    public uint Depth { get; } = depth;
+    public uint PaddedWidth { get; } = paddedWidth;
+    public ulong OffsetInBytes { get; } = offsetInBytes;
+    public uint MipTailCoordX { get; } = mipTailCoordX;
+    public uint MipTailCoordY { get; } = mipTailCoordY;
 }
 
 // A surface summary with the block and per-mip detail the address swizzle needs. This mirrors the
 // graphics address library's SurfaceSummary; AgcSurfaceLayout is the public, size-oriented view of the
 // same computation, so this keeps the extra fields internal to the tiler.
-internal readonly struct AgcTilingSummary
+internal readonly struct AgcTilingSummary(
+    AgcTileMode tileMode, uint bpeLog2, uint numColorFragmentsLog2, uint numDepthFragmentsLog2,
+    uint blockSizeInBytesLog2, uint blockWidthLog2, uint blockHeightLog2, uint blockDepthLog2,
+    uint numBlockSlices, ulong blockSliceSizeInBytes, ulong totalSizeInBytes,
+    bool isMicro, AgcTilingMip[] mips)
 {
-    public AgcTilingSummary(
-        AgcTileMode tileMode, uint bpeLog2, uint numColorFragmentsLog2, uint numDepthFragmentsLog2,
-        uint blockSizeInBytesLog2, uint blockWidthLog2, uint blockHeightLog2, uint blockDepthLog2,
-        uint numBlockSlices, ulong blockSliceSizeInBytes, ulong totalSizeInBytes,
-        bool isMicro, AgcTilingMip[] mips)
-    {
-        TileMode = tileMode;
-        BpeLog2 = bpeLog2;
-        NumColorFragmentsLog2 = numColorFragmentsLog2;
-        NumDepthFragmentsLog2 = numDepthFragmentsLog2;
-        BlockSizeInBytesLog2 = blockSizeInBytesLog2;
-        BlockWidthLog2 = blockWidthLog2;
-        BlockHeightLog2 = blockHeightLog2;
-        BlockDepthLog2 = blockDepthLog2;
-        NumBlockSlices = numBlockSlices;
-        BlockSliceSizeInBytes = blockSliceSizeInBytes;
-        TotalSizeInBytes = totalSizeInBytes;
-        IsMicro = isMicro;
-        Mips = mips;
-    }
-
-    public AgcTileMode TileMode { get; }
-    public uint BpeLog2 { get; }
-    public uint NumColorFragmentsLog2 { get; }
-    public uint NumDepthFragmentsLog2 { get; }
-    public uint BlockSizeInBytesLog2 { get; }
-    public uint BlockWidthLog2 { get; }
-    public uint BlockHeightLog2 { get; }
-    public uint BlockDepthLog2 { get; }
-    public uint NumBlockSlices { get; }
-    public ulong BlockSliceSizeInBytes { get; }
-    public ulong TotalSizeInBytes { get; }
-    public bool IsMicro { get; }
-    public AgcTilingMip[] Mips { get; }
+    public AgcTileMode TileMode { get; } = tileMode;
+    public uint BpeLog2 { get; } = bpeLog2;
+    public uint NumColorFragmentsLog2 { get; } = numColorFragmentsLog2;
+    public uint NumDepthFragmentsLog2 { get; } = numDepthFragmentsLog2;
+    public uint BlockSizeInBytesLog2 { get; } = blockSizeInBytesLog2;
+    public uint BlockWidthLog2 { get; } = blockWidthLog2;
+    public uint BlockHeightLog2 { get; } = blockHeightLog2;
+    public uint BlockDepthLog2 { get; } = blockDepthLog2;
+    public uint NumBlockSlices { get; } = numBlockSlices;
+    public ulong BlockSliceSizeInBytes { get; } = blockSliceSizeInBytes;
+    public ulong TotalSizeInBytes { get; } = totalSizeInBytes;
+    public bool IsMicro { get; } = isMicro;
+    public AgcTilingMip[] Mips { get; } = mips;
 }
 
 public static partial class AgcSurface

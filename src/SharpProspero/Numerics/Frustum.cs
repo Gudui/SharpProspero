@@ -54,8 +54,8 @@ public readonly struct Frustum
     /// <summary>True when any part of the box is inside the view volume.</summary>
     public bool Intersects(BoundingBox box)
     {
-        return Outside(_left, box) || Outside(_right, box) || Outside(_bottom, box) ||
-               Outside(_top, box) || Outside(_near, box) || Outside(_far, box) ? false : true;
+        return !Outside(_left, box) && !Outside(_right, box) && !Outside(_bottom, box) &&
+               !Outside(_top, box) && !Outside(_near, box) && !Outside(_far, box);
 
         // A box is culled only if it lies entirely on the negative side of one plane. The positive-vertex
         // test picks the box corner furthest along the plane normal; if even that is outside, all are.

@@ -7,12 +7,9 @@ namespace SharpProspero.Graphics.Agc;
 // library's declarations. A Block holds log2 of the block width, height, and depth in elements.
 public static partial class AgcSurface
 {
-    internal readonly struct Block
+    internal readonly struct Block(int widthLog2, int heightLog2, int depthLog2)
     {
-        public Block(int widthLog2, int heightLog2, int depthLog2) { WidthLog2 = widthLog2; HeightLog2 = heightLog2; DepthLog2 = depthLog2; }
-        public int WidthLog2 { get; }
-        public int HeightLog2 { get; }
-        public int DepthLog2 { get; }
+        public int WidthLog2 { get; } = widthLog2; public int HeightLog2 { get; } = heightLog2; public int DepthLog2 { get; } = depthLog2;
     }
 
     private static readonly Block[] BlockLinear = [new Block(8, 0, 0), new Block(7, 0, 0), new Block(6, 0, 0), new Block(5, 0, 0), new Block(4, 0, 0)];

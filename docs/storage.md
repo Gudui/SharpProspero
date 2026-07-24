@@ -25,6 +25,13 @@ flowchart LR
   G --> J
 ```
 
+<details open markdown="block">
+  <summary>On this page</summary>
+  {: .text-delta }
+- TOC
+{:toc}
+</details>
+
 ## Read a bundled file
 
 `PackageFile` reads files bundled with a module. Assets live under the package root, exposed as
@@ -266,4 +273,4 @@ and initializes the service.
 - [Numerics and vectors](numerics.md) — math, random and spatial helpers.
 - [Buffers and encodings](buffers.md) — reading and writing binary layouts, ring buffers, base-N text.
 - [XML](xml.md) — a reader and writer for XML configuration and data files.
-- [Hashing and checksums](security.md) — verifying a file's integrity after a read.
+- [Hashing and checksums](hashing.md) — verifying a file's integrity after a read.

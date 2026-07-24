@@ -12,65 +12,49 @@ namespace SharpProspero.Graphics.Agc;
 /// the graphics core's own render-target setup, including the blend and rounding rules it derives from the
 /// channel type. This describes a plain, uncompressed color target - the common scan-out case.
 /// </remarks>
-public readonly struct RenderTargetSpec
+/// <remarks>Creates a description of a 2D color render target.</remarks>
+public readonly struct RenderTargetSpec(
+    CxRenderTarget.Format format,
+    CxRenderTarget.ChannelType channelType,
+    CxRenderTarget.ChannelOrder channelOrder,
+    uint width,
+    uint height,
+    ulong dataAddress,
+    CxRenderTarget.TileMode tileMode = CxRenderTarget.TileMode.kRenderTarget,
+    CxRenderTarget.Dimension dimension = CxRenderTarget.Dimension.k2d,
+    uint depth = 1,
+    uint numMips = 1,
+    uint numSlices = 1,
+    CxRenderTarget.NumSamples numSamples = CxRenderTarget.NumSamples.k1,
+    CxRenderTarget.NumFragments numFragments = CxRenderTarget.NumFragments.k1)
 {
-    /// <summary>Creates a description of a 2D color render target.</summary>
-    public RenderTargetSpec(
-        CxRenderTarget.Format format,
-        CxRenderTarget.ChannelType channelType,
-        CxRenderTarget.ChannelOrder channelOrder,
-        uint width,
-        uint height,
-        ulong dataAddress,
-        CxRenderTarget.TileMode tileMode = CxRenderTarget.TileMode.kRenderTarget,
-        CxRenderTarget.Dimension dimension = CxRenderTarget.Dimension.k2d,
-        uint depth = 1,
-        uint numMips = 1,
-        uint numSlices = 1,
-        CxRenderTarget.NumSamples numSamples = CxRenderTarget.NumSamples.k1,
-        CxRenderTarget.NumFragments numFragments = CxRenderTarget.NumFragments.k1)
-    {
-        Format = format;
-        ChannelType = channelType;
-        ChannelOrder = channelOrder;
-        Width = width;
-        Height = height;
-        DataAddress = dataAddress;
-        TileMode = tileMode;
-        Dimension = dimension;
-        Depth = depth;
-        NumMips = numMips;
-        NumSlices = numSlices;
-        NumSamples = numSamples;
-        NumFragments = numFragments;
-    }
 
     /// <summary>The pixel format.</summary>
-    public CxRenderTarget.Format Format { get; }
+    public CxRenderTarget.Format Format { get; } = format;
     /// <summary>How each channel's bits are interpreted.</summary>
-    public CxRenderTarget.ChannelType ChannelType { get; }
+    public CxRenderTarget.ChannelType ChannelType { get; } = channelType;
     /// <summary>How shader export channels map to format components.</summary>
-    public CxRenderTarget.ChannelOrder ChannelOrder { get; }
+    public CxRenderTarget.ChannelOrder ChannelOrder { get; } = channelOrder;
     /// <summary>Width in pixels.</summary>
-    public uint Width { get; }
+    public uint Width { get; } = width;
     /// <summary>Height in pixels.</summary>
-    public uint Height { get; }
+    public uint Height { get; } = height;
     /// <summary>Base address of the color data (a multiple of 256).</summary>
-    public ulong DataAddress { get; }
+    public ulong DataAddress { get; } = dataAddress;
     /// <summary>The memory layout.</summary>
-    public CxRenderTarget.TileMode TileMode { get; }
+    public CxRenderTarget.TileMode TileMode { get; } = tileMode;
     /// <summary>The dimensionality.</summary>
-    public CxRenderTarget.Dimension Dimension { get; }
+    public CxRenderTarget.Dimension Dimension { get; } = dimension;
     /// <summary>Depth in pixels for a 3D target.</summary>
-    public uint Depth { get; }
+    public uint Depth { get; } = depth;
     /// <summary>Number of mip levels.</summary>
-    public uint NumMips { get; }
+    public uint NumMips { get; } = numMips;
     /// <summary>Number of array slices.</summary>
-    public uint NumSlices { get; }
+    public uint NumSlices { get; } = numSlices;
     /// <summary>Number of samples.</summary>
-    public CxRenderTarget.NumSamples NumSamples { get; }
+    public CxRenderTarget.NumSamples NumSamples { get; } = numSamples;
     /// <summary>Number of fragments.</summary>
-    public CxRenderTarget.NumFragments NumFragments { get; }
+    public CxRenderTarget.NumFragments NumFragments { get; } = numFragments;
 }
 
 /// <summary>Encodes a <see cref="RenderTargetSpec"/> into a <see cref="CxRenderTarget"/> register block.</summary>

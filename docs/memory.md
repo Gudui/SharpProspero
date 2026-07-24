@@ -10,6 +10,13 @@ buffers, pool-managed flexible memory for general working buffers, and the manag
 a bounded garbage collector. The types here, all in `SharpProspero.Memory`, reserve and map the first
 two, report how much is left, and keep the third within a ceiling you set per project.
 
+<details open markdown="block">
+  <summary>On this page</summary>
+  {: .text-delta }
+- TOC
+{:toc}
+</details>
+
 ## Direct memory
 
 GPU-visible buffers come from direct memory, not the managed heap. `DirectMemoryRegion` reserves, maps,
@@ -137,6 +144,27 @@ allocating, and `Clear` drops every idle object.
 {: .warning }
 > Return each borrowed object exactly once, and drop your reference to it afterward. Returning the same
 > object twice, or keeping it after returning it, lets two callers write the same instance at once.
+
+### A bounded cache of built assets
+
+When something is costly to build and cheap to rebuild — a decoded texture, a loaded sound, a rendered
+glyph — an `LruCache<TKey, TValue>` keeps a fixed number of the most recently used ones and drops the
+least recently used to stay within that budget. Reading or writing a key marks it as recently used, so what
+is in active play stays resident while stale entries fall out.
+
+```csharp
+using SharpProspero.Memory;
+
+var textures = new LruCache<string, Texture>(capacity: 32);
+textures.Evicted += (key, tex) => tex.Dispose();      // release the dropped one
+
+Texture icon = textures.GetOrAdd(path, LoadTexture);  // built once, then served from the cache
+```
+
+`TryGet` reads and refreshes, `Set` adds or replaces, and `GetOrAdd` builds a missing entry with a factory
+and stores it. `ContainsKey` checks without counting as use, `Remove` and `Clear` drop entries without
+raising `Evicted`, and `Keys` lists what is held, most recently used first. Hang a handler on `Evicted` to
+free whatever a dropped entry was holding.
 
 ## How the three fit together
 

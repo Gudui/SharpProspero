@@ -11,6 +11,13 @@ The Agc layer drives the graphics processor directly: you describe shader resour
 {: .note }
 > This is the shader-based path, for meshes, custom shaders, depth buffering, and blending. Most applications draw with the CPU [Surface](graphics.md) instead and never touch a single type here. Reach for this layer only when you are writing a renderer.
 
+<details open markdown="block">
+  <summary>On this page</summary>
+  {: .text-delta }
+- TOC
+{:toc}
+</details>
+
 ## The two layers
 
 The GPU is exposed as two layers. The lower one is the complete command interface: `SceAgc` holds the command builders (draws, dispatches, register writes, synchronization, shader create and link) and `SceAgcDriver` holds the driver calls (submit, queue, flip, wait). Every builder takes the command buffer first and returns the address of the packet it wrote.
@@ -220,14 +227,15 @@ where $w_b \times h_b$ is the block in elements (`BlockWidth`, `BlockHeight`), $
 ## Building a texture file
 
 Textures are prepared ahead of time into GNF files - a header, a texture descriptor, and the pixel data
-in the layout the graphics processor samples. The toolchain's `gnf` command turns a PNG, TGA, or BMP
+in the layout the graphics processor samples. The toolchain's `gnf` command turns a PNG, TGA, BMP, or QOI
 image into a GNF with a single linear four-channel texture:
 
 ```
 dotnet run --project tools/SharpProspero.Bindings.Generator -- gnf --input art/icon.png --output art/icon.gnf
 ```
 
-Add `--srgb` to mark the colour channels as sRGB (the alpha stays linear); `--info <file.gnf>` reports a
+Add `--srgb` to mark the colour channels as sRGB (the alpha stays linear); `--resize WxH` scales the image
+first (bilinear), so an oversized source becomes a texture-friendly size; `--info <file.gnf>` reports a
 GNF's header and its first texture. The result is the file an application loads and points a
 `AgcTextureDescriptor` slot at to sample. The build is independent of the SDK, so it runs on any machine
 with the toolchain.

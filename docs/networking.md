@@ -40,6 +40,13 @@ for a protocol the high-level types do not speak.
 | Connect to a host by name | `HostResolver` |
 | Control the transfers the system is running | `DownloadService` |
 
+<details open markdown="block">
+  <summary>On this page</summary>
+  {: .text-delta }
+- TOC
+{:toc}
+</details>
+
 ## Network information
 
 `NetworkInfo` reports the connection, the same panel a system-information screen shows. Open it, read

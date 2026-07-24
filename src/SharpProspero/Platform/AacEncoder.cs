@@ -7,20 +7,14 @@ using System;
 namespace SharpProspero.Platform;
 
 /// <summary>Thrown when the audio encoder rejects a call, carrying the result and internal codes it returned.</summary>
-public sealed class AudioEncodeException : Exception
+/// <remarks>Creates the exception from the codes the encoder returned.</remarks>
+public sealed class AudioEncodeException(string operation, int resultCode, int internalError) : Exception($"Audio encode {operation} failed (result 0x{resultCode:X8}, internal 0x{internalError:X8}).")
 {
-    /// <summary>Creates the exception from the codes the encoder returned.</summary>
-    public AudioEncodeException(string operation, int resultCode, int internalError)
-        : base($"Audio encode {operation} failed (result 0x{resultCode:X8}, internal 0x{internalError:X8}).")
-    {
-        ResultCode = resultCode;
-        InternalError = internalError;
-    }
 
     /// <summary>The primary result code the encoder returned.</summary>
-    public int ResultCode { get; }
+    public int ResultCode { get; } = resultCode;
     /// <summary>The encoder's internal error code.</summary>
-    public int InternalError { get; }
+    public int InternalError { get; } = internalError;
 }
 
 /// <summary>

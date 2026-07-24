@@ -140,7 +140,7 @@ public sealed unsafe class Renderer3D : IDisposable
 
         // The descriptors the vertex program reads its constants and vertices through.
         AgcBufferDescriptor cbDescriptor = AgcBufferDescriptor.Constant((ulong)constantsRegion.Pointer, (uint)sizeof(Constants));
-        AgcBufferDescriptor vbDescriptor = AgcBufferDescriptor.Structured((ulong)mesh.VertexAddress, (uint)mesh.VertexStride, (uint)mesh.VertexCount);
+        AgcBufferDescriptor vbDescriptor = AgcBufferDescriptor.Structured((ulong)mesh.VertexAddress, (uint)MeshBuffer.VertexStride, (uint)mesh.VertexCount);
 
         void* dcb = dcbObj.Handle;
         dcbObj.Reset();

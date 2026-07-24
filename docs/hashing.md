@@ -11,6 +11,13 @@ build can verify a downloaded file against a published checksum, compare two fil
 message with a shared secret. Every algorithm shares one small base type and offers the same one-shot,
 file, and streaming forms, and each returns the identical result on the device and in tests.
 
+<details open markdown="block">
+  <summary>On this page</summary>
+  {: .text-delta }
+- TOC
+{:toc}
+</details>
+
 ## Choose an algorithm
 
 Pick by what the check needs to catch. `Sha256` (or `Sha512` for a wider digest) guards against deliberate

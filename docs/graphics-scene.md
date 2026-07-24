@@ -11,6 +11,13 @@ camera that turns world positions into screen positions, a tile grid that draws 
 collision questions, and a particle system for effects. This page wires them into one per-frame loop, then
 adds pathfinding across the grid.
 
+<details open markdown="block">
+  <summary>On this page</summary>
+  {: .text-delta }
+- TOC
+{:toc}
+</details>
+
 ## Camera2D: world and screen
 
 `Camera2D` is a movable, zoomable view onto a 2D world. Game logic stays in world coordinates — where

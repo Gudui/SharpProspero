@@ -81,7 +81,7 @@ public static class Csv
             {
                 fields.Add(field.ToString());
                 field.Clear();
-                rows.Add(fields.ToArray());
+                rows.Add([.. fields]);
                 fields.Clear();
                 anyContent = false;
             }
@@ -96,7 +96,7 @@ public static class Csv
         if (anyContent || field.Length > 0 || fields.Count > 0)
         {
             fields.Add(field.ToString());
-            rows.Add(fields.ToArray());
+            rows.Add([.. fields]);
         }
         return rows;
     }

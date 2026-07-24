@@ -47,7 +47,7 @@ public sealed class ByteRing
         int tail = (int)(((long)_head + _count) % _buffer.Length); // 64-bit add so a huge capacity cannot overflow
         int firstRun = Math.Min(toWrite, _buffer.Length - tail);
         source[..firstRun].CopyTo(_buffer.AsSpan(tail));
-        source.Slice(firstRun, toWrite - firstRun).CopyTo(_buffer);
+        source[firstRun..toWrite].CopyTo(_buffer);
         _count += toWrite;
         return toWrite;
     }

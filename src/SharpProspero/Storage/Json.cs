@@ -146,7 +146,7 @@ public sealed class JsonValue
     public int Count => Type == JsonType.Array ? _array!.Count : Type == JsonType.Object ? _keys!.Count : 0;
 
     /// <summary>The object's keys in order, or an empty list when this is not an object.</summary>
-    public IReadOnlyList<string> Keys => _keys ?? (IReadOnlyList<string>)Array.Empty<string>();
+    public IReadOnlyList<string> Keys => _keys ?? (IReadOnlyList<string>)[];
 
     /// <summary>The item at <paramref name="index"/> in an array, or <see cref="Null"/> when out of range or not an array.</summary>
     public JsonValue this[int index]

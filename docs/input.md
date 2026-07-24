@@ -9,6 +9,13 @@ Everything a module reads from the player lives in `SharpProspero.Input`: the co
 and touch, the rumble motors and light bar it drives back, and a USB keyboard and mouse. A small
 `InputMap` sits on top so game code asks about named actions instead of raw buttons.
 
+<details open markdown="block">
+  <summary>On this page</summary>
+  {: .text-delta }
+- TOC
+{:toc}
+</details>
+
 ## The controller
 
 `GamePad` opens one controller for a user, reads a sample each frame, and drives its output. Open it
@@ -88,6 +95,29 @@ if (pad.Touch1.IsActive)
 tracking `Id` that stays constant while the finger is down, and an `IsActive` flag. `TouchCount` reports
 how many contacts are live (0 to 2). `IsConnected` and `TimestampMicroseconds` describe the sample
 itself.
+
+### Touch-pad gestures
+
+`TouchGestureRecognizer` turns the raw contacts into gestures. Feed it each frame's sample and it returns
+the gestures that completed or advanced: a tap, a double tap, a hold, a drag, a flick with its velocity,
+and a two-finger pinch that carries both a scale and a rotation.
+
+```csharp
+var gestures = new TouchGestureRecognizer();
+// each frame:
+foreach (TouchGesture g in gestures.Update(pad.State))
+{
+    switch (g.Kind)
+    {
+        case TouchGestureKind.Tap:   Select(g.Position); break;
+        case TouchGestureKind.Drag:  Scroll(g.Delta); break;
+        case TouchGestureKind.Pinch: Zoom(g.Scale); Rotate(g.Rotation); break;
+    }
+}
+```
+
+The thresholds - how far a tap may move, how long a hold takes, the flick speed - are properties you can
+tune. It keeps its own state, so a single recognizer follows a gesture across frames.
 
 ### Output: rumble and light bar
 

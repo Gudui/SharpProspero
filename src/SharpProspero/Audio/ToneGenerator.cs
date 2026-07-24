@@ -119,19 +119,14 @@ public sealed class ToneGenerator
 
     private float Sample(double phase)
     {
-        switch (Waveform)
+        return Waveform switch
         {
-            case Waveform.Square:
-                return phase < 0.5 ? 1f : -1f;
-            case Waveform.Sawtooth:
-                return (float)((2.0 * phase) - 1.0);
-            case Waveform.Triangle:
-                return phase < 0.5 ? (float)((4.0 * phase) - 1.0) : (float)(3.0 - (4.0 * phase));
-            case Waveform.Noise:
-                return NextNoise();
-            default:
-                return MathF.Sin((float)(phase * 2.0 * Math.PI));
-        }
+            Waveform.Square => phase < 0.5 ? 1f : -1f,
+            Waveform.Sawtooth => (float)((2.0 * phase) - 1.0),
+            Waveform.Triangle => phase < 0.5 ? (float)((4.0 * phase) - 1.0) : (float)(3.0 - (4.0 * phase)),
+            Waveform.Noise => NextNoise(),
+            _ => MathF.Sin((float)(phase * 2.0 * Math.PI)),
+        };
     }
 
     // A xorshift step turned into a value in [-1, 1]; independent of the pitch, so noise ignores it.

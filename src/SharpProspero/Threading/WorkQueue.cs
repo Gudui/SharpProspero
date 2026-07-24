@@ -22,9 +22,9 @@ namespace SharpProspero.Threading;
 /// </remarks>
 public sealed class WorkQueue : IDisposable
 {
-    private readonly BlockingCollection<Action> _jobs = new();
+    private readonly BlockingCollection<Action> _jobs = [];
     private readonly Thread[] _workers;
-    private readonly object _gate = new();
+    private readonly Lock _gate = new();
     private bool _disposed;
 
     /// <summary>Creates a queue served by <paramref name="workerCount"/> background threads.</summary>

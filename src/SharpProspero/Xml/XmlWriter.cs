@@ -12,11 +12,12 @@ namespace SharpProspero.Xml;
 /// pairs; attributes and content go to the element most recently opened. It writes into a
 /// <see cref="System.Text.StringBuilder"/>, so it has no stream or platform dependency.
 /// </summary>
-public sealed class XmlWriter
+/// <remarks>Creates a writer. Set <paramref name="indent"/> for human-readable, indented output.</remarks>
+public sealed class XmlWriter(bool indent = false, string indentUnit = "  ")
 {
-    private readonly StringBuilder _sb;
-    private readonly bool _indent;
-    private readonly string _indentUnit;
+    private readonly StringBuilder _sb = new();
+    private readonly bool _indent = indent;
+    private readonly string _indentUnit = indentUnit ?? "  ";
     private readonly List<Frame> _open = [];
     private bool _startTagOpen;
 
@@ -24,14 +25,6 @@ public sealed class XmlWriter
     {
         public string Name;
         public bool HadChildElement;
-    }
-
-    /// <summary>Creates a writer. Set <paramref name="indent"/> for human-readable, indented output.</summary>
-    public XmlWriter(bool indent = false, string indentUnit = "  ")
-    {
-        _sb = new StringBuilder();
-        _indent = indent;
-        _indentUnit = indentUnit ?? "  ";
     }
 
     /// <summary>Writes the <c>&lt;?xml ... ?&gt;</c> declaration. Call before the root element.</summary>

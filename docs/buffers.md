@@ -81,6 +81,31 @@ int taken = ring.Read(chunk);                     // oldest bytes first; less th
 `FreeSpace` says how much a `Write` can still accept, `Skip(count)` drops the oldest bytes without copying
 them out, and `Clear` empties the ring.
 
+## Bit fields
+
+`BitWriter` and `BitReader` pack and unpack values that are not a whole number of bytes wide - the flag
+bits, small counters and variable-length fields custom binary formats and image codecs are built from.
+Both work most-significant bit first, so what one writes the other reads straight back.
+
+```csharp
+using SharpProspero.Buffers;
+
+var writer = new BitWriter();
+writer.WriteBits(0b101, 3);      // a 3-bit field
+writer.WriteBit(true);           // a single flag
+writer.WriteBits(sampleRate, 20);
+byte[] packed = writer.ToArray(); // a part-filled final byte is padded with zero bits
+
+var reader = new BitReader(packed);
+uint mode = reader.ReadBits(3);
+bool flag = reader.ReadBit();
+uint rate = reader.ReadBits(20);
+```
+
+`WriteBits`/`ReadBits` handle 0 to 32 bits at a time, `WriteBit`/`ReadBit` do one, and `AlignToByte` moves
+to the next whole-byte boundary (padding on write, skipping on read). `BitReader` exposes `BitPosition`,
+`BitsRemaining` and `TryReadBits`, which returns false at the end of the buffer instead of throwing.
+
 ## Hex, Base32 and Base64
 
 `BaseN` turns bytes into text and back — hexadecimal, Base32 (RFC 4648), and Base64 (standard or the
@@ -102,6 +127,6 @@ string hex = BaseN.ToHex(digest);                 // lower-case; upperCase: true
 | Base32 | `ToBase32(data, padding)` | `FromBase32(text)` |
 | Base64 | `ToBase64(data, urlSafe, padding)` | `FromBase64(text)` |
 
-`ToHex` pairs well with the digests from [Hashing and checksums](security.md) when you need a hex fingerprint
+`ToHex` pairs well with the digests from [Hashing and checksums](hashing.md) when you need a hex fingerprint
 to log or compare. For reading and writing whole files rather than in-memory buffers, see
 [Files and storage](storage.md).

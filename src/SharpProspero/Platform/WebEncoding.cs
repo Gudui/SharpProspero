@@ -77,7 +77,7 @@ public static class WebEncoding
                 int start = i;
                 while (i < value.Length && value[i] != '%' && !(value[i] == '+' && plusAsSpace))
                     i++;
-                bytes.AddRange(Encoding.UTF8.GetBytes(value.Substring(start, i - start)));
+                bytes.AddRange(Encoding.UTF8.GetBytes(value[start..i]));
             }
         }
 

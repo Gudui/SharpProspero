@@ -87,10 +87,10 @@ public sealed class Quadtree<T>
 
         node.Items.Add(entry);
         if (node.Items.Count > _maxItemsPerNode && node.Depth < _maxDepth)
-            Subdivide(node);
+            Quadtree<T>.Subdivide(node);
     }
 
-    private void Subdivide(Node node)
+    private static void Subdivide(Node node)
     {
         float halfWidth = node.Bounds.Width / 2f;
         float halfHeight = node.Bounds.Height / 2f;

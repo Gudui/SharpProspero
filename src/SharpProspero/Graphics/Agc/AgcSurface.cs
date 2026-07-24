@@ -30,61 +30,46 @@ public enum AgcSurfaceDimension : uint
 }
 
 /// <summary>Describes a surface to lay out: its tiling, dimensions, format element size, mips, and slices.</summary>
-public readonly struct AgcSurfaceDescription
+/// <remarks>Creates a description. Uncompressed single-sampled defaults; override for arrays, mips, compression, or MSAA.</remarks>
+public readonly struct AgcSurfaceDescription(
+    AgcTileMode tileMode,
+    AgcSurfaceDimension dimension,
+    uint width,
+    uint height,
+    uint bytesPerElement,
+    uint depth = 1,
+    uint numMips = 1,
+    uint numSlices = 1,
+    uint numFragments = 1,
+    uint texelsPerElementWide = 1,
+    uint texelsPerElementTall = 1,
+    uint multiElementMultiplier = 1)
 {
-    /// <summary>Creates a description. Uncompressed single-sampled defaults; override for arrays, mips, compression, or MSAA.</summary>
-    public AgcSurfaceDescription(
-        AgcTileMode tileMode,
-        AgcSurfaceDimension dimension,
-        uint width,
-        uint height,
-        uint bytesPerElement,
-        uint depth = 1,
-        uint numMips = 1,
-        uint numSlices = 1,
-        uint numFragments = 1,
-        uint texelsPerElementWide = 1,
-        uint texelsPerElementTall = 1,
-        uint multiElementMultiplier = 1)
-    {
-        TileMode = tileMode;
-        Dimension = dimension;
-        Width = width;
-        Height = height;
-        BytesPerElement = bytesPerElement;
-        Depth = depth;
-        NumMips = numMips;
-        NumSlices = numSlices;
-        NumFragments = numFragments;
-        TexelsPerElementWide = texelsPerElementWide;
-        TexelsPerElementTall = texelsPerElementTall;
-        MultiElementMultiplier = multiElementMultiplier;
-    }
 
     /// <summary>The tiling mode.</summary>
-    public AgcTileMode TileMode { get; }
+    public AgcTileMode TileMode { get; } = tileMode;
     /// <summary>The dimensionality.</summary>
-    public AgcSurfaceDimension Dimension { get; }
+    public AgcSurfaceDimension Dimension { get; } = dimension;
     /// <summary>Width in texels.</summary>
-    public uint Width { get; }
+    public uint Width { get; } = width;
     /// <summary>Height in texels.</summary>
-    public uint Height { get; }
+    public uint Height { get; } = height;
     /// <summary>Depth in texels (for a volume surface).</summary>
-    public uint Depth { get; }
+    public uint Depth { get; } = depth;
     /// <summary>Bytes per element - per texel uncompressed, per block for compressed. A power of two in [1, 16].</summary>
-    public uint BytesPerElement { get; }
+    public uint BytesPerElement { get; } = bytesPerElement;
     /// <summary>Number of mip levels.</summary>
-    public uint NumMips { get; }
+    public uint NumMips { get; } = numMips;
     /// <summary>Number of array slices.</summary>
-    public uint NumSlices { get; }
+    public uint NumSlices { get; } = numSlices;
     /// <summary>Fragments per pixel (1, 2, 4, or 8).</summary>
-    public uint NumFragments { get; }
+    public uint NumFragments { get; } = numFragments;
     /// <summary>Texels per element horizontally (1 uncompressed, 4 block-compressed, 2 for 4:2:2).</summary>
-    public uint TexelsPerElementWide { get; }
+    public uint TexelsPerElementWide { get; } = texelsPerElementWide;
     /// <summary>Texels per element vertically (1 uncompressed, 4 block-compressed).</summary>
-    public uint TexelsPerElementTall { get; }
+    public uint TexelsPerElementTall { get; } = texelsPerElementTall;
     /// <summary>1 except for the three-channel 32-bit format, which uses 3.</summary>
-    public uint MultiElementMultiplier { get; }
+    public uint MultiElementMultiplier { get; } = multiElementMultiplier;
 }
 
 /// <summary>The layout of one mip level: its byte offset within a slice, its size, and its padded extent.</summary>

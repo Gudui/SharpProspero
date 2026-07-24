@@ -131,28 +131,18 @@ public sealed class AudioMixer
 
     // One playing sound: a clip, a level, and a position that advances by the ratio of the clip's rate to
     // the mixer's, so a clip at a different rate is resampled by nearest sample as it plays.
-    private sealed class Voice
+    private sealed class Voice(PcmAudio clip, float volume, bool loop, int mixerRate)
     {
-        private readonly short[] _samples;
-        private readonly int _channels;
+        private readonly short[] _samples = clip.Samples;
+        private readonly int _channels = clip.Channels;
 
-        public Voice(PcmAudio clip, float volume, bool loop, int mixerRate)
-        {
-            _samples = clip.Samples;
-            _channels = clip.Channels;
-            FrameCount = clip.FrameCount;
-            Volume = volume;
-            Loop = loop;
-            Step = (double)clip.SampleRate / mixerRate;
-        }
+        public int FrameCount { get; } = clip.FrameCount;
 
-        public int FrameCount { get; }
+        public float Volume { get; } = volume;
 
-        public float Volume { get; }
+        public bool Loop { get; } = loop;
 
-        public bool Loop { get; }
-
-        public double Step { get; }
+        public double Step { get; } = (double)clip.SampleRate / mixerRate;
 
         public double Position { get; set; }
 

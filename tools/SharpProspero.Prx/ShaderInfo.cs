@@ -105,7 +105,7 @@ public readonly record struct ShaderInfo(
 
     // A register array stored in the header: each entry is a two-byte offset then a four-byte value, at a
     // four-byte boundary (eight bytes total). The array's start is a byte offset from the header block.
-    private static IReadOnlyList<ShaderRegisterWrite> ReadRegisters(byte[] header, ulong arrayOffset, int count)
+    private static List<ShaderRegisterWrite> ReadRegisters(byte[] header, ulong arrayOffset, int count)
     {
         if (count <= 0 || arrayOffset == 0)
             return [];

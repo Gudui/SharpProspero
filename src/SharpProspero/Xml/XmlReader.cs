@@ -31,31 +31,23 @@ public enum XmlNodeType
 }
 
 /// <summary>An attribute on an element: its name and unescaped value.</summary>
-public readonly struct XmlAttribute
+/// <remarks>Creates an attribute.</remarks>
+public readonly struct XmlAttribute(string name, string value)
 {
-    /// <summary>Creates an attribute.</summary>
-    public XmlAttribute(string name, string value) { Name = name; Value = value; }
     /// <summary>The attribute name, including any namespace prefix.</summary>
-    public string Name { get; }
-    /// <summary>The attribute value, with entity references resolved.</summary>
-    public string Value { get; }
+    public string Name { get; } = name;     /// <summary>The attribute value, with entity references resolved.</summary>
+    public string Value { get; } = value;
 }
 
 /// <summary>Thrown when XML is malformed, with the line and column where the problem was found.</summary>
-public sealed class XmlException : Exception
+/// <remarks>Creates the exception at a position.</remarks>
+public sealed class XmlException(string message, int line, int column) : Exception($"{message} (line {line}, column {column})")
 {
-    /// <summary>Creates the exception at a position.</summary>
-    public XmlException(string message, int line, int column)
-        : base($"{message} (line {line}, column {column})")
-    {
-        Line = line;
-        Column = column;
-    }
 
     /// <summary>The 1-based line where parsing failed.</summary>
-    public int Line { get; }
+    public int Line { get; } = line;
     /// <summary>The 1-based column where parsing failed.</summary>
-    public int Column { get; }
+    public int Column { get; } = column;
 }
 
 /// <summary>
@@ -130,7 +122,7 @@ public sealed class XmlReader
         int start = _pos;
         while (_pos < _s.Length && _s[_pos] != '<')
             Advance();
-        string raw = _s.Substring(start, _pos - start);
+        string raw = _s[start.._pos];
         Value = Unescape(raw, start);
         NodeType = IsAllWhitespace(raw) ? XmlNodeType.Whitespace : XmlNodeType.Text;
         return true;
@@ -143,7 +135,7 @@ public sealed class XmlReader
         int end = _s.IndexOf("-->", _pos, StringComparison.Ordinal);
         if (end < 0)
             throw Error("Unterminated comment.");
-        Value = _s.Substring(start, end - start);
+        Value = _s[start..end];
         AdvanceTo(end + 3);
         NodeType = XmlNodeType.Comment;
         return true;
@@ -156,7 +148,7 @@ public sealed class XmlReader
         int end = _s.IndexOf("]]>", _pos, StringComparison.Ordinal);
         if (end < 0)
             throw Error("Unterminated CDATA section.");
-        Value = _s.Substring(start, end - start);
+        Value = _s[start..end];
         AdvanceTo(end + 3);
         NodeType = XmlNodeType.CData;
         return true;
@@ -168,13 +160,13 @@ public sealed class XmlReader
         int nameStart = _pos;
         while (_pos < _s.Length && !IsWhitespace(_s[_pos]) && !StartsWith("?>"))
             Advance();
-        Name = _s.Substring(nameStart, _pos - nameStart);
+        Name = _s[nameStart.._pos];
         SkipWhitespace();
         int start = _pos;
         int end = _s.IndexOf("?>", _pos, StringComparison.Ordinal);
         if (end < 0)
             throw Error("Unterminated processing instruction.");
-        Value = _s.Substring(start, end - start);
+        Value = _s[start..end];
         AdvanceTo(end + 2);
         NodeType = Name.Equals("xml", StringComparison.Ordinal) ? XmlNodeType.XmlDeclaration : XmlNodeType.ProcessingInstruction;
         if (NodeType == XmlNodeType.XmlDeclaration)
@@ -241,7 +233,7 @@ public sealed class XmlReader
             Advance();
         if (_pos >= _s.Length)
             throw Error("Unterminated attribute value.");
-        string raw = _s.Substring(start, _pos - start);
+        string raw = _s[start.._pos];
         Advance(); // closing quote
         _attributes.Add(new XmlAttribute(name, Unescape(raw, start)));
     }
@@ -260,7 +252,7 @@ public sealed class XmlReader
         int start = _pos;
         while (_pos < _s.Length && IsNameChar(_s[_pos]))
             Advance();
-        return _s.Substring(start, _pos - start);
+        return _s[start.._pos];
     }
 
     private void SkipDoctypeOrDecl()
@@ -331,7 +323,7 @@ public sealed class XmlReader
         if (entity.Length > 1 && entity[0] == '#')
         {
             bool hex = entity[1] is 'x' or 'X';
-            string digits = entity.Substring(hex ? 2 : 1);
+            string digits = entity[(hex ? 2 : 1)..];
             if (digits.Length > 0 &&
                 int.TryParse(digits, hex ? System.Globalization.NumberStyles.HexNumber : System.Globalization.NumberStyles.Integer,
                     System.Globalization.CultureInfo.InvariantCulture, out int code) &&

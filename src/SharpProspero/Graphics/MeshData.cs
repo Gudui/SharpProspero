@@ -10,20 +10,14 @@ namespace SharpProspero.Graphics;
 /// is the CPU-side shape, produced by hand or by one of the primitive builders; a renderer uploads it to
 /// GPU memory to draw. Indices are 32-bit, so a mesh can exceed 65,535 vertices.
 /// </summary>
-public sealed class MeshData
+/// <remarks>Creates a mesh from a vertex and index list.</remarks>
+public sealed class MeshData(Vertex[] vertices, uint[] indices)
 {
     /// <summary>The vertices.</summary>
-    public Vertex[] Vertices { get; set; }
+    public Vertex[] Vertices { get; set; } = vertices;
 
     /// <summary>Three indices per triangle, referencing <see cref="Vertices"/>.</summary>
-    public uint[] Indices { get; set; }
-
-    /// <summary>Creates a mesh from a vertex and index list.</summary>
-    public MeshData(Vertex[] vertices, uint[] indices)
-    {
-        Vertices = vertices;
-        Indices = indices;
-    }
+    public uint[] Indices { get; set; } = indices;
 
     /// <summary>The number of triangles.</summary>
     public int TriangleCount => Indices.Length / 3;

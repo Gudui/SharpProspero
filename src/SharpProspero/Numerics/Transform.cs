@@ -7,27 +7,20 @@ namespace SharpProspero.Numerics;
 /// quaternion, so it interpolates cleanly and never gimbal-locks. The matrix is scale, then rotation,
 /// then translation, which is the order almost every renderer expects.
 /// </summary>
-public struct Transform
+/// <remarks>Creates a transform from a position, rotation, and scale.</remarks>
+public struct Transform(Vector3 position, Quaternion rotation, Vector3 scale)
 {
     /// <summary>The position in world space.</summary>
-    public Vector3 Position;
+    public Vector3 Position = position;
 
     /// <summary>The rotation as a quaternion.</summary>
-    public Quaternion Rotation;
+    public Quaternion Rotation = rotation;
 
     /// <summary>The scale along each local axis.</summary>
-    public Vector3 Scale;
+    public Vector3 Scale = scale;
 
     /// <summary>A transform at the origin, unrotated, at unit scale.</summary>
     public static Transform Identity => new(Vector3.Zero, Quaternion.Identity, Vector3.One);
-
-    /// <summary>Creates a transform from a position, rotation, and scale.</summary>
-    public Transform(Vector3 position, Quaternion rotation, Vector3 scale)
-    {
-        Position = position;
-        Rotation = rotation;
-        Scale = scale;
-    }
 
     /// <summary>Creates a transform at a position, unrotated, at unit scale.</summary>
     public Transform(Vector3 position) : this(position, Quaternion.Identity, Vector3.One) { }

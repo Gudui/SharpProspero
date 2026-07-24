@@ -6,14 +6,13 @@ using System;
 namespace SharpProspero.Graphics.Agc;
 
 /// <summary>One hardware register in a context register block: the register offset the GPU writes and its 32-bit value.</summary>
-public struct CxRegister
+/// <remarks>Creates a register with an offset and value.</remarks>
+public struct CxRegister(ushort offset, uint value)
 {
-    /// <summary>Creates a register with an offset and value.</summary>
-    public CxRegister(ushort offset, uint value) { Offset = offset; Value = value; }
     /// <summary>The register offset (which GPU register this value is written to).</summary>
-    public ushort Offset;
+    public ushort Offset = offset;
     /// <summary>The 32-bit register value.</summary>
-    public uint Value;
+    public uint Value = value;
 }
 
 /// <summary>

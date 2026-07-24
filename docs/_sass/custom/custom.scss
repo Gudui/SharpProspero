@@ -1,4 +1,55 @@
-// Site-specific style on top of the theme.
+// Site-specific style on top of the theme. This file is imported after the theme, so these rules refine
+// the compiled output rather than the theme's own variables.
+
+// Give the content a wider, easier measure on larger screens. The theme's default column is narrow, which
+// makes prose feel cramped and forces wide code samples and multi-column tables to scroll. This keeps a
+// comfortable reading width while letting the page breathe. Small screens are untouched.
+@media (min-width: 46.25rem) {
+  .main {
+    max-width: 1000px;
+  }
+}
+
+@media (min-width: 66rem) {
+  .main {
+    max-width: 1100px;
+  }
+}
+
+// Roomier typography for long technical reading: a taller line, clearer spacing between paragraphs and
+// list items, and headings that stand apart from the text above them.
+.main-content {
+  line-height: 1.6;
+
+  p {
+    margin-bottom: 0.85em;
+  }
+
+  li {
+    margin-bottom: 0.3em;
+  }
+
+  h2 {
+    margin-top: 2.2rem;
+  }
+
+  h3 {
+    margin-top: 1.6rem;
+  }
+
+  // A little more room inside code blocks so samples are easy to scan.
+  pre.highlight,
+  figure.highlight {
+    padding: 0.85rem 1rem;
+  }
+
+  // Zebra striping and firmer borders make wide tables easier to follow across a row.
+  table {
+    tr:nth-child(2n) {
+      background-color: $code-background-color;
+    }
+  }
+}
 
 // Light/dark toggle button in the header.
 .theme-toggle {

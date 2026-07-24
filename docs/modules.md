@@ -13,6 +13,13 @@ A library also comes signed, as a `.sprx`. The reader and the inspector take eit
 module is unwrapped to its ELF first, so a `.sprx` reads the same way as a `.prx`. See
 [Signed and unsigned](signed-and-unsigned.md) for what the forms are and how to convert them.
 
+<details open markdown="block">
+  <summary>On this page</summary>
+  {: .text-delta }
+- TOC
+{:toc}
+</details>
+
 ## Load a module at run time
 
 Drop the `.prx` in the package's `sce_module` folder and load it by name. Resolve the exports you

@@ -54,6 +54,8 @@ public sealed class DecodedImage
     {
         if (PngDecoder.IsPng(bytes))
             return PngDecoder.Decode(bytes);
+        if (QoiImage.IsQoi(bytes))
+            return QoiImage.Decode(bytes);
         if (BmpDecoder.IsBmp(bytes))
             return BmpDecoder.Decode(bytes);
         // TGA has no signature; try it last (it validates its own header).
@@ -62,8 +64,7 @@ public sealed class DecodedImage
 }
 
 /// <summary>Thrown when an image file cannot be decoded because it is malformed or unsupported.</summary>
-public sealed class ImageFormatException : Exception
+/// <remarks>Creates the exception with a message.</remarks>
+public sealed class ImageFormatException(string message) : Exception(message)
 {
-    /// <summary>Creates the exception with a message.</summary>
-    public ImageFormatException(string message) : base(message) { }
 }

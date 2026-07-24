@@ -13,6 +13,13 @@ Several of these services are privileged: they are loaded at run time and reach 
 paths a plain application sandbox cannot. Treat their calls as best-effort and handle failure, and see
 [System services](system-services.md) for what a build is permitted to do.
 
+<details open markdown="block">
+  <summary>On this page</summary>
+  {: .text-delta }
+- TOC
+{:toc}
+</details>
+
 ## Installing and removing packages
 
 `PackageInstaller` installs a package file. The install service is not part of the module set a title

@@ -118,6 +118,22 @@ public readonly struct Vector2(float x, float y) : IEquatable<Vector2>
         return new Vector2(X * scale, Y * scale);
     }
 
+    /// <summary>
+    /// Eases <paramref name="current"/> toward <paramref name="target"/> like a smooth camera follow that
+    /// settles without overshooting. <paramref name="velocity"/> carries the motion between calls and must
+    /// be the same variable each frame; <paramref name="smoothTime"/> is roughly how long the move takes
+    /// in seconds, and <paramref name="maxSpeed"/> caps how fast it may travel.
+    /// </summary>
+    public static Vector2 SmoothDamp(Vector2 current, Vector2 target, ref Vector2 velocity, float smoothTime,
+        float deltaTime, float maxSpeed = float.PositiveInfinity)
+    {
+        float vx = velocity.X, vy = velocity.Y;
+        float x = MathUtil.SmoothDamp(current.X, target.X, ref vx, smoothTime, deltaTime, maxSpeed);
+        float y = MathUtil.SmoothDamp(current.Y, target.Y, ref vy, smoothTime, deltaTime, maxSpeed);
+        velocity = new Vector2(vx, vy);
+        return new Vector2(x, y);
+    }
+
     /// <summary>A vector pointing at <paramref name="radians"/> (measured from the x-axis) with the given length.</summary>
     public static Vector2 FromAngle(float radians, float length = 1f)
         => new(MathF.Cos(radians) * length, MathF.Sin(radians) * length);

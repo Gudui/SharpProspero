@@ -8,6 +8,13 @@ nav_order: 1
 
 `SystemInfo`, `SystemParameters` and `Users` read what the console is and who is signed in; `SystemControl` and `SystemSettings` act on the running system. All of these live in `SharpProspero.Platform`, and a system or diagnostics utility usually touches every one of them.
 
+<details open markdown="block">
+  <summary>On this page</summary>
+  {: .text-delta }
+- TOC
+{:toc}
+</details>
+
 ## Console facts
 
 `SystemInfo` reports facts about the machine the module runs on. A diagnostics or settings tool shows the system software version the way the console displays it:

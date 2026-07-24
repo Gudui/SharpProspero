@@ -8,6 +8,13 @@ has_children: true
 
 `SharpProspero.Application` is the layer that turns a module into a running program: a base class that owns the display, controller and frame loop, and a few plain-logic helpers for structuring the code that runs inside it. Everything on this page lives in `SharpProspero.Application`.
 
+<details open markdown="block">
+  <summary>On this page</summary>
+  {: .text-delta }
+- TOC
+{:toc}
+</details>
+
 ## The application host
 
 `ProsperoApp` is the base class for a module. Derive from it, override `OnFrame`, and call `Run` from the module entry point. The base opens the display and the controller, drives a loop paced to the vertical blank, and tears everything down on exit.

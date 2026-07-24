@@ -120,6 +120,59 @@ public readonly struct Color(uint packed)
         return (hue, saturation, max);
     }
 
+    /// <summary>
+    /// An opaque color from hue (0-360 degrees, wrapped), saturation and lightness (each clamped to 0-1).
+    /// Lightness runs black at 0 through the pure hue at 0.5 to white at 1, which makes even tints and
+    /// shades easier to pick than value does.
+    /// </summary>
+    public static Color FromHsl(float hue, float saturation, float lightness)
+    {
+        saturation = Math.Clamp(saturation, 0f, 1f);
+        lightness = Math.Clamp(lightness, 0f, 1f);
+        hue -= MathF.Floor(hue / 360f) * 360f;
+
+        float c = (1f - MathF.Abs(2f * lightness - 1f)) * saturation;
+        float x = c * (1f - MathF.Abs((hue / 60f) % 2f - 1f));
+        float m = lightness - c / 2f;
+        (float r, float g, float b) = hue switch
+        {
+            < 60f => (c, x, 0f),
+            < 120f => (x, c, 0f),
+            < 180f => (0f, c, x),
+            < 240f => (0f, x, c),
+            < 300f => (x, 0f, c),
+            _ => (c, 0f, x),
+        };
+        return FromRgb((byte)((r + m) * 255f + 0.5f), (byte)((g + m) * 255f + 0.5f), (byte)((b + m) * 255f + 0.5f));
+    }
+
+    /// <summary>
+    /// The hue (0-360 degrees), saturation and lightness (each 0-1) of this color, the inverse of
+    /// <see cref="FromHsl"/>. Alpha is not part of the result.
+    /// </summary>
+    public (float Hue, float Saturation, float Lightness) ToHsl()
+    {
+        float r = R / 255f, g = G / 255f, b = B / 255f;
+        float max = MathF.Max(r, MathF.Max(g, b));
+        float min = MathF.Min(r, MathF.Min(g, b));
+        float delta = max - min;
+
+        float hue;
+        if (delta <= 0f)
+            hue = 0f;
+        else if (max == r)
+            hue = 60f * ((((g - b) / delta) % 6f + 6f) % 6f);
+        else if (max == g)
+            hue = 60f * (((b - r) / delta) + 2f);
+        else
+            hue = 60f * (((r - g) / delta) + 4f);
+
+        float lightness = (max + min) / 2f;
+        float denom = 1f - MathF.Abs(2f * lightness - 1f);
+        float saturation = denom <= 0f ? 0f : delta / denom;
+        return (hue, saturation, lightness);
+    }
+
     /// <summary>A darker shade, moving the red, green and blue toward black by <paramref name="amount"/> (0 to 1). Alpha is kept.</summary>
     public Color Darken(float amount)
     {

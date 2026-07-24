@@ -82,4 +82,40 @@ public sealed class ColorTests
         Assert.Equal(0xFF, gray.G);
         Assert.Equal(0xFF, gray.B);
     }
+
+    [Theory]
+    [InlineData(0f, 0xFF, 0x00, 0x00)]     // red
+    [InlineData(120f, 0x00, 0xFF, 0x00)]   // green
+    [InlineData(240f, 0x00, 0x00, 0xFF)]   // blue
+    [InlineData(360f, 0xFF, 0x00, 0x00)]   // wraps back to red
+    public void FromHsl_MapsPrimaryHuesAtHalfLightness(float hue, int r, int g, int b)
+    {
+        Color color = Color.FromHsl(hue, 1f, 0.5f);
+        Assert.Equal(r, color.R);
+        Assert.Equal(g, color.G);
+        Assert.Equal(b, color.B);
+        Assert.Equal(0xFF, color.A);
+    }
+
+    [Fact]
+    public void FromHsl_ZeroLightnessIsBlackAndFullLightnessIsWhite()
+    {
+        Assert.Equal(Color.Black.Value, Color.FromHsl(200f, 1f, 0f).Value);
+        Assert.Equal(Color.White.Value, Color.FromHsl(200f, 1f, 1f).Value);
+    }
+
+    [Theory]
+    [InlineData(0xE6, 0x33, 0x22)]
+    [InlineData(0x22, 0xE6, 0x88)]
+    [InlineData(0x44, 0x55, 0xC8)]
+    [InlineData(0x80, 0x80, 0x80)]
+    public void ToHsl_RoundTripsThroughFromHsl(int r, int g, int b)
+    {
+        Color original = Color.FromRgb((byte)r, (byte)g, (byte)b);
+        (float h, float s, float l) = original.ToHsl();
+        Color back = Color.FromHsl(h, s, l);
+        Assert.InRange(back.R - r, -1, 1);
+        Assert.InRange(back.G - g, -1, 1);
+        Assert.InRange(back.B - b, -1, 1);
+    }
 }

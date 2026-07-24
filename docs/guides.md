@@ -167,6 +167,118 @@ Long work — decoding a large file, a network round-trip — must not run insid
 `BackgroundOperation` or a `WorkQueue` and poll the result each frame, marshalling anything that touches
 the screen back with a `Dispatcher`. See [Threading](threading.md).
 
+## Shape a sound with a filter and an envelope
+
+Raw tones sound harsh. Run them through a `BiquadFilter` to tame the tone, and multiply each voice by an
+`AdsrEnvelope` so notes swell in and fade out instead of clicking. Both keep their state between calls, so
+they work on a running stream.
+
+```csharp
+var lowpass = new BiquadFilter(BiquadType.LowPass, 48000, frequency: 1200);
+var env = new AdsrEnvelope { Attack = 0.02f, Decay = 0.1f, Sustain = 0.6f, Release = 0.3f };
+env.NoteOn();
+
+// each block:
+mixer.Mix(block);
+lowpass.ProcessBlock(block);                 // soften everything above 1.2 kHz
+float gain = env.Process(block.Length / 48000f);
+for (int i = 0; i < block.Length; i++) block[i] = (short)(block[i] * gain);
+```
+
+See [Audio](audio.md) for the filter shapes and the envelope phases.
+
+## Follow the player with a smooth camera
+
+A camera that snaps to the player is jarring. `Vector2.SmoothDamp` eases toward a target and settles
+without overshooting; keep its velocity in a field and pass it by reference each frame.
+
+```csharp
+Vector2 _cameraVelocity;   // survives between frames
+
+camera.Target = Vector2.SmoothDamp(camera.Target, player.Position,
+    ref _cameraVelocity, smoothTime: 0.25f, (float)context.DeltaSeconds);
+```
+
+`MathUtil.SmoothDamp` does the same for a single value, and `SmoothDampAngle` for a heading. See
+[Numerics](numerics.md).
+
+## Weight a random drop
+
+For loot that is not evenly likely, a `WeightedTable<T>` gives each entry a weight and draws in
+proportion. It draws through a `GameRandom`, so a seeded run repeats.
+
+```csharp
+var drops = new WeightedTable<string>()
+    .Add("gold", 70)
+    .Add("gem", 25)
+    .Add("relic", 5);
+
+string reward = drops.Pick(rng);   // "gold" about 70% of the time
+```
+
+## Cache decoded assets without unbounded growth
+
+Decoding a texture or sound every time it is needed is wasteful; keeping every one forever runs the heap
+out. An `LruCache<TKey, TValue>` keeps a fixed number of the most recently used and drops the rest.
+
+```csharp
+var textures = new LruCache<string, Texture>(capacity: 32);
+textures.Evicted += (key, tex) => tex.Dispose();     // free the dropped one
+
+Texture icon = textures.GetOrAdd(path, LoadTexture); // built once, then served from the cache
+```
+
+See [Memory](memory.md).
+
+## Build a sprite sheet from separate images
+
+Packing many small images into one texture cuts the number of draws and binds. `RectPacker` finds a
+non-overlapping spot for each piece; copy the image in and record where it landed.
+
+```csharp
+var packer = new RectPacker(1024, 1024);
+foreach (Sprite s in sprites)
+    if (packer.Insert(s.Width, s.Height, s.Id) is { } r)
+        atlas.Blit(s.Pixels, r.X, r.Y);              // remember (r.X, r.Y, r.Width, r.Height)
+```
+
+Turn the finished atlas into a texture file with the `gnf` command; see
+[Building a texture file](graphics-gpu.md#building-a-texture-file).
+
+## Store and read settings
+
+For a handful of options, an `IniFile` is the least ceremony; for structured data reach for JSON. Both
+live in `SharpProspero.Storage` and read and write plain text under your writable area.
+
+```csharp
+var settings = IniFile.Parse(FileSystem.ReadAllText("/data/settings.ini"));
+int volume = int.Parse(settings.Get("audio", "volume", "80"));
+settings.Set("audio", "volume", "60");
+FileSystem.WriteAllText("/data/settings.ini", settings.Write());
+```
+
+See [Files and storage](storage.md) for JSON, CSV, tables, and versioned saves.
+
+## Pack a custom binary format
+
+When a file format needs fields that are not a whole number of bytes wide, `BitWriter` and `BitReader`
+pack and unpack them most-significant bit first, so what one writes the other reads straight back.
+
+```csharp
+var w = new BitWriter();
+w.WriteBits(version, 4);
+w.WriteBit(compressed);
+w.WriteBits(length, 20);
+byte[] header = w.ToArray();
+
+var r = new BitReader(header);
+uint ver = r.ReadBits(4);
+bool zip = r.ReadBit();
+uint len = r.ReadBits(20);
+```
+
+See [Buffers and encodings](buffers.md).
+
 ## Troubleshooting the build
 
 | Symptom | Cause and fix |
@@ -184,3 +296,16 @@ the screen back with a `Dispatcher`. See [Threading](threading.md).
 - Use `Surface.Region` to draw a panel in its own local coordinates and clip to it.
 - Verify a module's exports with `elf --file <module> --exports` before depending on them.
 - Run `doctor.ps1` first on any new machine; it tells you exactly what is missing.
+- Seed a `GameRandom` from a fixed number for a reproducible level or replay, and from `FromEntropy()`
+  when you want a different run each time.
+- Pool short-lived objects with `ObjectPool<T>` and roll a history with `RingBuffer<T>` rather than
+  allocating inside the frame loop; see [Memory](memory.md).
+- Reach for `MathUtil` before hand-writing arithmetic: `Clamp01`, `Remap`, `Lerp`, `WrapAngle` and
+  `PingPong` cover most of what a frame update needs.
+- Drive timing off `context.DeltaSeconds`, never a fixed step, so behaviour holds if a frame runs long;
+  `FixedTimestep` gives physics a steady tick on top of a variable frame.
+- Press `s` on any documentation page to search the whole site; every page names the namespace it covers.
+- Decode an image straight from bytes with `DecodedImage.Decode` — it detects PNG, JPEG, BMP, TGA, GIF
+  and QOI from the header, so you do not pick the decoder yourself.
+- Keep a build reproducible: the same C# and toolchain version produce the same `eboot.bin`, so check the
+  toolchain version into source control alongside the project.

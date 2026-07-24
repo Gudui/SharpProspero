@@ -10,6 +10,13 @@ bars — and drives them with the controller, so an application does not draw pi
 controls to a screen, and each frame hand it the input and let it draw. It runs on the same drawing
 surface as the rest of the SDK, so it composes with anything you draw yourself.
 
+<details open markdown="block">
+  <summary>On this page</summary>
+  {: .text-delta }
+- TOC
+{:toc}
+</details>
+
 ## The idea
 
 A `UiScreen` holds a tree of controls, usually a `StackPanel` of them. Each frame you:

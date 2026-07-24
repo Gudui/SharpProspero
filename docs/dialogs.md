@@ -11,6 +11,13 @@ picker — draw on top of the running application and are driven from the frame 
 it once per frame while you keep presenting, then read the result and dispose it. They all live in
 `SharpProspero.Platform`. Toast notifications are the exception: they fire and forget.
 
+<details open markdown="block">
+  <summary>On this page</summary>
+  {: .text-delta }
+- TOC
+{:toc}
+</details>
+
 ## The shared lifecycle
 
 Every overlay dialog on this page follows the same shape. Opening it brings the shared dialog subsystem

@@ -10,6 +10,13 @@ Small value types and helpers for the arithmetic game and drawing code runs ever
 rectangles, scalar math, overlap tests, seedable randomness, and a spatial index. Everything here lives in
 `SharpProspero.Numerics` and works in single precision.
 
+<details open markdown="block">
+  <summary>On this page</summary>
+  {: .text-delta }
+- TOC
+{:toc}
+</details>
+
 ## Vectors
 
 `Vector2` is a small value type for a position, a velocity or a direction, so movement and steering read as
@@ -64,6 +71,18 @@ It provides `Lerp` and `LerpClamped`, `InverseLerp` and `Remap`, `SmoothStep`, `
 `RadiansToDegrees` and `WrapAngle`, and the `Pi`, `TwoPi`, `DegreesPerRadian` and `RadiansPerDegree`
 constants.
 
+For a value that should ease toward a target and settle without overshooting - a camera that follows the
+player, a slider that glides to its new spot - `SmoothDamp` is the one to reach for. It carries a velocity
+between calls, so keep that in a field and pass it by reference each frame; `smoothTime` is roughly how
+long the move takes. `SmoothDampAngle` does the same for a heading, and `LerpAngle` blends two angles the
+short way round. `Vector2.SmoothDamp` smooths a position with the same feel.
+
+```csharp
+Vector2 cameraVelocity; // kept between frames
+cameraTarget = player.Position;
+cameraPos = Vector2.SmoothDamp(cameraPos, cameraTarget, ref cameraVelocity, smoothTime: 0.25f, deltaTime);
+```
+
 ## Collision tests
 
 `Collision` is a static class of the overlap tests game code reaches for, over `Vector2` and `RectF`:
@@ -112,9 +131,45 @@ rng.Shuffle(deck);                      // deck is a Span<Card>, reordered in pl
 `HardwareEntropy` fills a span with `Fill` or hands back a value with `NextUInt64`; seed a `GameRandom`
 from it when you want an unpredictable start.
 
+For a draw that is not even - a loot table, a drop chart, a random-encounter list - `WeightedTable<T>` gives
+each entry a weight and returns one with a chance proportional to it. It draws through a `GameRandom`, so a
+seeded run repeats exactly. Weights are any non-negative numbers; an entry at weight 3 comes up three times
+as often as one at weight 1.
+
+```csharp
+var loot = new WeightedTable<string>()
+    .Add("common", 70)
+    .Add("uncommon", 25)
+    .Add("rare", 5);
+
+string drop = loot.Pick(rng);          // "common" about 70% of the time
+loot.TryPick(rng, out string safe);    // false instead of throwing on an empty table
+```
+
+`Add` chains, `Count` and `TotalWeight` report the contents, `Clear` empties it, and an entry at weight 0
+is kept but never drawn.
+
+## Coherent noise
+
+Where `GameRandom` gives independent values, `NoiseField` gives *smooth* ones: sampling nearby coordinates
+returns nearby values, so it draws terrain heights, cloud and marble textures, and organic motion rather
+than static. The same seed and coordinate always return the same value (-1 to 1), so a world is
+reproducible.
+
+```csharp
+var noise = new NoiseField(seed: 2024);
+float height = noise.Noise2D(x * 0.05f, z * 0.05f);        // one smooth layer
+float terrain = noise.FractalNoise2D(x * 0.02f, z * 0.02f, octaves: 5); // layered detail
+float density = noise.Noise3D(x, y, z);                     // caves, clouds
+```
+
+`Noise2D`/`Noise3D` are one layer; `FractalNoise2D` sums octaves at rising frequency and falling amplitude
+for detail, with `persistence` and `lacunarity` to shape it. Scale the input coordinates to set the
+feature size - smaller multipliers give broader shapes.
+
 {: .important }
 > `GameRandom` is for gameplay, not for keys, tokens or anything that must resist guessing. Take those
-> bytes from `HardwareEntropy`. For hashing and checksums see [Hashing and checksums](security.md).
+> bytes from `HardwareEntropy`. For hashing and checksums see [Hashing and checksums](hashing.md).
 
 ## Spatial queries
 
@@ -145,3 +200,26 @@ twice.
 
 For curved motion, `Spline` evaluates Bezier and Catmull-Rom curves for a camera path or a projectile arc.
 It lives in `SharpProspero.Animation` and is covered on the [Animation](animation.md) page.
+
+## Packing rectangles
+
+`RectPacker` fits many small rectangles into one larger area without overlap - the job behind building a
+sprite sheet or a glyph atlas out of separate images. It works in whole pixels and fills bottom-left along a
+running skyline, which keeps the result tight. Give it a size and an id per piece, and it reports where each
+one landed so you can copy the image in and record the region.
+
+```csharp
+var packer = new RectPacker(1024, 1024);
+
+foreach (Sprite s in sprites)
+{
+    PackedRect? slot = packer.Insert(s.Width, s.Height, s.Id);
+    if (slot is { } r)
+        atlas.Blit(s.Pixels, r.X, r.Y);                // and remember (r.X, r.Y, r.Width, r.Height)
+}
+```
+
+`Insert` returns null when a piece will not fit in the space left. `Pack` takes a whole batch, sorts it
+largest-first for a tighter fit, and returns the pieces that fit - compare that count with the number you
+gave to see whether any were too big. `Occupancy` is the fraction of the area filled, and `Reset` clears
+it to pack again.

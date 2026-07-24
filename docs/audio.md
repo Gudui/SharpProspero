@@ -32,6 +32,13 @@ flowchart LR
 > Most applications use `AudioOutDevice` with an `AudioMixer`. The lower-level synthesis engine at the
 > end of this page is for a custom voice-and-effects graph and is rarely needed.
 
+<details open markdown="block">
+  <summary>On this page</summary>
+  {: .text-delta }
+- TOC
+{:toc}
+</details>
+
 ## Play a block of sound
 
 `AudioOutDevice` opens a stereo 16-bit output. Fill a buffer of `SamplesPerBlock` interleaved samples
@@ -101,6 +108,69 @@ WavAudio.Save("/data/recording.wav", new PcmAudio(recorded, 48000, 2));
 mono or stereo is handled, which is the format the output devices use, so what is read is always ready to
 play. To hear a loaded clip, hand it to the `AudioMixer` below, which copes with any clip length; pushing
 raw samples to `Output` needs a full `SamplesPerBlock` buffer.
+
+## Compact sound effects (VAG)
+
+A WAV is uncompressed, so a folder of effects is large. `VagAudio` reads and writes VAG - the four-bit
+adaptive-differential form the console decodes for effects - about a quarter the size, and decodes to the
+same `PcmAudio` so it plays through the mixer exactly like a WAV.
+
+```csharp
+PcmAudio hit = VagAudio.Load("/app0/assets/hit.vag");   // decodes to PCM ready to play
+mixer.Play(hit);
+
+VagAudio.Save("/data/effect.vag", clip);                 // encode a clip to VAG
+```
+
+`VagAudio.Decode` and `VagAudio.Encode` work over an in-memory buffer. Convert assets ahead of time on
+your machine with the toolchain's `vag` command (`vag --input hit.wav --output hit.vag`, and back again),
+so an application ships small VAG effects and loads them straight to the mixer.
+
+## Preparing a clip
+
+`AudioClip` reshapes a `PcmAudio` once at load time so it is ready to play: `Resample` changes the sample
+rate (linear interpolation), `ToMono` and `ToStereo` change the channel count, `Gain` and `Normalize`
+adjust the level, `Concat` joins two clips, and `Trim` cuts a range out. Each returns a new clip.
+
+```csharp
+PcmAudio clip = WavAudio.Load("/app0/assets/theme.wav");
+clip = AudioClip.Normalize(AudioClip.Resample(clip, 48000)); // match the output rate, even out the level
+```
+
+## Shape a sound with a filter
+
+`BiquadFilter` is a two-pole filter for tone shaping — soften a harsh effect, isolate a band, or remove a
+hum. Pick a shape (`LowPass`, `HighPass`, `BandPass`, `Notch`), a sample rate and a frequency; a higher
+`q` narrows the band. It keeps its state between calls, so a stream filters continuously. `Process` takes
+one sample; `ProcessBlock` filters a block of 16-bit samples in place (run one filter per channel for
+stereo). `Reset` clears the memory, and `Configure` re-tunes without building a new filter.
+
+```csharp
+var lowpass = new BiquadFilter(BiquadType.LowPass, 48000, frequency: 1200);
+short[] block = new short[audio.SamplesPerBlock];
+while (running)
+{
+    mixer.Mix(block);
+    lowpass.ProcessBlock(block); // muffle everything above 1.2 kHz
+    audio.Output(block);
+}
+```
+
+## Give a note a swell and fade
+
+`AdsrEnvelope` is the volume shape of a note: it rises over the attack, falls to the sustain level over
+the decay, holds while the note is down, then fades to silence over the release. Multiply a voice by
+`Level` each frame so it swells in and fades out instead of clicking on and off. Times are in seconds and
+`Sustain` is a level from 0 to 1. Call `NoteOn` when the key goes down and `NoteOff` when it lifts;
+`Process(deltaSeconds)` advances it and returns the new level, and `IsActive` is false once it goes idle.
+
+```csharp
+var env = new AdsrEnvelope { Attack = 0.02f, Decay = 0.1f, Sustain = 0.6f, Release = 0.3f };
+env.NoteOn();
+// each frame:
+float gain = env.Process(1f / 60f);
+short shaped = (short)(sample * gain);
+```
 
 ## Mix several sounds at once
 

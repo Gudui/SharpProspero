@@ -13,13 +13,11 @@ namespace SharpProspero.Buffers;
 /// its buffer as needed; read the result with <see cref="WrittenSpan"/> or <see cref="ToArray"/>. It is
 /// the writing counterpart of <see cref="SpanReader"/>.
 /// </summary>
-public sealed class ByteWriter
+/// <remarks>Creates a writer with room for <paramref name="capacity"/> bytes before it first grows.</remarks>
+public sealed class ByteWriter(int capacity = 64)
 {
-    private byte[] _buffer;
+    private byte[] _buffer = new byte[Math.Max(4, capacity)];
     private int _count;
-
-    /// <summary>Creates a writer with room for <paramref name="capacity"/> bytes before it first grows.</summary>
-    public ByteWriter(int capacity = 64) => _buffer = new byte[Math.Max(4, capacity)];
 
     /// <summary>How many bytes have been written.</summary>
     public int Count => _count;

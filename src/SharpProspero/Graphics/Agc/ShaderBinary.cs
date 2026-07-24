@@ -62,10 +62,10 @@ public sealed class ShaderBinary
             container[2] != (byte)'L' || container[3] != (byte)'F')
             throw new ArgumentException("Not a shader-binary container.", nameof(container));
 
-        ulong shoff = BinaryPrimitives.ReadUInt64LittleEndian(container.Slice(40));
-        ushort shentsize = BinaryPrimitives.ReadUInt16LittleEndian(container.Slice(58));
-        ushort shnum = BinaryPrimitives.ReadUInt16LittleEndian(container.Slice(60));
-        ushort shstrndx = BinaryPrimitives.ReadUInt16LittleEndian(container.Slice(62));
+        ulong shoff = BinaryPrimitives.ReadUInt64LittleEndian(container[40..]);
+        ushort shentsize = BinaryPrimitives.ReadUInt16LittleEndian(container[58..]);
+        ushort shnum = BinaryPrimitives.ReadUInt16LittleEndian(container[60..]);
+        ushort shstrndx = BinaryPrimitives.ReadUInt16LittleEndian(container[62..]);
         if (shoff == 0 || shnum == 0 || shstrndx >= shnum)
             throw new ArgumentException("Shader-binary container has no section table.", nameof(container));
 
@@ -76,9 +76,9 @@ public sealed class ShaderBinary
         for (int i = 0; i < shnum; i++)
         {
             int rec = (int)shoff + i * shentsize;
-            uint nameIndex = BinaryPrimitives.ReadUInt32LittleEndian(container.Slice(rec));
-            ulong off = BinaryPrimitives.ReadUInt64LittleEndian(container.Slice(rec + 24));
-            ulong size = BinaryPrimitives.ReadUInt64LittleEndian(container.Slice(rec + 32));
+            uint nameIndex = BinaryPrimitives.ReadUInt32LittleEndian(container[rec..]);
+            ulong off = BinaryPrimitives.ReadUInt64LittleEndian(container[(rec + 24)..]);
+            ulong size = BinaryPrimitives.ReadUInt64LittleEndian(container[(rec + 32)..]);
             string name = ReadString(container, (int)strOff + (int)nameIndex);
             if (name == ".shader_header") header = container.Slice((int)off, (int)size).ToArray();
             else if (name == ".shader_text") code = container.Slice((int)off, (int)size).ToArray();
@@ -109,15 +109,15 @@ public sealed class ShaderBinary
     private static ulong SectionOffset(ReadOnlySpan<byte> data, ulong shoff, ushort entsize, int index, out ulong size)
     {
         int rec = (int)shoff + index * entsize;
-        size = BinaryPrimitives.ReadUInt64LittleEndian(data.Slice(rec + 32));
-        return BinaryPrimitives.ReadUInt64LittleEndian(data.Slice(rec + 24));
+        size = BinaryPrimitives.ReadUInt64LittleEndian(data[(rec + 32)..]);
+        return BinaryPrimitives.ReadUInt64LittleEndian(data[(rec + 24)..]);
     }
 
     private static string ReadString(ReadOnlySpan<byte> data, int at)
     {
         int end = at;
         while (end < data.Length && data[end] != 0) end++;
-        return System.Text.Encoding.ASCII.GetString(data.Slice(at, end - at));
+        return System.Text.Encoding.ASCII.GetString(data[at..end]);
     }
 }
 

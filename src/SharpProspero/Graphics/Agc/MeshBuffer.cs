@@ -39,7 +39,7 @@ public sealed unsafe class MeshBuffer : IDisposable
     public int IndexCount { get; }
 
     /// <summary>The size of one vertex in bytes: the buffer stride.</summary>
-    public int VertexStride => Vertex.SizeInBytes;
+    public static int VertexStride => Vertex.SizeInBytes;
 
     /// <summary>Uploads a mesh's vertices and indices to graphics-readable memory.</summary>
     public static MeshBuffer Upload(MeshData mesh)

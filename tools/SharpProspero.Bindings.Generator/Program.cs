@@ -55,7 +55,7 @@ internal static class Program
 
     private static readonly HashSet<string> KnownVerbs = new(StringComparer.Ordinal)
     {
-        "prx", "stub", "crt", "compat", "nid", "elf", "self", "offsets", "retarget", "sysver", "link", "diff", "gnf", "payload", "shader",
+        "prx", "stub", "crt", "compat", "nid", "elf", "self", "offsets", "retarget", "sysver", "link", "diff", "gnf", "payload", "shader", "vag",
     };
 
     private static int Main(string[] args)
@@ -134,6 +134,9 @@ internal static class Program
         // Builds a GNF texture from an image file, or reports a GNF's header.
         if (args.Length > 0 && string.Equals(args[0], "shader", StringComparison.Ordinal))
             return RunShader(args);
+
+        if (args.Length > 0 && string.Equals(args[0], "vag", StringComparison.Ordinal))
+            return RunVag(args);
 
         if (args.Length > 0 && string.Equals(args[0], "gnf", StringComparison.Ordinal))
             return RunGnf(args);
@@ -536,6 +539,57 @@ internal static class Program
             => string.IsNullOrEmpty(e.LibraryName) ? e.Nid : $"{e.Nid} [{e.LibraryName}]";
     }
 
+    // Converts between WAV and VAG, choosing the direction from the input's contents: a WAV becomes a
+    // VAG, a VAG becomes a WAV.
+    private static int RunVag(string[] args)
+    {
+        string? input = GetOption(args, "--input") ?? GetOption(args, "-i");
+        string? output = GetOption(args, "--output") ?? GetOption(args, "-o");
+        if (string.IsNullOrEmpty(input) || string.IsNullOrEmpty(output))
+        {
+            Console.Error.WriteLine("Usage: vag --input <clip.wav|clip.vag> --output <clip.vag|clip.wav> [--name <name>]");
+            Console.Error.WriteLine("  Converts a 16-bit PCM WAV to VAG, or a VAG back to WAV.");
+            return 1;
+        }
+        if (!File.Exists(input))
+        {
+            Console.Error.WriteLine($"Input not found: {input}");
+            return 1;
+        }
+        try
+        {
+            byte[] bytes = File.ReadAllBytes(input);
+            bool isVag = bytes.Length >= 4 && bytes[0] == 'V' && bytes[1] == 'A' && bytes[2] == 'G' && bytes[3] == 'p';
+            byte[] result;
+            string what;
+            if (isVag)
+            {
+                SharpProspero.Audio.PcmAudio pcm = SharpProspero.Audio.VagAudio.Decode(bytes);
+                result = SharpProspero.Audio.WavAudio.Encode(pcm);
+                what = $"WAV ({pcm.Channels} ch, {pcm.SampleRate} Hz, {pcm.FrameCount} frames)";
+            }
+            else
+            {
+                SharpProspero.Audio.PcmAudio pcm = SharpProspero.Audio.WavAudio.Decode(bytes);
+                result = SharpProspero.Audio.VagAudio.Encode(pcm, GetOption(args, "--name") ?? "");
+                what = $"VAG ({pcm.Channels} ch, {pcm.SampleRate} Hz)";
+            }
+            File.WriteAllBytes(output, result);
+            Console.WriteLine($"Wrote {output} - {what}, {result.Length} bytes.");
+            return 0;
+        }
+        catch (SharpProspero.Interop.ProsperoException ex)
+        {
+            Console.Error.WriteLine($"Cannot convert: {ex.Message}");
+            return 2;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            Console.Error.WriteLine(ex.Message);
+            return 3;
+        }
+    }
+
     // Reports a compiled shader binary: its stage, version, sizes and the register writes it carries,
     // and with --registers the full register lists.
     private static int RunShader(string[] args)
@@ -585,6 +639,17 @@ internal static class Program
             Console.WriteLine($"  0x{reg.Offset:X4} = 0x{reg.Value:X8}");
     }
 
+    // Parses a "WxH" size string into two positive dimensions.
+    private static bool TryParseSize(string text, out int width, out int height)
+    {
+        width = height = 0;
+        int x = text.IndexOfAny(['x', 'X', '*']);
+        if (x <= 0 || x == text.Length - 1)
+            return false;
+        return int.TryParse(text[..x], NumberStyles.Integer, CultureInfo.InvariantCulture, out width) && width > 0
+            && int.TryParse(text[(x + 1)..], NumberStyles.Integer, CultureInfo.InvariantCulture, out height) && height > 0;
+    }
+
     // Prints the header, program headers, dependencies and, with --exports, the exported symbols of an
     // ELF module, without an external tool.
     // Builds a GNF texture from a PNG, TGA, or BMP image, or reports a GNF's header with --info.
@@ -621,9 +686,10 @@ internal static class Program
         string? input = GetOption(args, "--input") ?? GetOption(args, "-i");
         string? output = GetOption(args, "--output") ?? GetOption(args, "-o");
         bool srgb = HasFlag(args, "--srgb");
+        string? resize = GetOption(args, "--resize");
         if (string.IsNullOrEmpty(input) || string.IsNullOrEmpty(output))
         {
-            Console.Error.WriteLine("Usage: gnf --input <image.png|.tga|.bmp> --output <file.gnf> [--srgb]");
+            Console.Error.WriteLine("Usage: gnf --input <image.png|.tga|.bmp> --output <file.gnf> [--srgb] [--resize WxH]");
             Console.Error.WriteLine("       gnf --info <file.gnf>");
             return 1;
         }
@@ -632,9 +698,16 @@ internal static class Program
             Console.Error.WriteLine($"Input image not found: {input}");
             return 1;
         }
+        if (resize is not null && !TryParseSize(resize, out _, out _))
+        {
+            Console.Error.WriteLine("--resize takes a size like 256x256.");
+            return 1;
+        }
         try
         {
             DecodedImage image = DecodedImage.Load(input);
+            if (resize is not null && TryParseSize(resize, out int rw, out int rh))
+                image = ImageOps.Resize(image, rw, rh);
             byte[] gnf = GnfWriter.Build(image, srgb);
             File.WriteAllBytes(output, gnf);
             Console.WriteLine($"Wrote {output}");
@@ -1589,13 +1662,17 @@ internal static class Program
                 Console.WriteLine("Usage: shader --file <shader.sb> [--registers]");
                 Console.WriteLine("  Reports a compiled shader's stage, version, sizes, and register writes.");
                 break;
+            case "vag":
+                Console.WriteLine("Usage: vag --input <clip.wav|clip.vag> --output <clip.vag|clip.wav> [--name <name>]");
+                Console.WriteLine("  Converts a 16-bit PCM WAV to VAG (compact sound-effect audio), or a VAG back to WAV.");
+                break;
             case "diff":
                 Console.WriteLine("Usage: diff --a <module> --b <module>    Reports the exports added, removed, and moved from A to B.");
                 break;
             case "gnf":
-                Console.WriteLine("Usage: gnf --input <image.png|.tga|.bmp> --output <file.gnf> [--srgb]");
+                Console.WriteLine("Usage: gnf --input <image.png|.tga|.bmp> --output <file.gnf> [--srgb] [--resize WxH]");
                 Console.WriteLine("       gnf --info <file.gnf>    Reports a GNF's header and first texture.");
-                Console.WriteLine("  Builds a linear texture the graphics processor samples. --srgb marks the colour channels sRGB.");
+                Console.WriteLine("  Builds a linear texture the graphics processor samples. --srgb marks the colour channels sRGB; --resize scales first.");
                 break;
             case "payload":
                 Console.WriteLine("Usage: payload --send --host <address> [--port 9021] --file <payload.elf>");

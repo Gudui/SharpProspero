@@ -82,4 +82,48 @@ public static class MathUtil
 
     /// <summary>Wraps an angle into the range -pi (inclusive) to pi (exclusive).</summary>
     public static float WrapAngle(float radians) => Repeat(radians + Pi, TwoPi) - Pi;
+
+    /// <summary>
+    /// Blends between two angles in radians along the shortest way round, so a turn from just under a
+    /// whole turn to just over zero moves a hair forward rather than most of the way back.
+    /// </summary>
+    public static float LerpAngle(float a, float b, float t) => a + (WrapAngle(b - a) * t);
+
+    /// <summary>
+    /// Eases <paramref name="current"/> toward <paramref name="target"/> like a smooth camera or a value
+    /// that settles without overshooting. <paramref name="velocity"/> carries the motion between calls
+    /// and must be the same variable each frame; <paramref name="smoothTime"/> is roughly how long the
+    /// move takes in seconds, and <paramref name="maxSpeed"/> caps how fast it may travel.
+    /// </summary>
+    public static float SmoothDamp(float current, float target, ref float velocity, float smoothTime,
+        float deltaTime, float maxSpeed = float.PositiveInfinity)
+    {
+        smoothTime = MathF.Max(0.0001f, smoothTime);
+        float omega = 2f / smoothTime;
+        float x = omega * deltaTime;
+        float exp = 1f / (1f + x + (0.48f * x * x) + (0.235f * x * x * x));
+
+        float change = current - target;
+        float originalTarget = target;
+        float maxChange = maxSpeed * smoothTime;
+        change = Clamp(change, -maxChange, maxChange);
+        target = current - change;
+
+        float temp = (velocity + (omega * change)) * deltaTime;
+        velocity = (velocity - (omega * temp)) * exp;
+        float output = target + ((change + temp) * exp);
+
+        // Stop an overshoot from carrying the value past the target and oscillating.
+        if ((originalTarget - current > 0f) == (output > originalTarget))
+        {
+            output = originalTarget;
+            velocity = (output - originalTarget) / deltaTime;
+        }
+        return output;
+    }
+
+    /// <summary>Eases an angle in radians toward a target the short way round; see <see cref="SmoothDamp"/>.</summary>
+    public static float SmoothDampAngle(float current, float target, ref float velocity, float smoothTime,
+        float deltaTime, float maxSpeed = float.PositiveInfinity)
+        => SmoothDamp(current, current + WrapAngle(target - current), ref velocity, smoothTime, deltaTime, maxSpeed);
 }

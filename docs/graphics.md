@@ -12,6 +12,13 @@ Everything on this page lives in `SharpProspero.Graphics`. When you need a movab
 lower graphics-processor interface, see the child pages [2D scenes](graphics-scene.md) and
 [GPU command layer](graphics-gpu.md).
 
+<details open markdown="block">
+  <summary>On this page</summary>
+  {: .text-delta }
+- TOC
+{:toc}
+</details>
+
 ## The display
 
 `DisplayDevice` opens the main output, allocates its framebuffers from direct memory, registers them,
@@ -285,7 +292,9 @@ Color rainbow = Color.FromHsv(context.TotalSeconds * 60 % 360, 1f, 1f); // hue o
 
 `Lerp` blends component-wise with the factor clamped to 0-1. `FromHsv` builds an opaque color from a
 hue in degrees (wrapped) and a saturation and value in 0-1, and `ToHsv` reads them back for a color
-picker or a hue shift. `Darken` and `Lighten` move a color toward black or white while keeping its
+picker or a hue shift. `FromHsl` and `ToHsl` do the same over hue, saturation and lightness, where
+lightness runs black at 0 through the pure hue at 0.5 to white at 1 — often the easier space for
+picking even tints and shades. `Darken` and `Lighten` move a color toward black or white while keeping its
 alpha, for a pressed or hovered shade. `WithAlpha` keeps the red, green and blue and sets a new alpha,
 which `BlitBlended` then composites. `Black`, `White`, `Red`, `Green`, `Blue` and `Transparent` are
 ready to use.

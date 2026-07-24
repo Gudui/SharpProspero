@@ -1,10 +1,168 @@
 # SharpProspero
 
-A C# SDK for building application modules that compile ahead of time to a standalone ELF and optionally packs
-into an installable package with LibProsperoPkg. Write the application in C#; the toolchain produces
-an `eboot.bin` with no managed runtime to deploy alongside it.
+A C# SDK and toolchain for building applications that run on the console. Write the application in C#;
+the toolchain compiles it ahead of time to a self-contained ELF, links it with its own linker, and packs
+it into an installable package — an `eboot.bin` with no separate runtime to deploy alongside it.
 
-## What it gives you
+Everything needed is in this one repository: the interop bindings for the device services, a drawing and
+interface layer, an application host, the memory, audio, input, networking, storage and system-service
+surfaces, the command-line tools that inspect and package a module, and `dotnet new` templates to start
+from. A build needs only the .NET 10 SDK.
+
+## Contents
+
+- [Overview](#overview)
+- [How it works](#how-it-works)
+- [Requirements](#requirements)
+- [Quick start](#quick-start)
+- [Templates](#templates)
+- [Command-line tools](#command-line-tools)
+- [Feature reference](#feature-reference)
+- [Documentation](#documentation)
+- [Building and testing the SDK](#building-and-testing-the-sdk)
+- [License](#license)
+
+## Overview
+
+- Write the application in C#; it compiles ahead of time to a self-contained `eboot.bin` with no runtime
+  to ship alongside it.
+- Interop bindings for the device services an application uses: display output, controller input and
+  output, audio, files, network sockets, the real-time clock, the entropy source, and the user and system
+  services.
+- A 2D drawing surface, a scalable-font text layer, a controller-driven interface toolkit, and a movable
+  2D scene, plus a graphics-processor layer with a lit 3D mesh renderer.
+- An application host — derive from `ProsperoApp`, override `OnFrame`, call `Run` — with a paced loop, a
+  state machine, an event bus, and a fixed-timestep accumulator on top.
+- Audio output and capture, memory tools for the constrained heap, timing, threading, storage and data
+  formats, hashing, and the full run of system services (save data, dialogs, trophies, capture, package
+  install, firmware compatibility).
+- A toolchain that stands alone: its own linker, start object, and module stubs, so a build needs no
+  separate linker, start file, or stub library.
+- Command-line tools to inspect, strip, retarget, convert and package a module, and to generate a C#
+  wrapper for a library.
+- 19 `dotnet new` templates, and one build that runs across a range of system versions.
+
+## How it works
+
+A build runs three steps, wired together by the shared pipeline in `build/`:
+
+1. **Compile** — the C# is compiled ahead of time to a self-contained x86_64 ELF object. This step runs
+   on Linux; on Windows the build runs it through WSL automatically. The runtime comes from the .NET SDK's
+   own runtime pack, so nothing extra is installed.
+2. **Link** — the SDK's linker turns that object into an `eboot.bin` (or a `.prx` for a library). It
+   supplies its own start object, a compatibility object that bridges the few places the C library and the
+   system differ, and a stub for every device-service import, so the link needs no separate linker, start
+   file, or stub library.
+3. **Package** — the packager assembles the `eboot.bin`, the `sce_sys` metadata, and any `sce_module`
+   libraries into an installable `*.pkg`, or writes them into a single folder ready to copy
+   (`-Output Folder`).
+
+```mermaid
+flowchart LR
+  A[C# source] -->|compile ahead of time| B[ELF object]
+  B -->|SDK linker: start object + compat object + stubs| C[eboot.bin]
+  C -->|packager + sce_sys metadata| D[Installable *.pkg]
+  C -.->|-Output Folder| E[Files in one folder]
+```
+
+A payload takes a shorter path: it links to a single position-independent `.elf` that a loader maps and
+runs in a process over the network, with no packaging step. See
+[Modules and payloads](docs/modules-and-payloads.md) for when each form is the right one.
+
+## Requirements
+
+- .NET 10 SDK, on Windows, Linux or macOS (64-bit).
+- The compile step runs on Linux; on Windows the build runs it through WSL automatically, so no host
+  switch is needed. Nothing else is set up: the runtime comes from the .NET SDK's own runtime pack, and
+  the SDK's linker supplies its own start object, a compatibility object, and the module stubs.
+
+See [docs/setup.md](docs/setup.md) for the full per-operating-system install, and run `pwsh doctor.ps1`
+to check a machine and print what to set for anything missing.
+
+## Quick start
+
+Check the setup, then build and test the SDK:
+
+```
+pwsh doctor.ps1
+dotnet build SharpProspero.slnx
+dotnet test tests/SharpProspero.Tests/SharpProspero.Tests.csproj
+```
+
+`doctor.ps1` reports the .NET SDK and, on Windows, the WSL host the compile step uses. A plain build and
+the tests need only .NET 10.
+
+Scaffold your own project from a template, point it at the SDK once, and build:
+
+```
+dotnet new install templates/prospero-app
+dotnet new prospero-app -n MyGame --title "My Game" --titleId PPSA99099
+setx SHARPPROSPERO_ROOT "<this folder>"     # or export on Linux/macOS
+pwsh MyGame/build.ps1
+```
+
+Or build the bundled sample and pick the output you want:
+
+```
+pwsh src/SharpProspero.Sample/build.ps1                  # an installable *.pkg
+pwsh src/SharpProspero.Sample/build.ps1 -Output Folder   # every file in one folder
+```
+
+The application itself is a few lines:
+
+```csharp
+using SharpProspero.Application;
+using SharpProspero.Graphics;
+
+internal sealed class HelloApp : ProsperoApp
+{
+    protected override void OnFrame(FrameContext context)
+    {
+        Surface surface = context.Surface;
+        surface.Clear(Color.FromRgb(0x0E, 0x11, 0x16));
+        surface.DrawTextCentered("Hello from C#", 500, 5, Color.White);
+    }
+}
+
+internal static class Program
+{
+    private static void Main() => new HelloApp().Run();
+}
+```
+
+See [docs/getting-started.md](docs/getting-started.md) to go from an empty project to a build.
+
+## Templates
+
+Nineteen `dotnet new` templates cover each kind of project. Install one, create a project from it, and its
+`build.ps1` runs the shared pipeline. Applications take the package identity (`--title`, `--titleId`,
+`--conceptId`, `--contentId`) as options.
+
+See [docs/templates.md](docs/templates.md) for the options, what each template contains, and the full
+install list.
+
+## Command-line tools
+
+The SDK ships command-line programs for working with a module outside the build. The binding generator
+hosts most of them as verbs (`dotnet run --project tools/SharpProspero.Bindings.Generator -- <verb>`):
+
+| Command | What it does |
+|---|---|
+| `prx` | Read a `.prx` or `.sprx`, list its exports, and generate a C# wrapper for it. |
+| `elf` | Inspect an ELF or signed module: segments, plus `--sizes`, `--symbols`, `--strings`, and `--strip`. |
+| `self` | Read a signed container, extract its ELF, report which form a file is, and convert between the forms. |
+| `offsets` | Dump a module's export identifiers and addresses, and how it covers the names the SDK needs. |
+| `retarget` | Change the system version a module records, so one built for a newer system loads on an older one. |
+| `gnf` | Build a GNF texture file from a PNG, TGA or BMP image, and resize an image with `--resize`. |
+| `shader` | Inspect a shader binary: its kind, inputs, and resources. |
+| `vag` | Convert audio between WAV and VAG. |
+| `payload` | Send a built payload `.elf` to a loader over the network. |
+
+The packager (`tools/SharpProspero.Packager`) assembles a package over the packaging library, and the
+binding generator with no verb turns the SDK headers into more bindings from a catalog. See
+[docs/toolchain.md](docs/toolchain.md) for the toolchain as a whole.
+
+## Feature reference
 
 - **Interop bindings** for the device services an application module uses: direct memory, display
   output, controller input and output, audio output and microphone input, network sockets,
@@ -16,12 +174,12 @@ an `eboot.bin` with no managed runtime to deploy alongside it.
   rounded rectangles, thin and thick
   lines, outlines, opaque, alpha-blended, scaled (nearest or smooth) and rotated surface copies, and
   sub-region clipping; in-place image effects (grayscale, invert,
-  brightness, contrast, tint, flip and blur); PNG, JPEG, BMP, TGA and animated GIF image decoding, PNG, JPEG, BMP and
+  brightness, contrast, tint, flip and blur); PNG, JPEG, BMP, TGA, QOI and animated GIF image decoding, PNG, JPEG, BMP and
   TGA encoding for screenshots; off-screen buffers you own for pre-rendering and caching; ellipses, arcs,
   pies and rings, connected lines, thick outlines and nine-part panel stretching; an 8x8 bitmap
   font and a scalable TrueType/OpenType font for antialiased text, with an outlined form that stays
   readable over a photo or a video frame, over a double-buffered display device that presents on the
-  vertical blank.
+  vertical blank. Colors read and write in RGB, HSV and HSL.
 - **A 2D scene**: a movable, zoomable camera that converts between world and screen coordinates and
   clamps to a map's edges, a tile map drawn from a sprite sheet through the camera (loaded from CSV,
   with tile-collision queries), a sprite-sheet animation player, a particle system for effects,
@@ -35,7 +193,7 @@ an `eboot.bin` with no managed runtime to deploy alongside it.
   pixel tiler that converts an image between linear and hardware-tiled order for texture upload and
   framebuffer read-back (`AgcTiler`). Above it, `Renderer3D` draws a lit mesh with built-in shaders, and
   the toolchain's `gnf` command builds texture files from PNG, TGA, and BMP images. See
-  [docs/graphics-and-memory.md](docs/graphics-and-memory.md).
+  [docs/graphics-gpu.md](docs/graphics-gpu.md).
 - **Text that fits**: wrap a paragraph to a width, place a line left, centred or right, measure the
   wrapped block, and shorten a label that will not fit. It measures through a font abstraction, so the
   same layout serves the built-in text and a loaded outline font.
@@ -55,8 +213,9 @@ an `eboot.bin` with no managed runtime to deploy alongside it.
   direction for fast scrolling, and raise a short message that takes itself down.
   See [docs/ui.md](docs/ui.md).
 - **Memory tools** for the constrained heap: a direct-memory region with deterministic release, a
-  heap monitor that reads usage against the configured ceiling, and an object pool that reuses
-  short-lived objects so a hot loop allocates less.
+  heap monitor that reads usage against the configured ceiling, an object pool that reuses
+  short-lived objects so a hot loop allocates less, and a bounded most-recently-used cache that holds a
+  fixed number of decoded assets and drops the least-used to stay within budget.
 - **Timing and files**: a monotonic clock for frame pacing and measurement, game-logic timers
   (cooldowns, intervals and countdowns) driven by the frame delta, a scheduler that runs a callback after
   a delay or on a repeat, a wall-clock reader for the calendar
@@ -67,7 +226,8 @@ an `eboot.bin` with no managed runtime to deploy alongside it.
   reader, writer and small document model for a config or data file, a CSV
   reader and writer for a table or an export, a tar reader for unpacking a bundle of assets, an in-memory
   data table to sort, filter and group those rows for a list or grid, a versioned save with forward
-  migration, endian-aware binary buffers for reading and writing a save file, a header or a message, ring
+  migration, endian-aware binary buffers for reading and writing a save file, a header or a message,
+  bit-field readers and writers for a value that is not a whole number of bytes wide, ring
   buffers for a rolling history or a byte stream, and base-N (hex, Base32, Base64) encodings for a token
   or a blob.
 - **Text and web glue**: format the strings an application shows — a file size, a duration, a
@@ -79,10 +239,12 @@ an `eboot.bin` with no managed runtime to deploy alongside it.
   drawing while a file loads or a request is in flight; and a hand-off point that runs a callback back on
   the frame thread, so a worker can apply its result to the drawing state safely.
 - **Randomness and math**: a reproducible generator for gameplay (ranges, booleans, picking and
-  shuffling) seeded from the system entropy source, a two-dimensional vector type for positions,
-  velocities and directions, a rectangle type with the point, rectangle and circle overlap tests game
-  code reaches for, and the small floating-point helpers that go with them (blend, remap, smooth-step,
-  move-towards, angle wrapping).
+  shuffling) seeded from the system entropy source, a weighted table for loot and drop charts, a
+  two-dimensional vector type for positions, velocities and directions, a rectangle type with the point,
+  rectangle and circle overlap tests game code reaches for, the small floating-point helpers that go with
+  them (blend, remap, smooth-step, move-towards, angle wrapping) plus critically-damped smoothing for a
+  camera or value that eases to a target without overshoot, coherent noise for terrain and textures, and a
+  rectangle packer for building a sprite sheet or a glyph atlas.
 - **Settings and users**: a reader for the user's system settings (language, date and time formats,
   time zone), and the signed-in users with their display names.
 - **System features**: play a media file or a network stream and pull its decoded audio, open the
@@ -103,9 +265,12 @@ an `eboot.bin` with no managed runtime to deploy alongside it.
 - **Audio and input**: a stereo audio-output port that paces the caller to the audio clock; a tone and
   effect generator (sine, square, triangle, sawtooth, noise) for beeps and simple sound effects with no
   audio file; a mixer that layers several sounds at once, spreading mono to stereo and retuning a clip
-  recorded at another rate; a microphone-input port for recording and level metering; 16-bit WAV file
+  recorded at another rate; a two-pole filter (low, high, band-pass and notch) for tone shaping and an
+  attack-decay-sustain-release envelope for giving a note a natural swell and fade; a microphone-input
+  port for recording and level metering; 16-bit WAV file
   reading and writing with no module; controller vibration and light-bar control; controller samples
-  decoded down to motion (orientation, acceleration, angular velocity) and touch-pad contacts; and an
+  decoded down to motion (orientation, acceleration, angular velocity) and touch-pad contacts, with a
+  gesture recognizer for taps, holds, drags, flicks and pinches; and an
   action map that names the controls (single button, chord, or alternatives) so game code reads clearly
   and controls are easy to rebind.
 - **Networking**: TCP and UDP sockets for a client or a server, a poller for serving many connections
@@ -145,108 +310,26 @@ an `eboot.bin` with no managed runtime to deploy alongside it.
 - **Two ways to ship**: pack the built module and its metadata into a `*.pkg`, or write every file
   into a single folder ready to copy (`-Output Folder`).
 
-## Layout
-
-| Path | Contents |
-|---|---|
-| `src/SharpProspero` | The SDK class library. |
-| `src/SharpProspero.Sample` | A sample module and its build script. |
-| `tools/SharpProspero.Prx` | Module reader, signed-container reader, identifier computer, and wrapper generator. |
-| `tools/SharpProspero.Bindings.Generator` | Header-to-C# binding generator and the `prx`, `elf` (with `--sizes`/`--symbols`/`--strings`/`--strip`), `self`, `offsets`, `retarget`, `gnf`, `shader`, and `payload` commands. |
-| `tools/SharpProspero.Texture` | Builds GNF texture files from PNG, TGA, and BMP images (the `gnf` command). |
-| `tools/SharpProspero.Packager` | Command-line packager over LibProsperoPkg. |
-| `tests/SharpProspero.Tests` | Unit tests for the drawing, memory, and module code. |
-| `build/` | The ahead-of-time compile and link pipeline (props and targets). |
-| `templates/` | `dotnet new` templates for an application, an interface app, a toolbox, and a library. |
-| `runtime/` | Notes on how the ahead-of-time runtime is sourced and its operating-system surface met. |
-| `docs/` | The documentation, and the Jekyll site built from it. |
-
-## Requirements
-
-- .NET 10 SDK, on Windows, Linux or macOS (64-bit).
-- The compile step runs on Linux; on Windows the build runs it through WSL automatically, so no host
-  switch is needed. Nothing else is set up: the runtime comes from the .NET SDK's own runtime pack, and
-  the SDK's linker supplies its own start object, a compat object, and the module stubs.
-
-See [docs/setup.md](docs/setup.md) for the full per-operating-system install.
-
-The link runs through the SDK's own linker; a build needs no runtime pack, separate linker, start file,
-or stub library.
-
-## Quick start
-
-Check the setup, then build and test:
-
-```
-pwsh doctor.ps1
-dotnet build SharpProspero.slnx
-dotnet test tests/SharpProspero.Tests/SharpProspero.Tests.csproj
-```
-
-`doctor.ps1` reports the .NET SDK and, on Windows, the WSL host the compile step uses, and prints what
-to set for anything missing. A plain build and the tests need only .NET 10.
-
-Scaffold your own project from a template — an application, an interface app, a toolbox, or a library:
-
-```
-dotnet new install templates/prospero-app
-dotnet new prospero-app -n MyGame --title "My Game"
-setx SHARPPROSPERO_ROOT "<this folder>"
-pwsh MyGame/build.ps1
-```
-
-The other templates are `prospero-game` (a real-time game), `prospero-ui`, `prospero-launcher` (a
-carousel launcher front end), `prospero-filemanager` (a file browser), `prospero-tool`, `prospero-media`
-(a media player), `prospero-server` (an HTTP control panel), `prospero-prx` (a library), and the payload
-templates `prospero-payload` (an echo service), `prospero-payload-httpd` (a web service) and
-`prospero-payload-beacon` (a one-shot report); see [docs/templates.md](docs/templates.md).
-
-Or build the sample. Pick the output you want:
-
-```
-pwsh src/SharpProspero.Sample/build.ps1                  # an installable *.pkg
-pwsh src/SharpProspero.Sample/build.ps1 -Output Folder   # every file in one folder
-```
-
-The application itself is a few lines:
-
-```csharp
-using SharpProspero.Application;
-using SharpProspero.Graphics;
-
-internal sealed class HelloApp : ProsperoApp
-{
-    protected override void OnFrame(FrameContext context)
-    {
-        Surface surface = context.Surface;
-        surface.Clear(Color.FromRgb(0x0E, 0x11, 0x16));
-        surface.DrawTextCentered("Hello from C#", 500, 5, Color.White);
-    }
-}
-
-internal static class Program
-{
-    private static void Main() => new HelloApp().Run();
-}
-```
-
-See [docs/getting-started.md](docs/getting-started.md) to go from an empty project to a build.
-
 ## Documentation
 
-Start with these:
+The pages under `docs/` are both the repository documentation and a Jekyll site. Start here:
 
 - [Getting started](docs/getting-started.md) — from nothing to a running module.
 - [Setup](docs/setup.md) — the full install for Windows, Linux and macOS (64-bit).
 - [Templates](docs/templates.md) — starting points for each kind of project.
 - [Guides and tips](docs/guides.md) — everyday recipes and troubleshooting.
-- [Architecture](docs/architecture.md) and [Build pipeline](docs/build-pipeline.md) — how it all fits.
-- [Modules and payloads](docs/modules-and-payloads.md) — the two execution forms and which to build.
 
-The rest cover the drawing surface, networking, utilities, the interface toolkit, bindings, modules,
-firmware compatibility, and the signed and unsigned module forms.
+Every page names the namespace it documents, and the site's search box indexes the whole set.
 
-The pages under `docs/` are both the repository documentation and a Jekyll site.
+## Building and testing the SDK
+
+```
+dotnet build SharpProspero.slnx
+dotnet test tests/SharpProspero.Tests/SharpProspero.Tests.csproj
+```
+
+The class library builds and the tests run on .NET 10 alone, with no console or WSL involved; the compile
+and link steps only come in when building an actual module.
 
 ## License
 
