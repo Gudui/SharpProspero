@@ -24,6 +24,8 @@ public static class DynamicWriter
     private const ushort TypeSceDynExec = 0xFE10;
     private const ushort TypeSceDynamic = 0xFE18;
     private const uint PfX = 1, PfW = 2, PfR = 4;
+    private const int EntryStubSize = 44; // the constructor-running entry prepended to the executable's start
+    private const int ReservedNoteLen = 0x48; // the non-loaded note area a linked module reserves in its file tail
     private const uint PtLoad = 1, PtDynamic = 2, PtNote = 4, PtTls = 7, PtSceProcParam = 0x61000001, PtGnuEhFrame = 0x6474E550;
 
     private const long DtNeeded = 1, DtHash = 4, DtStrTab = 5, DtSymTab = 6, DtStrSz = 10, DtSymEnt = 11;
@@ -145,6 +147,13 @@ public static class DynamicWriter
         }
         PlaceArray(".init_array", ref initArrayOff, ref initArrayEnd, ref haveInit);
         PlaceArray(".fini_array", ref finiArrayOff, ref finiArrayEnd, ref haveFini);
+
+        // An executable runs its own global constructors: the loader runs the init array of a shared
+        // library it loads, but not of the main executable - that is the start code's job. Without this
+        // the module's initializers (including the runtime's own registration) never run, so it starts
+        // and then fails on the first managed call. A small entry runs the array and continues to the
+        // compiled start. A library keeps the init-array tag so the loader runs it as before.
+        bool wantInitStub = haveInit && kind != ModuleKind.Library;
 
         foreach (ElfObject obj in resolution.Included)
         {
@@ -296,7 +305,7 @@ public static class DynamicWriter
                 gotDataRelocCount++;
         }
         byte[] relaDynBytes = new byte[(gotDataRelocCount + abs64Count) * 24];
-        byte[] pltBytes = new byte[16 + imports.Count * 16];
+        byte[] pltBytes = new byte[16 + imports.Count * 16 + (wantInitStub ? EntryStubSize : 0)];
         byte[] gotBytes = new byte[24 + imports.Count * 8 + gotDataOrder.Count * 8];
         byte[] procParam = BuildProcParam();
         byte[] note = BuildNote();
@@ -422,22 +431,40 @@ public static class DynamicWriter
             BinaryPrimitives.WriteUInt64LittleEndian(dynsymBytes.AsSpan(index * 24 + 8),
                 SymbolValue(resolution, importByName, SectionAddr, obj, sym));
 
-        // The init/fini arrays sit in the data segment; give their runtime address and size so the loader
-        // runs the global constructors and destructors before the entry point and at teardown.
+        // The init/fini arrays sit in the data segment. A library advertises its init array so the loader
+        // runs its constructors; an executable runs its own from the entry below, so its init-array tag is
+        // left off.
         (ulong Address, ulong Size) initArray = haveInit ? (dataAddr + initArrayOff, initArrayEnd - initArrayOff) : (0, 0);
         (ulong Address, ulong Size) finiArray = haveFini ? (dataAddr + finiArrayOff, finiArrayEnd - finiArrayOff) : (0, 0);
+
+        ulong entry = 0;
+        bool entryFound = false;
+        if (!string.IsNullOrEmpty(entrySymbol) && resolution.Defined.TryGetValue(entrySymbol, out ElfObject? eo))
+            foreach (ElfSymbol s in eo.Symbols)
+                if (!s.IsUndefined && s.Name == entrySymbol)
+                {
+                    entry = SymbolValue(resolution, importByName, SectionAddr, eo, s);
+                    entryFound = true;
+                }
+
+        // Run the executable's constructors from a small entry that then continues to the compiled start,
+        // and make it the module entry point. The stub bytes live in the tail of the procedure-linkage
+        // table's space, already inside the executable segment and accounted for in the layout. The entry
+        // address can legitimately be the module base (zero), so this keys on the symbol being found.
+        if (wantInitStub && entryFound)
+        {
+            ulong stubAddr = pltAddr + 16 + (ulong)imports.Count * 16;
+            BuildEntryStub(stubAddr, initArray.Address, initArray.Address + initArray.Size, entry)
+                .CopyTo(pltBytes.AsSpan(16 + imports.Count * 16));
+            entry = stubAddr;
+        }
 
         byte[] dynamicBytes = BuildDynamic(moduleRecords, moduleInfoName,
             dynsymAddr, dynstrAddr, (ulong)dynstrBytes.Length, hashAddr, (ulong)hashBytes.Length,
             relaAddr, (ulong)relaBytes.Length, gotAddr, dynsymBytes.Length,
             relaDynAddr, (ulong)relaDynBytes.Length, relativeCount,
-            hasExports, origFileNameOff, moduleInfoName, exportLibId, initArray, finiArray);
-
-        ulong entry = 0;
-        if (!string.IsNullOrEmpty(entrySymbol) && resolution.Defined.TryGetValue(entrySymbol, out ElfObject? eo))
-            foreach (ElfSymbol s in eo.Symbols)
-                if (!s.IsUndefined && s.Name == entrySymbol)
-                    entry = SymbolValue(resolution, importByName, SectionAddr, eo, s);
+            hasExports, origFileNameOff, moduleInfoName, exportLibId,
+            wantInitStub ? (0UL, 0UL) : initArray, finiArray);
 
         // Assemble the file.
         return WriteFile(resolution, kind, entry, sectionData, SectionAddr,
@@ -464,13 +491,56 @@ public static class DynamicWriter
                 if (!sec.IsAlloc) continue;
                 byte[] bytes = sec.IsNoBits ? new byte[sec.Size] : (byte[])sec.Data.Clone();
                 ulong secAddr = sectionAddr(obj, idx);
+
+                // A general- or local-dynamic thread-local sequence is a lea followed by a call
+                // __tls_get_addr. Relaxing the lea rewrites both instructions, so the call's relocation is
+                // folded away rather than applied on its own. The call sits eight bytes past a general-
+                // dynamic lea's relocation and five past a local-dynamic one.
+                HashSet<ulong>? foldedTlsCall = null;
+                foreach (ElfRelocation probe in kv.Value)
+                {
+                    if (probe.Type == RelType.TlsGd) (foldedTlsCall ??= []).Add(probe.Offset + 8);
+                    else if (probe.Type == RelType.TlsLd) (foldedTlsCall ??= []).Add(probe.Offset + 5);
+                }
+
                 foreach (ElfRelocation r in kv.Value)
                 {
                     if (r.SymbolIndex >= (uint)obj.Symbols.Count) continue;
                     ElfSymbol sym = obj.Symbols[(int)r.SymbolIndex];
                     ulong place = secAddr + r.Offset;
                     int at = (int)r.Offset;
-                    int width = r.Type is RelType.R64 or RelType.TpOff64 or RelType.Pc64 ? 8 : 4;
+
+                    if (foldedTlsCall is not null && foldedTlsCall.Contains(r.Offset))
+                        continue; // the __tls_get_addr call, folded into the local-exec load below
+
+                    if (r.Type == RelType.TlsGd)
+                    {
+                        // Relax to local-exec: replace the 16-byte lea/call pair with a read of the thread
+                        // pointer and a fixed offset load, leaving the address in rax as the call did.
+                        if (at - 4 < 0 || at + 12 > bytes.Length)
+                            throw new ElfLinkException($"{obj.Origin}: a thread-local sequence on '{sym.Name}' runs past the section.");
+                        if (!TryTlsTemplateOffset(resolution, tlsOffset, obj, sym, out ulong gdTemplateOff))
+                            throw new ElfLinkException($"Thread-local symbol '{sym.Name}' has no template section.");
+                        long le = (long)gdTemplateOff - (long)tlsAlignedMem;
+                        ReadOnlySpan<byte> localExec = [0x64, 0x48, 0x8B, 0x04, 0x25, 0x00, 0x00, 0x00, 0x00, 0x48, 0x8D, 0x80];
+                        localExec.CopyTo(bytes.AsSpan(at - 4)); // mov %fs:0,%rax ; lea ...(%rax),%rax
+                        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(at + 8), checked((int)le));
+                        continue;
+                    }
+
+                    if (r.Type == RelType.TlsLd)
+                    {
+                        // Relax the module-base lookup to a thread-pointer read: the block is this module's,
+                        // so each member (its DTPOFF relocations below) becomes a local-exec offset from the
+                        // thread pointer. The nop prefixes keep the replacement the same size as the pair.
+                        if (at - 3 < 0 || at + 9 > bytes.Length)
+                            throw new ElfLinkException($"{obj.Origin}: a thread-local base sequence on '{sym.Name}' runs past the section.");
+                        ReadOnlySpan<byte> threadPointer = [0x66, 0x66, 0x66, 0x64, 0x48, 0x8B, 0x04, 0x25, 0x00, 0x00, 0x00, 0x00];
+                        threadPointer.CopyTo(bytes.AsSpan(at - 3)); // (nop) mov %fs:0,%rax
+                        continue;
+                    }
+
+                    int width = r.Type is RelType.R64 or RelType.TpOff64 or RelType.Pc64 or RelType.DtpOff64 ? 8 : 4;
                     if (at < 0 || at + width > bytes.Length) continue;
 
                     if (RelType.IsGotPcRel(r.Type) || r.Type == RelType.GotTpOff)
@@ -488,15 +558,16 @@ public static class DynamicWriter
                         continue;
                     }
 
-                    if (r.Type is RelType.TpOff32 or RelType.TpOff64)
+                    if (r.Type is RelType.TpOff32 or RelType.TpOff64 or RelType.DtpOff32 or RelType.DtpOff64)
                     {
                         // Local-exec thread-local reference: the value is the symbol's offset within the
-                        // template minus the aligned template size, since the block sits below the
-                        // thread pointer on this target.
+                        // template minus the aligned template size, since the block sits below the thread
+                        // pointer on this target. A module-block offset (DTPOFF, once its base is relaxed to
+                        // the thread pointer above) resolves to the same value.
                         if (!TryTlsTemplateOffset(resolution, tlsOffset, obj, sym, out ulong templateOff))
                             throw new ElfLinkException($"Thread-local symbol '{sym.Name}' has no template section.");
                         long tp = (long)templateOff - (long)tlsAlignedMem + r.Addend;
-                        if (r.Type == RelType.TpOff64)
+                        if (r.Type is RelType.TpOff64 or RelType.DtpOff64)
                             BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(at), (ulong)tp);
                         else
                             BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(at), unchecked((uint)(int)tp));
@@ -683,7 +754,12 @@ public static class DynamicWriter
         ulong dataSegEnd = dynamicAddr + (ulong)dynamic.Length;
 
         ulong fileEnd = dataFileOff + (dataSegEnd - dataAddr);
-        byte[] file = new byte[Align(fileEnd, 16)];
+        // A second, non-loaded PT_NOTE reserves the platform note area a linked module carries
+        // (zero-filled in an unsigned image). It lives in the file tail, outside every PT_LOAD, and is
+        // the last content in the file, so the image ends exactly at the extent its program header
+        // records - which keeps the signed-container round-trip (sign then verify) byte-consistent.
+        ulong reservedNoteFileOff = Align(fileEnd, 16);
+        byte[] file = new byte[reservedNoteFileOff + ReservedNoteLen];
 
         // ELF header.
         file[0] = 0x7F; file[1] = (byte)'E'; file[2] = (byte)'L'; file[3] = (byte)'F';
@@ -695,7 +771,7 @@ public static class DynamicWriter
         BinaryPrimitives.WriteUInt64LittleEndian(file.AsSpan(0x20), 0x40);
         BinaryPrimitives.WriteUInt16LittleEndian(file.AsSpan(0x34), 0x40);
         BinaryPrimitives.WriteUInt16LittleEndian(file.AsSpan(0x36), 0x38);
-        int phnum = 6 + (ehFrameHdr.Length > 0 ? 1 : 0) + (hasTls ? 1 : 0);
+        int phnum = 7 + (ehFrameHdr.Length > 0 ? 1 : 0) + (hasTls ? 1 : 0);
         BinaryPrimitives.WriteUInt16LittleEndian(file.AsSpan(0x38), (ushort)phnum);
 
         // Program headers.
@@ -718,6 +794,8 @@ public static class DynamicWriter
         WritePh(PtDynamic, PfR | PfW, dataFileOff + (dynamicAddr - dataAddr), dynamicAddr, (ulong)dynamic.Length, (ulong)dynamic.Length, 8);
         WritePh(PtSceProcParam, PfR, roFileOff + (procAddr - roAddr), procAddr, (ulong)proc.Length, (ulong)proc.Length, 8);
         WritePh(PtNote, PfR, roFileOff + (noteAddr - roAddr), noteAddr, (ulong)note.Length, (ulong)note.Length, 4);
+        // The reserved note carries no load address (memsz 0); it is present in the file only.
+        WritePh(PtNote, 0, reservedNoteFileOff, 0, ReservedNoteLen, 0, 4);
         if (ehFrameHdr.Length > 0)
             WritePh(PtGnuEhFrame, PfR, roFileOff + (ehFrameHdrAddr - roAddr), ehFrameHdrAddr, (ulong)ehFrameHdr.Length, (ulong)ehFrameHdr.Length, 4);
         if (hasTls)
@@ -749,6 +827,14 @@ public static class DynamicWriter
             Put(roFileOff, roAddr, ehFrameHdrAddr, ehFrameHdr);
         Put(dataFileOff, dataAddr, gotAddr, got);
         Put(dataFileOff, dataAddr, dynamicAddr, dynamic);
+
+        // Stamp the build-id note's descriptor with a content fingerprint of the finished image, so
+        // the module carries a real, reproducible identifier rather than a run of zeros. The 20-byte
+        // descriptor sits 16 bytes into the note (after its name/size/type header and the "GNU" name);
+        // it is hashed while still zero, so the same inputs always yield the same identifier.
+        int noteFileOff = (int)(roFileOff + (noteAddr - roAddr));
+        byte[] buildId = System.Security.Cryptography.SHA1.HashData(file);
+        buildId.AsSpan(0, 20).CopyTo(file.AsSpan(noteFileOff + 16, 20));
         return file;
     }
 
@@ -832,14 +918,49 @@ public static class DynamicWriter
         return h;
     }
 
+    // A position-independent entry that runs the global constructors in [initStart, initEnd) - each a
+    // relocated function pointer, skipping any left null - then jumps to the compiled start with the stack
+    // the loader set up intact. It addresses the array and the start with instruction-relative
+    // displacements, so it needs no load-time relocation. The loader enters it with a 16-aligned stack, and
+    // the two saved registers keep every call aligned. See <see cref="EntryStubSize"/> for the byte count.
+    private static byte[] BuildEntryStub(ulong stubAddr, ulong initStart, ulong initEnd, ulong start)
+    {
+        // Byte offsets, used for the branch displacements: loop=16, skip=31, done=37, and the code ends at
+        // 44. rbx walks the array, rbp marks its end.
+        byte[] c = new byte[EntryStubSize];
+        int i = 0;
+        c[i++] = 0x53;                                     // 0:  push rbx
+        c[i++] = 0x55;                                     // 1:  push rbp
+        c[i++] = 0x48; c[i++] = 0x8D; c[i++] = 0x1D;       // 2:  lea rbx, [rip + (initStart - next)]
+        BinaryPrimitives.WriteInt32LittleEndian(c.AsSpan(i), checked((int)((long)initStart - (long)(stubAddr + 9)))); i += 4;
+        c[i++] = 0x48; c[i++] = 0x8D; c[i++] = 0x2D;       // 9:  lea rbp, [rip + (initEnd - next)]
+        BinaryPrimitives.WriteInt32LittleEndian(c.AsSpan(i), checked((int)((long)initEnd - (long)(stubAddr + 16)))); i += 4;
+        c[i++] = 0x48; c[i++] = 0x39; c[i++] = 0xEB;       // 16: loop: cmp rbx, rbp
+        c[i++] = 0x73; c[i++] = 0x10;                      // 19: jae done      (-> 37)
+        c[i++] = 0x48; c[i++] = 0x8B; c[i++] = 0x03;       // 21: mov rax, [rbx]
+        c[i++] = 0x48; c[i++] = 0x85; c[i++] = 0xC0;       // 24: test rax, rax
+        c[i++] = 0x74; c[i++] = 0x02;                      // 27: jz skip       (-> 31, past the call)
+        c[i++] = 0xFF; c[i++] = 0xD0;                      // 29: call rax
+        c[i++] = 0x48; c[i++] = 0x83; c[i++] = 0xC3; c[i++] = 0x08; // 31: skip: add rbx, 8
+        c[i++] = 0xEB; c[i++] = 0xEB;                      // 35: jmp loop      (-> 16)
+        c[i++] = 0x5D;                                     // 37: done: pop rbp
+        c[i++] = 0x5B;                                     // 38: pop rbx
+        c[i++] = 0xE9;                                     // 39: jmp start
+        BinaryPrimitives.WriteInt32LittleEndian(c.AsSpan(i), checked((int)((long)start - (long)(stubAddr + 44)))); i += 4;
+        return c;
+    }
+
     private static byte[] BuildProcParam()
     {
         byte[] p = new byte[0x60];
         BinaryPrimitives.WriteUInt64LittleEndian(p, 0x60);
         p[8] = (byte)'O'; p[9] = (byte)'R'; p[10] = (byte)'B'; p[11] = (byte)'I';
         BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(0x0C), 5);
+        // Two version words the platform runtime reads from the process parameters. The first is a
+        // fixed legacy-compatibility stamp; the second is the meaningful one - the SDK version the
+        // module targets, kept in step with the platform version header (major 2, revision 0x26).
         BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(0x10), 0x08050001);
-        BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(0x14), 0x02000009);
+        BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(0x14), 0x02000026);
         BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(0x58), 1);
         return p;
     }

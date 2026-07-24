@@ -230,6 +230,10 @@ binding generator with no verb turns the SDK headers into more bindings from a c
   bit-field readers and writers for a value that is not a whole number of bytes wide, ring
   buffers for a rolling history or a byte stream, and base-N (hex, Base32, Base64) encodings for a token
   or a blob.
+- **Compression and archives**: managed DEFLATE, zlib and gzip compression and decompression that works
+  anywhere with no size cap, a ZIP archive reader that lists a bundle's members and decompresses them on
+  demand with a CRC-32 check, and a ZIP writer that gathers files into one archive - for reading and
+  writing compressed assets, a download, or a pack of files shipped as one.
 - **Text and web glue**: format the strings an application shows — a file size, a duration, a
   filename-friendly sort, aligned columns, a hex dump — fuzzy-match a pattern to filter and rank a list
   the way a type-to-find box does, and encode, decode, build and parse URL query strings and form bodies

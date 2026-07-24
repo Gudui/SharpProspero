@@ -296,6 +296,19 @@ public static class SelfContainer
             size = Math.Max(size, (long)(pOffset + pFilesz));
         }
 
+        // A program header can reserve file space no data segment carries - a non-loaded note in the
+        // tail. Its bytes are not stored, but the reconstructed file must still reach that extent so a
+        // digest taken over the whole image round-trips; the zero-initialized output supplies the fill.
+        for (int i = 0; i < phnum; i++)
+        {
+            int ph = ElfHeaderSize + i * ElfPhdrSize;
+            ulong pOffset = BinaryPrimitives.ReadUInt64LittleEndian(image.Elf.AsSpan(ph + 0x08));
+            ulong pFilesz = BinaryPrimitives.ReadUInt64LittleEndian(image.Elf.AsSpan(ph + 0x20));
+            if (pOffset > int.MaxValue || pFilesz > (ulong)int.MaxValue - pOffset)
+                continue;
+            size = Math.Max(size, (long)(pOffset + pFilesz));
+        }
+
         var output = new byte[size];
         foreach (SelfSegment seg in image.Segments)
         {

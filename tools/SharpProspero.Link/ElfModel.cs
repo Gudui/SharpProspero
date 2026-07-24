@@ -45,6 +45,23 @@ public static class RelType
     public const uint TpOff64 = 18;
     public const uint TpOff32 = 23;
 
+    /// <summary>General-dynamic thread-local access: a <c>lea</c>/<c>call __tls_get_addr</c> pair the
+    /// compiler emits by default. In a self-contained executable the symbol is in the one module, so this
+    /// relaxes to a direct local-exec load at link time and the paired call is dropped.</summary>
+    public const uint TlsGd = 19;
+
+    /// <summary>Local-dynamic thread-local base: a <c>lea</c>/<c>call __tls_get_addr</c> pair that finds the
+    /// module's block once, with each member reached by a <see cref="DtpOff32"/>/<see cref="DtpOff64"/>
+    /// offset. In an executable it relaxes to a thread-pointer read and the offsets become local-exec.</summary>
+    public const uint TlsLd = 20;
+
+    /// <summary>Offset of a thread-local from its module block, paired with a local-dynamic base. In an
+    /// executable it resolves to the same value as the local-exec offset from the thread pointer.</summary>
+    public const uint DtpOff32 = 21;
+
+    /// <summary>The 64-bit form of <see cref="DtpOff32"/>.</summary>
+    public const uint DtpOff64 = 17;
+
     /// <summary>Initial-exec thread-local load through the GOT: the slot holds the symbol's thread-pointer
     /// offset. In a self-contained executable that offset is known at link time.</summary>
     public const uint GotTpOff = 22;

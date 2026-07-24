@@ -316,13 +316,54 @@ public static class PayloadWriter
                 if (!sec.IsAlloc) continue;
                 byte[] bytes = sec.IsNoBits ? new byte[sec.Size] : (byte[])sec.Data.Clone();
                 ulong secAddr = sectionAddr(obj, idx);
+
+                // A dynamic thread-local sequence is a lea and a call __tls_get_addr; relaxing the lea
+                // folds the call away. The call sits eight bytes past a general-dynamic lea's relocation
+                // and five past a local-dynamic one.
+                HashSet<ulong>? foldedTlsCall = null;
+                foreach (ElfRelocation probe in kv.Value)
+                {
+                    if (probe.Type == RelType.TlsGd) (foldedTlsCall ??= []).Add(probe.Offset + 8);
+                    else if (probe.Type == RelType.TlsLd) (foldedTlsCall ??= []).Add(probe.Offset + 5);
+                }
+
                 foreach (ElfRelocation r in kv.Value)
                 {
                     if (r.SymbolIndex >= (uint)obj.Symbols.Count) continue;
                     ElfSymbol sym = obj.Symbols[(int)r.SymbolIndex];
                     ulong place = secAddr + r.Offset;
                     int at = (int)r.Offset;
-                    int width = r.Type is RelType.R64 or RelType.TpOff64 or RelType.Pc64 ? 8 : 4;
+
+                    if (foldedTlsCall is not null && foldedTlsCall.Contains(r.Offset))
+                        continue; // the __tls_get_addr call, folded into the local-exec load below
+
+                    if (r.Type == RelType.TlsGd)
+                    {
+                        // The payload is self-contained, so a general-dynamic load relaxes to local-exec:
+                        // read the thread pointer and add the symbol's fixed offset, leaving it in rax.
+                        if (at - 4 < 0 || at + 12 > bytes.Length)
+                            throw new ElfLinkException($"{obj.Origin}: a thread-local sequence on '{sym.Name}' runs past the section.");
+                        if (!TryTlsTemplateOffset(resolution, tlsOffset, obj, sym, out ulong gdTemplateOff))
+                            throw new ElfLinkException($"Thread-local symbol '{sym.Name}' has no template section in the payload.");
+                        long le = (long)gdTemplateOff - (long)tlsAlignedMem;
+                        ReadOnlySpan<byte> localExec = [0x64, 0x48, 0x8B, 0x04, 0x25, 0x00, 0x00, 0x00, 0x00, 0x48, 0x8D, 0x80];
+                        localExec.CopyTo(bytes.AsSpan(at - 4)); // mov %fs:0,%rax ; lea ...(%rax),%rax
+                        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(at + 8), checked((int)le));
+                        continue;
+                    }
+
+                    if (r.Type == RelType.TlsLd)
+                    {
+                        // The module base becomes the thread pointer; the members (its DTPOFF relocations)
+                        // become local-exec offsets. The nop prefixes keep the replacement the same size.
+                        if (at - 3 < 0 || at + 9 > bytes.Length)
+                            throw new ElfLinkException($"{obj.Origin}: a thread-local base sequence on '{sym.Name}' runs past the section.");
+                        ReadOnlySpan<byte> threadPointer = [0x66, 0x66, 0x66, 0x64, 0x48, 0x8B, 0x04, 0x25, 0x00, 0x00, 0x00, 0x00];
+                        threadPointer.CopyTo(bytes.AsSpan(at - 3)); // (nop) mov %fs:0,%rax
+                        continue;
+                    }
+
+                    int width = r.Type is RelType.R64 or RelType.TpOff64 or RelType.Pc64 or RelType.DtpOff64 ? 8 : 4;
                     if (at < 0 || at + width > bytes.Length) continue;
 
                     if (r.Type == RelType.GotTpOff)
@@ -333,14 +374,15 @@ public static class PayloadWriter
                         BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(at), (uint)(long)(tslot + (ulong)r.Addend - place));
                         continue;
                     }
-                    if (r.Type is RelType.TpOff32 or RelType.TpOff64)
+                    if (r.Type is RelType.TpOff32 or RelType.TpOff64 or RelType.DtpOff32 or RelType.DtpOff64)
                     {
                         // Local-exec: the value is the symbol's template offset minus the aligned template
-                        // size, since the block sits below the thread pointer on this target.
+                        // size, since the block sits below the thread pointer on this target. A module-block
+                        // offset (DTPOFF, once its base is relaxed to the thread pointer) is the same value.
                         if (!TryTlsTemplateOffset(resolution, tlsOffset, obj, sym, out ulong templateOff))
                             throw new ElfLinkException($"Thread-local symbol '{sym.Name}' has no template section in the payload.");
                         long tp = (long)templateOff - (long)tlsAlignedMem + r.Addend;
-                        if (r.Type == RelType.TpOff64) BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(at), (ulong)tp);
+                        if (r.Type is RelType.TpOff64 or RelType.DtpOff64) BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(at), (ulong)tp);
                         else BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(at), unchecked((uint)(int)tp));
                         continue;
                     }

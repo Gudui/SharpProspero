@@ -115,24 +115,84 @@ public sealed class DynamicWriterTests
 
         Assert.Equal(0x464C457Fu, BinaryPrimitives.ReadUInt32LittleEndian(file));
         Assert.Equal(0xFE10, BinaryPrimitives.ReadUInt16LittleEndian(file.AsSpan(0x10)));
-        Assert.Equal(6, BinaryPrimitives.ReadUInt16LittleEndian(file.AsSpan(0x38)));
+        // Three loads + dynamic + procparam + build-id note + reserved note.
+        int phnum = BinaryPrimitives.ReadUInt16LittleEndian(file.AsSpan(0x38));
+        Assert.Equal(7, phnum);
 
-        // Find PT_DYNAMIC (type 2) among the program headers.
+        // Find PT_DYNAMIC (type 2) among the program headers, and count the two PT_NOTE segments.
         bool hasDynamic = false, hasProcParam = false;
+        int noteCount = 0;
         int ph = 0x40;
-        for (int i = 0; i < 6; i++, ph += 0x38)
+        for (int i = 0; i < phnum; i++, ph += 0x38)
         {
             uint t = BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan(ph));
             if (t == 2) hasDynamic = true;
             if (t == 0x61000001) hasProcParam = true;
+            if (t == 4) noteCount++;
         }
         Assert.True(hasDynamic, "Expected a PT_DYNAMIC segment.");
         Assert.True(hasProcParam, "Expected a PT_SCE_PROCPARAM segment.");
+        Assert.Equal(2, noteCount);
 
         // The needed module name appears in the file (in the dynamic string table).
         Assert.Contains("libkernel.prx", Encoding.ASCII.GetString(file));
         // The "ORBI" process-parameter magic is present.
         Assert.Contains("ORBI", Encoding.ASCII.GetString(file));
+    }
+
+    [Fact]
+    public void Write_ProcParam_CarriesTheProsperoSdkVersion()
+    {
+        byte[] file = DynamicWriter.Write(BuildResolution(), "main");
+
+        // Locate the PT_SCE_PROCPARAM segment and read the two version words.
+        int ph = 0x40, phnum = BinaryPrimitives.ReadUInt16LittleEndian(file.AsSpan(0x38));
+        ulong ppOff = 0, ppSz = 0;
+        for (int i = 0; i < phnum; i++, ph += 0x38)
+            if (BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan(ph)) == 0x61000001)
+            {
+                ppOff = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 8));
+                ppSz = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 32));
+            }
+
+        Assert.Equal(0x60u, (uint)ppSz);
+        Assert.Equal("ORBI", Encoding.ASCII.GetString(file, (int)ppOff + 8, 4));
+        // The legacy compatibility word, then the meaningful Prospero SDK version the module targets.
+        Assert.Equal(0x08050001u, BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan((int)ppOff + 0x10)));
+        Assert.Equal(0x02000026u, BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan((int)ppOff + 0x14)));
+    }
+
+    [Fact]
+    public void Write_EmitsALoadedBuildIdNoteAndAReservedNote()
+    {
+        byte[] file = DynamicWriter.Write(BuildResolution(), "main");
+
+        int ph = 0x40, phnum = BinaryPrimitives.ReadUInt16LittleEndian(file.AsSpan(0x38));
+        bool loadedNote = false, reservedNote = false;
+        for (int i = 0; i < phnum; i++, ph += 0x38)
+        {
+            if (BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan(ph)) != 4) continue; // PT_NOTE
+            ulong off = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 8));
+            ulong va = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 16));
+            ulong filesz = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 32));
+            ulong memsz = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 40));
+            if (va != 0 && memsz == filesz && filesz == 0x24)
+            {
+                loadedNote = true;                                           // the loaded GNU build-id note
+                Assert.Equal("GNU", Encoding.ASCII.GetString(file, (int)off + 12, 3));
+                // The 20-byte descriptor is a real content fingerprint, not a run of zeros.
+                bool anyNonZero = false;
+                for (int b = 0; b < 20; b++) anyNonZero |= file[(int)off + 16 + b] != 0;
+                Assert.True(anyNonZero, "Expected a non-zero build-id descriptor.");
+            }
+            if (va == 0 && memsz == 0 && filesz == 0x48)
+            {
+                reservedNote = true;                                         // the non-loaded reserved note
+                Assert.True(off + 0x48 <= (ulong)file.Length, "Reserved note must lie within the file.");
+            }
+        }
+        Assert.True(loadedNote, "Expected the loaded 0x24-byte GNU build-id note.");
+        Assert.True(reservedNote, "Expected the reserved 0x48-byte note in the file tail.");
     }
 
     // An object whose .text reaches an imported data symbol through the global-offset table.
@@ -309,6 +369,46 @@ public sealed class DynamicWriterTests
     }
 
     [Fact]
+    public void Write_GeneralDynamicTls_RelaxesToLocalExec()
+    {
+        // .text holds a general-dynamic sequence whose lea relocation is four bytes in, so the lea/call
+        // pair fills the 16-byte section. In a self-contained executable it must relax to a thread-pointer
+        // read plus the variable's fixed offset (tlsVar at template offset 4, aligned size 12, so -8).
+        var text = new ElfSection { Name = ".text", Type = ShType.ProgBits, Flags = ShFlags.Alloc | ShFlags.Execute, Address = 0, Size = 0x10, Link = 0, Info = 0, AddrAlign = 16, EntSize = 0, Data = new byte[0x10] };
+        var tdata = new ElfSection { Name = ".tdata", Type = ShType.ProgBits, Flags = ShFlags.Alloc | ShFlags.Write | ShFlags.Tls, Address = 0, Size = 8, Link = 0, Info = 0, AddrAlign = 4, EntSize = 0, Data = new byte[8] };
+        var tbss = new ElfSection { Name = ".tbss", Type = ShType.NoBits, Flags = ShFlags.Alloc | ShFlags.Write | ShFlags.Tls, Address = 0, Size = 4, Link = 0, Info = 0, AddrAlign = 4, EntSize = 0, Data = [] };
+        var nullSec = new ElfSection { Name = "", Type = ShType.Null, Flags = 0, Address = 0, Size = 0, Link = 0, Info = 0, AddrAlign = 0, EntSize = 0, Data = [] };
+        var main = new ElfSymbol { Name = "main", Info = (SymBind.Global << 4) | SymType.Func, Other = 0, SectionIndex = 1, Value = 0, Size = 0 };
+        var tlsVar = new ElfSymbol { Name = "tlsVar", Info = (SymBind.Global << 4) | SymType.Tls, Other = 0, SectionIndex = 2, Value = 4, Size = 0 };
+        var nullSym = new ElfSymbol { Name = "", Info = 0, Other = 0, SectionIndex = 0, Value = 0, Size = 0 };
+        var relocs = new List<ElfRelocation> { new(Offset: 4, SymbolIndex: 2, Type: RelType.TlsGd, Addend: -4) };
+        var obj = new ElfObject
+        {
+            Origin = "synthetic",
+            Sections = [nullSec, text, tdata, tbss],
+            Symbols = [nullSym, main, tlsVar],
+            Relocations = new Dictionary<int, IReadOnlyList<ElfRelocation>> { [1] = relocs },
+        };
+        var resolution = new LinkResolution { Included = [obj], Defined = new Dictionary<string, ElfObject> { ["main"] = obj, ["tlsVar"] = obj }, Imports = [], Unresolved = [] };
+        byte[] file = DynamicWriter.Write(resolution, "main");
+
+        ulong textOffset = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(0x40 + 8));
+        // mov %fs:0,%rax ; lea -8(%rax),%rax
+        byte[] expected = [0x64, 0x48, 0x8B, 0x04, 0x25, 0x00, 0x00, 0x00, 0x00, 0x48, 0x8D, 0x80, 0xF8, 0xFF, 0xFF, 0xFF];
+        Assert.Equal(expected, file[(int)textOffset..((int)textOffset + 16)]);
+    }
+
+    [Fact]
+    public void Write_DtpOffThreadLocal_ResolvesToTheLocalExecOffset()
+    {
+        // A module-block offset (paired with a relaxed local-dynamic base) resolves to the same value as a
+        // local-exec offset: tlsVar's template offset 4 minus the aligned template size 12, i.e. -8.
+        byte[] file = DynamicWriter.Write(BuildTlsResolution(RelType.DtpOff32), "main");
+        ulong textOffset = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(0x40 + 8));
+        Assert.Equal(0xFFFFFFF8u, BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan((int)textOffset)));
+    }
+
+    [Fact]
     public void Write_WithExceptionFrames_EmitsTheSearchIndex()
     {
         byte[] file = DynamicWriter.Write(BuildEhFrameResolution(GoodFrames), "main");
@@ -338,9 +438,9 @@ public sealed class DynamicWriterTests
         Assert.Equal(0xFE10, BinaryPrimitives.ReadUInt16LittleEndian(file.AsSpan(0x10)));
 
         // Locate the dynamic segment and confirm a DT_RELA (7) entry is present.
-        int ph = 0x40;
+        int ph = 0x40, phnum = BinaryPrimitives.ReadUInt16LittleEndian(file.AsSpan(0x38));
         ulong dynOff = 0, dynSz = 0;
-        for (int i = 0; i < 6; i++, ph += 0x38)
+        for (int i = 0; i < phnum; i++, ph += 0x38)
             if (BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan(ph)) == 2)
             {
                 dynOff = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 8));
@@ -581,11 +681,9 @@ public sealed class DynamicWriterTests
         Assert.Equal(unchecked((ulong)(-8L)), BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan((int)slotFile)));
     }
 
-    [Fact]
-    public void Write_WithInitArray_EmitsTheInitArrayTags()
+    // An object with a .init_array of one 8-byte function pointer, plus a "main".
+    private static LinkResolution InitArrayResolution()
     {
-        // An object with a .init_array of one 8-byte function pointer. The dynamic table must carry
-        // DT_INIT_ARRAY (25) and DT_INIT_ARRAYSZ (27) so the loader runs the constructor.
         var text = new ElfSection { Name = ".text", Type = ShType.ProgBits, Flags = ShFlags.Alloc | ShFlags.Execute, Address = 0, Size = 0x10, Link = 0, Info = 0, AddrAlign = 16, EntSize = 0, Data = new byte[0x10] };
         var initArray = new ElfSection { Name = ".init_array", Type = ShType.ProgBits, Flags = ShFlags.Alloc | ShFlags.Write, Address = 0, Size = 8, Link = 0, Info = 0, AddrAlign = 8, EntSize = 0, Data = new byte[8] };
         var nullSec = new ElfSection { Name = "", Type = ShType.Null, Flags = 0, Address = 0, Size = 0, Link = 0, Info = 0, AddrAlign = 0, EntSize = 0, Data = [] };
@@ -598,24 +696,61 @@ public sealed class DynamicWriterTests
             Symbols = [nullSym, main],
             Relocations = new Dictionary<int, IReadOnlyList<ElfRelocation>>(),
         };
-        var resolution = new LinkResolution { Included = [obj], Defined = new Dictionary<string, ElfObject> { ["main"] = obj }, Imports = [], Unresolved = [] };
-        byte[] file = DynamicWriter.Write(resolution, "main");
+        return new LinkResolution { Included = [obj], Defined = new Dictionary<string, ElfObject> { ["main"] = obj }, Imports = [], Unresolved = [] };
+    }
 
-        int ph = 0x40; ulong dynOff = 0, dynSz = 0;
+    private static (ulong Offset, ulong Size) FindDynamic(byte[] file)
+    {
+        int ph = 0x40;
         int phnum = BinaryPrimitives.ReadUInt16LittleEndian(file.AsSpan(0x38));
         for (int i = 0; i < phnum; i++, ph += 0x38)
             if (BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan(ph)) == 2)
-            { dynOff = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 8)); dynSz = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 40)); }
-        ulong initAddr = 0, initSize = 0;
+                return (BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 8)), BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 40)));
+        return (0, 0);
+    }
+
+    private static bool HasDynamicTag(byte[] file, long wantedTag)
+    {
+        (ulong dynOff, ulong dynSz) = FindDynamic(file);
         for (ulong d = dynOff; d + 16 <= dynOff + dynSz; d += 16)
-        {
-            long tag = BinaryPrimitives.ReadInt64LittleEndian(file.AsSpan((int)d));
-            ulong val = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan((int)d + 8));
-            if (tag == 25) initAddr = val;      // DT_INIT_ARRAY
-            if (tag == 27) initSize = val;      // DT_INIT_ARRAYSZ
-        }
-        Assert.NotEqual(0ul, initAddr);
-        Assert.Equal(8ul, initSize);
+            if (BinaryPrimitives.ReadInt64LittleEndian(file.AsSpan((int)d)) == wantedTag)
+                return true;
+        return false;
+    }
+
+    [Fact]
+    public void Write_Executable_RunsTheInitArrayFromTheEntryStub()
+    {
+        // The loader does not run an executable's init array, so the linker must. The entry points at a
+        // small constructor-running stub (not straight at main), and the init-array tag is left off.
+        byte[] file = DynamicWriter.Write(InitArrayResolution(), "main"); // Executable by default
+
+        Assert.False(HasDynamicTag(file, 25), "an executable must not advertise DT_INIT_ARRAY");
+        Assert.False(HasDynamicTag(file, 27), "an executable must not advertise DT_INIT_ARRAYSZ");
+
+        // The entry is the stub, whose bytes begin push rbx; push rbp; lea rbx,[rip+..]. main sits at the
+        // module base (address 0), so a stub entry is provably not main.
+        ulong entry = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(0x18));
+        Assert.NotEqual(0ul, entry);
+
+        // Map the entry back to a file offset through the executable segment (PT_LOAD, flags R+X).
+        int ph = 0x40, phnum = BinaryPrimitives.ReadUInt16LittleEndian(file.AsSpan(0x38));
+        ulong textOff = 0, textVaddr = 0;
+        for (int i = 0; i < phnum; i++, ph += 0x38)
+            if (BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan(ph)) == 1 && BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan(ph + 4)) == 5)
+            { textOff = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 8)); textVaddr = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 16)); }
+
+        int stub = (int)(textOff + (entry - textVaddr));
+        Assert.Equal(new byte[] { 0x53, 0x55, 0x48, 0x8D, 0x1D }, file[stub..(stub + 5)]);
+    }
+
+    [Fact]
+    public void Write_Library_KeepsTheInitArrayTagsForTheLoader()
+    {
+        // A shared library's constructors are run by the loader, so it still advertises the init array.
+        byte[] file = DynamicWriter.Write(InitArrayResolution(), "main", ModuleKind.Library);
+        Assert.True(HasDynamicTag(file, 25), "a library keeps DT_INIT_ARRAY");
+        Assert.True(HasDynamicTag(file, 27), "a library keeps DT_INIT_ARRAYSZ");
     }
 
     [Fact]
