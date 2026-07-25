@@ -104,6 +104,11 @@ internal static class Program
         if (args.Length > 0 && string.Equals(args[0], "elf", StringComparison.Ordinal))
             return RunElf(args);
 
+        // Checks that every module the application has to carry is in its module folder, and gathers
+        // the missing ones when a source folder is given.
+        if (args.Length > 0 && string.Equals(args[0], "modules", StringComparison.Ordinal))
+            return RunModules(args);
+
         // Converts between the unsigned (.elf/.prx) and signed (.self/.sprx) forms, and reports which
         // a file is.
         if (args.Length > 0 && string.Equals(args[0], "self", StringComparison.Ordinal))
@@ -767,6 +772,81 @@ internal static class Program
         }
     }
 
+    /// <summary>
+    /// Checks that every module the application has to carry travels with it, and copies in the ones
+    /// that are missing when a source folder is given. Returns a failure when one cannot be found, so
+    /// a build stops rather than producing a package that hangs a console at launch.
+    /// </summary>
+    private static int RunModules(string[] args)
+    {
+        string? module = GetOption(args, "--module");
+        string? folder = GetOption(args, "--folder");
+        string? source = GetOption(args, "--source");
+        if (string.IsNullOrEmpty(module) || !File.Exists(module))
+        {
+            Console.Error.WriteLine("Usage: modules --module <eboot.bin> --folder <sce_module folder> [--source <folder>]");
+            Console.Error.WriteLine("  Reports the modules the application has to carry, gathers any missing from --source,");
+            Console.Error.WriteLine("  and fails when one is neither present nor available.");
+            return 1;
+        }
+
+        IReadOnlyList<string> needed;
+        try
+        {
+            needed = PrxImage.Parse(ModuleFile.Read(module).Elf).NeededModules;
+        }
+        catch (Exception ex) when (ex is PrxFormatException or IOException)
+        {
+            Console.Error.WriteLine($"Could not read {Path.GetFileName(module)}: {ex.Message}");
+            return 1;
+        }
+
+        IReadOnlyList<string> required = BundledModules.Required(needed);
+        if (required.Count == 0)
+        {
+            Console.WriteLine("  No module has to travel with this application.");
+            return 0;
+        }
+
+        var missing = new List<string>();
+        foreach (string name in required)
+        {
+            string destination = Path.Combine(folder ?? ".", name);
+            if (File.Exists(destination))
+            {
+                Console.WriteLine($"  {name}: present");
+                continue;
+            }
+            string? candidate = string.IsNullOrEmpty(source) ? null : Path.Combine(source, name);
+            if (candidate is not null && File.Exists(candidate))
+            {
+                Directory.CreateDirectory(folder ?? ".");
+                File.Copy(candidate, destination, overwrite: true);
+                Console.WriteLine($"  {name}: gathered");
+                continue;
+            }
+            Console.WriteLine($"  {name}: MISSING");
+            missing.Add(name);
+        }
+
+        if (missing.Count == 0)
+            return 0;
+
+        Console.Error.WriteLine();
+        Console.Error.WriteLine($"This application names {missing.Count} module(s) that it has to carry with it, and they are not present:");
+        foreach (string name in missing)
+            Console.Error.WriteLine($"  {name}");
+        Console.Error.WriteLine();
+        Console.Error.WriteLine("The system does not publish these; an application supplies its own copy. One that names a");
+        Console.Error.WriteLine("module it does not carry installs cleanly and then hangs the console when launched, with");
+        Console.Error.WriteLine("nothing written to the log, because the loader is resolving it before any of the");
+        Console.Error.WriteLine("application's code runs.");
+        Console.Error.WriteLine();
+        Console.Error.WriteLine("Put a copy in the project's sce_module folder, or point ProsperoModuleFolder (or the");
+        Console.Error.WriteLine("PROSPERO_MODULES environment variable) at a folder that has one.");
+        return 2;
+    }
+
     private static int RunElf(string[] args)
     {
         string? file = GetOption(args, "--file");
@@ -1024,7 +1104,14 @@ internal static class Program
                     ElfInfo info = ElfInfo.Parse(SelfContainer.ExtractElf(data));
                     Console.WriteLine($"ELF type:  {info.TypeName}");
                     SelfIntegrity integrity = SelfContainer.CheckIntegrity(data);
-                    Console.WriteLine($"Integrity: {(!integrity.HasDigest ? "no stored digest" : integrity.Matches ? "ok (digest matches the embedded ELF)" : "MISMATCH (the stored digest does not match)")}");
+                    // The digest covers the ELF that was wrapped, but a container stores only the
+                    // segments it selects, so unwrapping is lossy for any module carrying content
+                    // outside them. Recomputing then differs from the stored value even though the
+                    // container is intact, which is the case for most modules - so a difference is
+                    // reported as inconclusive rather than as damage.
+                    Console.WriteLine($"Integrity: {(!integrity.HasDigest ? "no stored digest"
+                        : integrity.Matches ? "ok (digest matches the embedded ELF)"
+                        : "not reproducible (the module carries content outside the stored segments, so unwrapping cannot recover the exact ELF that was wrapped)")}");
                 }
                 catch (PrxFormatException) { }
                 return 0;
@@ -1666,6 +1753,11 @@ internal static class Program
                 Console.WriteLine("Usage: elf --file <module> [--exports]    Prints an ELF module's header (and its exports).");
                 Console.WriteLine("       elf --file <module> --sizes | --symbols | --strings [--min N] | --strip --out <file>");
                 Console.WriteLine("  Reports the loadable size, the dynamic symbols, the printable strings, or writes a smaller stripped module.");
+                break;
+            case "modules":
+                Console.WriteLine("Usage: modules --module <eboot.bin> --folder <sce_module folder> [--source <folder>]");
+                Console.WriteLine("  Checks that every module the application has to carry travels with it, gathers any");
+                Console.WriteLine("  missing from --source, and fails when one is neither present nor available.");
                 break;
             case "shader":
                 Console.WriteLine("Usage: shader --file <shader.sb> [--registers]");

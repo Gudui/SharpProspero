@@ -6,6 +6,7 @@ using SharpProspero.Prx;
 using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using Xunit;
 
@@ -162,7 +163,7 @@ public sealed class SelfContainerTests
         byte[] signed = SelfContainer.Sign(BuildModule());
 
         // The header values a module must carry to be read by the loader at launch.
-        Assert.Equal(0xEEF51454u, BinaryPrimitives.ReadUInt32LittleEndian(signed));
+        Assert.Equal(0x1D3D154Fu, BinaryPrimitives.ReadUInt32LittleEndian(signed));
         Assert.Equal(0, signed[0x04]);                                             // version
         Assert.Equal(1, signed[0x05]);                                             // mode
         Assert.Equal(1, signed[0x06]);                                             // endian
@@ -176,7 +177,7 @@ public sealed class SelfContainerTests
         int segCount = BinaryPrimitives.ReadUInt16LittleEndian(signed.AsSpan(0x18));
         int headerSize = BinaryPrimitives.ReadUInt16LittleEndian(signed.AsSpan(0x0C));
         int metaSize = BinaryPrimitives.ReadUInt16LittleEndian(signed.AsSpan(0x0E));
-        Assert.Equal(0x110 + (segCount + 8) * 0x40, metaSize);
+        Assert.Equal(segCount * MetaBlock + MetaFooter + Signature, metaSize);
 
         // Content comes in pairs: a digest segment then the data segment it covers.
         Assert.Equal(0, segCount % 2);
@@ -498,5 +499,130 @@ public sealed class SelfContainerTests
         Assert.Equal(image.FileSize, (ulong)signed.Length);
         Assert.True(SelfContainer.CheckIntegrity(signed).Matches);
         Assert.Equal(module, SelfContainer.ExtractElf(signed)[..module.Length]);
+    }
+
+    // Some of the modules an application imports from are not published by the system: the application
+    // carries its own copy. One that names such a module without shipping it passes every structural
+    // check, installs, and then hangs the console at launch with nothing written to the log, because
+    // the loader resolves it before any of the application's code runs. These lock the list and the
+    // check that keeps such a package from being produced.
+
+    [Fact]
+    public void BundledModules_IdentifiesTheModulesAnApplicationHasToCarry()
+    {
+        Assert.True(BundledModules.IsBundled("libc.prx"));
+        Assert.True(BundledModules.IsBundled("libSceNpCppWebApi.prx"));
+        Assert.True(BundledModules.IsBundled("LIBC.PRX"));           // the folder is not case sensitive
+        Assert.False(BundledModules.IsBundled("libkernel.prx"));     // published by the system
+        Assert.False(BundledModules.IsBundled("libSceAgc.prx"));
+        Assert.False(BundledModules.IsBundled(""));
+    }
+
+    [Fact]
+    public void BundledModules_SelectsOnlyWhatTheApplicationNames()
+    {
+        string[] needed = ["libkernel.prx", "libc.prx", "libSceAgc.prx", "libScePfs.prx"];
+        Assert.Equal(["libc.prx", "libScePfs.prx"], BundledModules.Required(needed));
+
+        // Nothing to carry is a normal outcome, not an error.
+        Assert.Empty(BundledModules.Required(["libkernel.prx"]));
+
+        // A module named twice is reported once.
+        Assert.Equal(["libc.prx"], BundledModules.Required(["libc.prx", "libc.prx"]));
+    }
+
+    [Fact]
+    public void BundledModules_CoversEveryNameExactlyOnce()
+    {
+        Assert.Equal(BundledModules.All.Count, BundledModules.All.Distinct(StringComparer.OrdinalIgnoreCase).Count());
+        foreach (string name in BundledModules.All)
+        {
+            Assert.EndsWith(".prx", name, StringComparison.Ordinal);
+            Assert.True(BundledModules.IsBundled(name));
+        }
+    }
+
+    // The metadata region's size and the position of its footer both follow the segment count. A
+    // constant fitted to one particular count is right for that count and wrong for every other, and a
+    // container whose metadata region is the wrong size is refused while the module is being loaded -
+    // before any of its code runs, with nothing written to the log. These exercise several counts so a
+    // count-dependent formula cannot be replaced by a constant again.
+
+    private const int MetaBlock = 0x50, MetaFooter = 0x50, Signature = 0x100;
+
+    // An ELF with the requested number of loadable segments, each carrying content.
+    private static byte[] BuildModuleWithLoadCount(int loadCount, int contentSize = 0x40)
+    {
+        int phTable = 0x40 + loadCount * 0x38;
+        var elf = new byte[phTable + loadCount * contentSize];
+        elf[0] = 0x7F; elf[1] = (byte)'E'; elf[2] = (byte)'L'; elf[3] = (byte)'F';
+        elf[4] = 2; elf[5] = 1; elf[6] = 1; elf[7] = 9; elf[8] = 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(elf.AsSpan(0x10), 0xFE10);
+        BinaryPrimitives.WriteUInt16LittleEndian(elf.AsSpan(0x12), 0x3E);
+        BinaryPrimitives.WriteUInt64LittleEndian(elf.AsSpan(0x20), 0x40);
+        BinaryPrimitives.WriteUInt16LittleEndian(elf.AsSpan(0x34), 0x40);
+        BinaryPrimitives.WriteUInt16LittleEndian(elf.AsSpan(0x36), 0x38);
+        BinaryPrimitives.WriteUInt16LittleEndian(elf.AsSpan(0x38), (ushort)loadCount);
+        for (int i = 0; i < loadCount; i++)
+        {
+            int ph = 0x40 + i * 0x38, content = phTable + i * contentSize;
+            BinaryPrimitives.WriteUInt32LittleEndian(elf.AsSpan(ph), 1);       // PT_LOAD
+            BinaryPrimitives.WriteUInt32LittleEndian(elf.AsSpan(ph + 4), 4);
+            BinaryPrimitives.WriteUInt64LittleEndian(elf.AsSpan(ph + 8), (ulong)content);
+            BinaryPrimitives.WriteUInt64LittleEndian(elf.AsSpan(ph + 0x20), (ulong)contentSize);
+            BinaryPrimitives.WriteUInt64LittleEndian(elf.AsSpan(ph + 0x28), (ulong)contentSize);
+        }
+        return elf;
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(4)]
+    [InlineData(5)]
+    [InlineData(6)]
+    [InlineData(9)]
+    public void Sign_SizesTheMetadataRegionFromTheSegmentCount(int loadCount)
+    {
+        byte[] signed = SelfContainer.Sign(BuildModuleWithLoadCount(loadCount));
+        SelfImage image = SelfContainer.Parse(signed);
+
+        int segments = loadCount * 2;                       // a digest and a data entry per segment
+        Assert.Equal(segments, image.Segments.Count);
+        Assert.Equal(segments * MetaBlock + MetaFooter + Signature, image.MetaSize);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(3)]
+    [InlineData(6)]
+    public void Sign_PutsTheMetadataFooterAfterThePerSegmentBlocks(int loadCount)
+    {
+        byte[] signed = SelfContainer.Sign(BuildModuleWithLoadCount(loadCount));
+        SelfImage image = SelfContainer.Parse(signed);
+
+        // The marker sits 0x30 into the footer, and the footer follows one block per segment.
+        int marker = image.HeaderSize + image.Segments.Count * MetaBlock + 0x30;
+        Assert.Equal(0x00010000u, BinaryPrimitives.ReadUInt32LittleEndian(signed.AsSpan(marker)));
+
+        // Nothing else in the metadata region is written.
+        for (int i = image.HeaderSize; i < image.HeaderSize + image.MetaSize; i += 4)
+        {
+            if (i == marker) continue;
+            Assert.Equal(0u, BinaryPrimitives.ReadUInt32LittleEndian(signed.AsSpan(i)));
+        }
+    }
+
+    [Fact]
+    public void Sign_KeepsTheDataAfterTheHeaderAndMetadataAtEverySegmentCount()
+    {
+        foreach (int loadCount in (int[])[1, 2, 3, 7])
+        {
+            byte[] signed = SelfContainer.Sign(BuildModuleWithLoadCount(loadCount));
+            SelfImage image = SelfContainer.Parse(signed);
+            Assert.Equal((ulong)(image.HeaderSize + image.MetaSize), image.Segments[0].FileOffset);
+            Assert.Equal(image.FileSize, (ulong)signed.Length);
+            Assert.True(SelfContainer.CheckIntegrity(signed).Matches);
+        }
     }
 }

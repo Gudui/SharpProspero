@@ -116,6 +116,25 @@ The rest of what the loader insists on, in one list:
   and both sizes. The linker emits no relro header at all, which sidesteps the check; anything
   producing one has to satisfy the match.
 
+### The dynamic table
+
+Reading the dynamic table is the last thing the loader does before binding the module, and it is as
+strict as the segment checks:
+
+- **Twelve ordinary tags are mandatory whatever their value**: the hash, the string table and its
+  size, the symbol table and its entry size, the relocations with their size and entry size, and the
+  linkage table with its size, type and relocations. The relocation trio is the one that catches
+  people out — a module with nothing to relocate still has to name an empty table rather than leave
+  the tags out.
+- Two size tags a module carries for itself, covering the hash and the symbol table, are also
+  required, and a library additionally has to record its own file name and module information.
+- **The module-specific aliases for the symbol, string and relocation tables must not appear.** They
+  name data the ordinary tags already name; the loader routes both to the same handler, reads the
+  alias as a duplicate, and refuses the module.
+- Anything the tables point at resolves inside the linking segment, and both relocation sizes are
+  whole multiples of the entry size.
+- Only the RELA relocation form is accepted; the older REL form is refused outright.
+
 You do not configure any of this — the linker always produces this shape. It is documented because
 it is what the loader checks, so it is what a hand-built or externally produced module has to match
 to launch. Confirm a module's shape with the inspector:
@@ -124,7 +143,40 @@ to launch. Confirm a module's shape with the inspector:
 sharpprospero-bindgen elf --file eboot.bin
 ```
 
-## Step 3: wrap the module
+## Step 3: gather the modules the application carries
+
+Most modules an application imports from are published by the system: the application names one and
+the loader finds it. A small set is different — the application carries its own copy in `sce_module`,
+and the system publishes nothing to bind against.
+
+**This is the failure mode with no symptom.** An application that names one of these and does not
+carry it passes every structural check, installs cleanly, and then hangs the console when launched.
+There is no error and nothing in the log, because the loader resolves the module before any of the
+application's code runs. Recovering needs a power cycle.
+
+The build therefore checks it and refuses to produce a package otherwise:
+
+```
+== Modules ==
+  libc.prx: present
+```
+
+Put a copy in the project's `sce_module` folder and it is used as-is. To have the build fetch them
+instead, point `ProsperoModuleFolder` (or the `PROSPERO_MODULES` environment variable) at a folder
+holding them, and the line reads `gathered` rather than `present`. If a required module is neither
+present nor available the build stops with the list, rather than handing you a package that wedges a
+console.
+
+Check a built module yourself at any time:
+
+```
+sharpprospero-bindgen modules --module eboot.bin --folder sce_module
+```
+
+A module the application carries also raises the system version the application requires, which the
+next step settles.
+
+## Step 4: wrap the module
 
 The linker's output is a plain ELF, and **a plain ELF does not launch** — the loader authenticates a
 module's container header before running any of its code, so an unwrapped `eboot.bin` is turned away
@@ -136,8 +188,9 @@ the system version and before either output is written:
 Wrote .../module/eboot.bin (1090320 bytes, signed container).
 ```
 
-Only the module built here is wrapped. Anything the project ships in `sce_module/` already arrives
-wrapped, and the step leaves an already-wrapped file untouched, so re-running a build is safe. The
+Every module is wrapped, the one built here and the ones the application carries: a copy taken from
+a module folder is an unwrapped ELF and is turned away exactly as an unwrapped `eboot.bin` is. The
+step leaves an already-wrapped file untouched, so re-running a build is safe. The
 packager reports the result as part of its launch-readiness summary:
 
 ```
@@ -148,7 +201,7 @@ Launch readiness: ready
 If that line reads *a plain ELF*, the module was not wrapped and the application will not start.
 [Unsigned and signed](signed-and-unsigned.md) covers the forms in full.
 
-## Step 4: output
+## Step 5: output
 
 The build gathers `eboot.bin` next to the `sce_sys` metadata and any `sce_module` libraries, then
 writes one of two outputs. `build-app.ps1` picks with `-Output`:

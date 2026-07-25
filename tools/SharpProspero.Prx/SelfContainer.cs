@@ -110,7 +110,7 @@ public sealed class SelfSignOptions
 /// <remarks>
 /// Layout, little-endian scalars:
 /// <list type="bullet">
-/// <item>Header, 0x20 bytes: magic <c>0xEEF51454</c>, version, mode, endian and attribute bytes,
+/// <item>Header, 0x20 bytes: magic (<c>0x1D3D154F</c> or <c>0xEEF51454</c>), version, mode, endian and attribute bytes,
 /// program type, header size, metadata size, file size, segment count, flags.</item>
 /// <item>Segment table at 0x20, one 0x20-byte entry per segment: flags, file offset, file size,
 /// memory size. Content comes in pairs, a zero-filled digest segment then the data segment; the
@@ -123,14 +123,33 @@ public sealed class SelfSignOptions
 /// </remarks>
 public static class SelfContainer
 {
-    /// <summary>Container header magic at file offset 0x00.</summary>
-    public const uint Magic = 0xEEF51454;
+    /// <summary>
+    /// The container header magic this type writes, at file offset 0x00. Two magics are in use and
+    /// the loader recognises both, treating them the same; modules carrying either one run. They are
+    /// not interchangeable in isolation, because each goes with a different signature-area size in the
+    /// metadata region. This is the pairing carried by the modules the toolchain is matched against.
+    /// </summary>
+    public const uint Magic = 0x1D3D154F;
+
+    /// <summary>The second valid container header magic, which pairs with a larger signature area.</summary>
+    public const uint AlternateMagic = 0xEEF51454;
 
     private const int ContainerHeaderSize = 0x20;
     private const int SegEntrySize = 0x20;
     private const int ExtInfoSize = 0x40;
     private const int ControlRegionSize = 0x30;
-    private const int MetaFooterBase = 0x110;
+    // The metadata region that follows the header: one block per segment, then a footer, then the
+    // signature area. Its size follows the segment count; a constant that happens to be right for one
+    // particular count is wrong for every other, and a module whose metadata region is the wrong size
+    // or whose footer sits at the wrong offset is refused while it is being loaded, before any of its
+    // code runs and without anything being written to the log.
+    private const int MetaBlockSize = 0x50;
+    private const int MetaFooterSize = 0x50;
+    private const int SignatureSize = 0x100;
+
+    /// <summary>The metadata region size for <paramref name="segmentCount"/> segment-table entries.</summary>
+    internal static int MetaSize(int segmentCount) =>
+        segmentCount * MetaBlockSize + MetaFooterSize + SignatureSize;
 
     // A data segment is stored in fixed-size blocks and its paired segment holds one digest slot per
     // block, so the pair's size follows from the data size rather than being fixed. The block size is
@@ -140,7 +159,8 @@ public static class SelfContainer
     // bits 12..15 (value 2, its log2 less 12) which the data flags below set for consistency.
     private const int SegmentBlockSize = 0x4000;
     private const int DigestSlotSize = 0x20;
-    private const int FooterMarkerOffset = 0x3F0;
+    // Where the marker sits inside the footer, which itself follows the per-segment blocks.
+    private const int FooterMarkerOffset = 0x30;
     private const uint DefaultProgramType = 0x00000101;
 
     private const int ElfHeaderSize = 0x40;
@@ -171,8 +191,13 @@ public static class SelfContainer
     private const uint PtComment = 0x6FFFFF00;
 
     /// <summary>Returns whether the buffer begins with a signed-container header.</summary>
-    public static bool IsSelf(ReadOnlySpan<byte> data) =>
-        data.Length >= ContainerHeaderSize && BinaryPrimitives.ReadUInt32LittleEndian(data) == Magic;
+    public static bool IsSelf(ReadOnlySpan<byte> data)
+    {
+        if (data.Length < ContainerHeaderSize)
+            return false;
+        uint magic = BinaryPrimitives.ReadUInt32LittleEndian(data);
+        return magic is Magic or AlternateMagic;
+    }
 
     /// <summary>Returns whether the buffer begins with an ELF header.</summary>
     public static bool IsElf(ReadOnlySpan<byte> data) =>
@@ -264,7 +289,8 @@ public static class SelfContainer
     public static bool Validate(ReadOnlySpan<byte> data, out string? error)
     {
         if (data.Length < ContainerHeaderSize) { error = "Buffer is smaller than the container header."; return false; }
-        if (BinaryPrimitives.ReadUInt32LittleEndian(data) != Magic) { error = "File is not a signed container."; return false; }
+        uint magic = BinaryPrimitives.ReadUInt32LittleEndian(data);
+        if (magic is not (Magic or AlternateMagic)) { error = "File is not a signed container."; return false; }
 
         int headerSize = BinaryPrimitives.ReadUInt16LittleEndian(data[0x0C..]);
         int segCount = BinaryPrimitives.ReadUInt16LittleEndian(data[0x18..]);
@@ -429,9 +455,7 @@ public static class SelfContainer
         int elfHdrLen = ElfHeaderSize + phnum * ElfPhdrSize;
         int extInfoStart = AlignUp(afterSeg + elfHdrLen, 0x10);
         int headerSize = extInfoStart + ExtInfoSize + ControlRegionSize;
-        // The metadata footer holds one 0x40-byte block per segment plus a fixed group of blocks that
-        // close it out. Both sizes are matched against containers a console accepts.
-        int metaSize = MetaFooterBase + (segCount + 8) * 0x40;
+        int metaSize = MetaSize(segCount);
         int dataStart = headerSize + metaSize;
 
         // The header stores headerSize and metaSize as u16 fields; an ELF with enough program headers
@@ -496,8 +520,9 @@ public static class SelfContainer
 
         BinaryPrimitives.WriteUInt64LittleEndian(span[(extInfoStart + ExtInfoSize)..], 3); // control block type
 
-        if (metaSize > FooterMarkerOffset + 4)
-            BinaryPrimitives.WriteUInt32LittleEndian(span[(headerSize + FooterMarkerOffset)..], 0x00010000);
+        // The footer follows the per-segment blocks, so its position moves with the segment count.
+        int footerStart = headerSize + segCount * MetaBlockSize;
+        BinaryPrimitives.WriteUInt32LittleEndian(span[(footerStart + FooterMarkerOffset)..], 0x00010000);
 
         for (int k = 0; k < selected.Count; k++)
             elf.AsSpan(selected[k].FileOffset, selected[k].FileSize).CopyTo(span[segOffsets[k * 2 + 1]..]);
@@ -516,7 +541,7 @@ public static class SelfContainer
             uint pType = BinaryPrimitives.ReadUInt32LittleEndian(elf.AsSpan(p));
             ulong off = BinaryPrimitives.ReadUInt64LittleEndian(elf.AsSpan(p + 0x08));
             ulong fsz = BinaryPrimitives.ReadUInt64LittleEndian(elf.AsSpan(p + 0x20));
-            if (fsz == 0 || !RangeInBounds(off, fsz, elf.Length))
+            if (!RangeInBounds(off, fsz, elf.Length))
                 continue;
             if (pType == PtLoad || pType == PtModuleData || pType == PtRelro || pType == PtComment)
                 result.Add(new SelectedSegment(i, (int)off, (int)fsz));
@@ -584,9 +609,9 @@ public static class SelfContainer
     private static int AlignUp(int value, int alignment) => (value + alignment - 1) & ~(alignment - 1);
 
     // The size of the digest segment that pairs with a data segment of dataSize bytes: one slot per
-    // stored block. Only a segment with content is ever paired, so the count is at least one.
+    // stored block, rounded up. A segment carrying nothing has no blocks and so no slots.
     private static int DigestSize(int dataSize) =>
-        Math.Max(1, (dataSize + SegmentBlockSize - 1) / SegmentBlockSize) * DigestSlotSize;
+        (dataSize + SegmentBlockSize - 1) / SegmentBlockSize * DigestSlotSize;
 
     // True when [offset, offset + size) lies within [0, length]; false for any value out of range or
     // that would wrap. Every offset and size read from a container or an ELF is bounded through this

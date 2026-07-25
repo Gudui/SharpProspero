@@ -33,15 +33,14 @@ public static class DynamicWriter
     private const int EntryStubSize = 44; // the constructor-running entry prepended to the executable's start
     private const int ReservedNoteLen = 0x48; // the non-loaded note area a linked module reserves in its file tail
     private const uint PtLoad = 1, PtDynamic = 2, PtNote = 4, PtTls = 7, PtSceProcParam = 0x61000001, PtGnuEhFrame = 0x6474E550;
+    private const uint PtGnuRelro = 0x6474E552, PtSceComment = 0x6FFFFF00, PtSceVersion = 0x6FFFFF01;
 
     private const long DtNeeded = 1, DtHash = 4, DtStrTab = 5, DtSymTab = 6, DtStrSz = 10, DtSymEnt = 11;
     private const long DtPltGot = 3, DtPltRelSz = 2, DtPltRel = 20, DtJmpRel = 23;
     private const long DtSceModuleInfo = 0x61000043, DtSceNeededModule = 0x61000045, DtSceImportLib = 0x61000049, DtSceImportLibAttr = 0x61000019;
     private const long DtSceOrigFilename = 0x61000041, DtSceExportLib = 0x61000047, DtSceExportLibAttr = 0x61000017;
     private const long DtSceModuleAttr = 0x61000011, DtSceSymTabSz = 0x6100003f, DtSceHashSz = 0x6100003d, DtNull = 0;
-    private const long DtSceStrTab = 0x61000035, DtSceStrSz = 0x61000037, DtSceSymTab = 0x61000039, DtSceSymEnt = 0x6100003b;
     private const long DtRela = 7, DtRelaSz = 8, DtRelaEnt = 9, DtRelaCount = 0x6ffffff9;
-    private const long DtSceRela = 0x6100002f, DtSceRelaSz = 0x61000031;
     private const long DtInitArray = 25, DtFiniArray = 26, DtInitArraySz = 27, DtFiniArraySz = 28;
     private const uint RJumpSlot = 7, RGlobDat = 6, RRelative = 8, RAbs64 = 1, RIRelative = 37;
     private const ushort ShnAbs = 0xFFF1; // an absolute symbol: its value is its address, not a section offset
@@ -315,23 +314,37 @@ public static class DynamicWriter
         byte[] gotBytes = new byte[24 + imports.Count * 8 + gotDataOrder.Count * 8];
         byte[] procParam = BuildProcParam();
         byte[] note = BuildNote();
+        string ownFileName = moduleFileName ?? (kind == ModuleKind.Library ? "prospero_module.prx" : "eboot.bin");
+        byte[] comment = BuildComment(ownFileName);
+        byte[] versionBlob = BuildVersion(ownFileName);
 
         // Assign segment base addresses and file offsets on the grid; the header occupies the first page.
+        // The code group ends after the procedure-linkage table, which is aligned past the code, so the
+        // group that follows starts from that end rather than from the unaligned sum. Starting from the
+        // sum can place the next group below the end of this one when the code length is not already
+        // aligned, which would overlap the two.
         ulong textAddr = 0;
-        ulong roAddr = Align(textAddr + Align(textLen, 1) + (ulong)pltBytes.Length, SegAlign);
+        ulong pltAddr = Align(textAddr + textLen, 16);
+        ulong textSegEndAddr = pltAddr + (ulong)pltBytes.Length;
+
         // Read-only group: rodata then the exception-frame index.
+        ulong roAddr = Align(textSegEndAddr, SegAlign);
         ulong ehFrameHdrAddr = Align(roAddr + roLen, 4);
         ulong roEndAddr = ehFrameHdrSize > 0 ? ehFrameHdrAddr + (ulong)ehFrameHdrSize : roAddr + roLen;
-
-        ulong pltAddr = Align(textAddr + textLen, 16);
-        // Writable group: data, the global-offset table, then the process parameters. The parameters
-        // close the group because a module places them at the tail of a writable load segment.
+        // First writable group: data and the global-offset table. A relocation-read-only header covers
+        // exactly this group, which is the shape every module carries.
         ulong dataAddr = Align(roEndAddr, SegAlign);
         ulong tlsAddr = dataAddr + tlsTemplateOffsetInData;
         ulong gotAddr = dataAddr + dataMem;
         ulong gotDataAddr = gotAddr + 24 + (ulong)imports.Count * 8;
-        ulong procAddr = Align(gotAddr + (ulong)gotBytes.Length, 8);
-        ulong dataEndAddr = procAddr + (ulong)procParam.Length;
+        ulong dataEndAddr = gotAddr + (ulong)gotBytes.Length;
+
+        // Second writable group, holding the process parameters. A module carries two writable load
+        // segments, the second reserving more memory than it stores; this one reserves a page and
+        // stores only the parameters, which keeps the parameters inside a writable segment as they
+        // have to be.
+        ulong procAddr = Align(dataEndAddr, SegAlign);
+        ulong procSegMem = SegAlign;
 
         // The dynamic-linking group holds every table the loader reads to bind the module: the symbol
         // and string tables, the hash, both relocation tables, the note, and the dynamic table itself.
@@ -339,7 +352,7 @@ public static class DynamicWriter
         // rather than image content. A module that names a dynamic table without also carrying this
         // segment is rejected while its program headers are scanned, before any of its code runs, so
         // the group is not an optional nicety - the module does not start without it.
-        ulong dynlibAddr = Align(dataEndAddr, SegAlign);
+        ulong dynlibAddr = procAddr + procSegMem;
         ulong dynsymAddr = dynlibAddr;
         ulong dynstrAddr = Align(dynsymAddr + (ulong)dynsymBytes.Length, 8);
         ulong hashAddr = Align(dynstrAddr + (ulong)dynstrBytes.Length, 8);
@@ -486,9 +499,9 @@ public static class DynamicWriter
         return WriteFile(resolution, kind, entry, sectionData, SectionAddr,
             text: (textAddr, textLen), pltAddr, pltBytes,
             roAddr, roLen, dynlibAddr, dynsymAddr, dynsymBytes, dynstrAddr, dynstrBytes, hashAddr, hashBytes,
-            relaAddr, relaBytes, relaDynAddr, relaDynBytes, procAddr, procParam, noteAddr, note,
+            relaAddr, relaBytes, relaDynAddr, relaDynBytes, procAddr, procSegMem, procParam, noteAddr, note,
             ehFrameHdrAddr, ehFrameHdr, hasTls, tlsAddr, tlsFileLen, tlsMemLen, tlsAlign,
-            dataAddr, dataLen, dataMem, gotAddr, gotBytes, dynamicAddr, dynamicBytes);
+            dataAddr, dataLen, dataMem, gotAddr, gotBytes, dynamicAddr, dynamicBytes, comment, versionBlob);
     }
 
     private static Dictionary<(ElfObject, int), byte[]> RelocateApp(
@@ -757,27 +770,34 @@ public static class DynamicWriter
         (ulong Addr, ulong Len) text, ulong pltAddr, byte[] plt,
         ulong roAddr, ulong roLen, ulong dynlibAddr, ulong dynsymAddr, byte[] dynsym, ulong dynstrAddr, byte[] dynstr,
         ulong hashAddr, byte[] hash, ulong relaAddr, byte[] rela, ulong relaDynAddr, byte[] relaDyn,
-        ulong procAddr, byte[] proc, ulong noteAddr, byte[] note, ulong ehFrameHdrAddr, byte[] ehFrameHdr,
+        ulong procAddr, ulong procSegMem, byte[] proc, ulong noteAddr, byte[] note, ulong ehFrameHdrAddr, byte[] ehFrameHdr,
         bool hasTls, ulong tlsAddr, ulong tlsFileLen, ulong tlsMemLen, ulong tlsAlign,
-        ulong dataAddr, ulong dataLen, ulong dataMem, ulong gotAddr, byte[] got, ulong dynamicAddr, byte[] dynamic)
+        ulong dataAddr, ulong dataLen, ulong dataMem, ulong gotAddr, byte[] got, ulong dynamicAddr, byte[] dynamic,
+        byte[] comment, byte[] versionBlob)
     {
-        // Four load segments: [text|plt] RX, [rodata|eh_frame] R, [data|got|procparam] RW, and the
-        // dynamic-linking tables in a segment with no protection.
+        // Five load segments: [code|plt] execute-only, [rodata|eh_frame] read, [data|got] read-write
+        // covered by a relro header, [procparam] read-write reserving a page, and the dynamic-linking
+        // tables in a segment with no protection. Each group starts a page past the end of the one
+        // before it in both address and file offset, so the two stay a fixed distance apart.
         ulong textFileOff = SegAlign;
         ulong textSegEnd = pltAddr + (ulong)plt.Length;
         ulong roFileOff = textFileOff + Align(textSegEnd, SegAlign);
         ulong roSegEnd = ehFrameHdr.Length > 0 ? ehFrameHdrAddr + (ulong)ehFrameHdr.Length : roAddr + roLen;
         ulong dataFileOff = roFileOff + Align(roSegEnd - roAddr, SegAlign);
-        ulong dataSegEnd = procAddr + (ulong)proc.Length;
-        ulong dynlibFileOff = dataFileOff + Align(dataSegEnd - dataAddr, SegAlign);
-        ulong dynlibSegEnd = dynamicAddr + (ulong)dynamic.Length;
+        ulong dataSegEnd = gotAddr + (ulong)got.Length;
+        ulong procFileOff = dataFileOff + Align(dataSegEnd - dataAddr, SegAlign);
+        ulong dynlibFileOff = procFileOff + procSegMem;
+        // The version record closes the linking segment rather than sitting past it. Only content that
+        // belongs to a stored segment survives the container round-trip, and a record left outside every
+        // segment would come back zero-filled, so the image would no longer match its own digest.
+        ulong versionAddr = Align(dynamicAddr + (ulong)dynamic.Length, 16);
+        ulong dynlibSegEnd = versionAddr + (ulong)versionBlob.Length;
 
-        ulong fileEnd = dynlibFileOff + (dynlibSegEnd - dynlibAddr);
-        // A second, non-loaded PT_NOTE reserves the platform note area a linked module carries
-        // (zero-filled in an unsigned image). It lives in the file tail, outside every PT_LOAD, and is
-        // the last content in the file, so the image ends exactly at the extent its program header
-        // records - which keeps the signed-container round-trip (sign then verify) byte-consistent.
-        ulong reservedNoteFileOff = Align(fileEnd, 16);
+        // The file tail, outside every load segment: the comment, which the container stores as a
+        // segment of its own, and then the reserved note. Both are 16-aligned and the image ends exactly
+        // at the extent the last program header records.
+        ulong commentFileOff = Align(dynlibFileOff + (dynlibSegEnd - dynlibAddr), 16);
+        ulong reservedNoteFileOff = Align(commentFileOff + (ulong)comment.Length, 16);
         byte[] file = new byte[reservedNoteFileOff + ReservedNoteLen];
 
         // ELF header.
@@ -790,11 +810,12 @@ public static class DynamicWriter
         BinaryPrimitives.WriteUInt64LittleEndian(file.AsSpan(0x20), 0x40);
         BinaryPrimitives.WriteUInt16LittleEndian(file.AsSpan(0x34), 0x40);
         BinaryPrimitives.WriteUInt16LittleEndian(file.AsSpan(0x36), 0x38);
-        // The text, writable and dynamic-linking load segments, the dynamic and process-parameter
-        // headers, the module note and the reserved note - seven. The read-only segment is added only
+        // The code, writable, parameter and dynamic-linking load segments, the relro header covering
+        // the writable group, the dynamic and process-parameter headers, the comment, the version
+        // record, the module note and the reserved note - eleven. The read-only segment is added only
         // when it carries something, and the frame index and thread-local template when present.
         bool hasRo = roSegEnd > roAddr;
-        int phnum = 7 + (hasRo ? 1 : 0) + (ehFrameHdr.Length > 0 ? 1 : 0) + (hasTls ? 1 : 0);
+        int phnum = 11 + (hasRo ? 1 : 0) + (ehFrameHdr.Length > 0 ? 1 : 0) + (hasTls ? 1 : 0);
         BinaryPrimitives.WriteUInt16LittleEndian(file.AsSpan(0x38), (ushort)phnum);
 
         // Program headers.
@@ -817,19 +838,29 @@ public static class DynamicWriter
         WritePh(PtLoad, PfX, textFileOff, text.Addr, textSegEnd - text.Addr, textSegEnd - text.Addr, SegAlign);
         if (hasRo)
             WritePh(PtLoad, PfR, roFileOff, roAddr, roSegEnd - roAddr, roSegEnd - roAddr, SegAlign);
-        WritePh(PtLoad, PfR | PfW, dataFileOff, dataAddr, dataSegEnd - dataAddr, dataSegEnd - dataAddr, SegAlign);
+        ulong dataSegLen = dataSegEnd - dataAddr;
+        WritePh(PtLoad, PfR | PfW, dataFileOff, dataAddr, dataSegLen, dataSegLen, SegAlign);
+        // A relro header is only accepted when a writable load segment matches it on offset, address
+        // and both sizes, so it is written to cover the writable group exactly.
+        WritePh(PtGnuRelro, PfR, dataFileOff, dataAddr, dataSegLen, dataSegLen, 1);
+        // The second writable segment reserves more memory than it stores; the process parameters are
+        // the only thing it carries in the file.
+        WritePh(PtLoad, PfR | PfW, procFileOff, procAddr, (ulong)proc.Length, procSegMem, SegAlign);
+        WritePh(PtSceProcParam, PfR, procFileOff, procAddr, (ulong)proc.Length, (ulong)proc.Length, 8);
+        WritePh(PtDynamic, PfR | PfW, dynlibFileOff + (dynamicAddr - dynlibAddr), dynamicAddr, (ulong)dynamic.Length, (ulong)dynamic.Length, 8);
+        if (hasTls)
+            WritePh(PtTls, PfR, dataFileOff + (tlsAddr - dataAddr), tlsAddr, tlsFileLen, tlsMemLen, tlsAlign);
+        if (ehFrameHdr.Length > 0)
+            WritePh(PtGnuEhFrame, PfR, roFileOff + (ehFrameHdrAddr - roAddr), ehFrameHdrAddr, (ulong)ehFrameHdr.Length, (ulong)ehFrameHdr.Length, 4);
         // The dynamic-linking segment requests no protection: the loader reads it to bind the module
         // rather than mapping it into the running image.
         WritePh(PtLoad, 0, dynlibFileOff, dynlibAddr, dynlibSegEnd - dynlibAddr, dynlibSegEnd - dynlibAddr, SegAlign);
-        WritePh(PtDynamic, PfR | PfW, dynlibFileOff + (dynamicAddr - dynlibAddr), dynamicAddr, (ulong)dynamic.Length, (ulong)dynamic.Length, 8);
-        WritePh(PtSceProcParam, PfR, dataFileOff + (procAddr - dataAddr), procAddr, (ulong)proc.Length, (ulong)proc.Length, 8);
+        // The comment reserves no memory at all, which is what the loader checks it for.
+        WritePh(PtSceComment, 0, commentFileOff, 0, (ulong)comment.Length, 0, 0x10);
+        WritePh(PtSceVersion, 0, dynlibFileOff + (versionAddr - dynlibAddr), 0, (ulong)versionBlob.Length, (ulong)versionBlob.Length, 1);
         WritePh(PtNote, 0, dynlibFileOff + (noteAddr - dynlibAddr), noteAddr, (ulong)note.Length, (ulong)note.Length, 4);
         // The reserved note carries no load address (memsz 0); it is present in the file only.
         WritePh(PtNote, 0, reservedNoteFileOff, 0, ReservedNoteLen, 0, 4);
-        if (ehFrameHdr.Length > 0)
-            WritePh(PtGnuEhFrame, PfR, roFileOff + (ehFrameHdrAddr - roAddr), ehFrameHdrAddr, (ulong)ehFrameHdr.Length, (ulong)ehFrameHdr.Length, 4);
-        if (hasTls)
-            WritePh(PtTls, PfR, dataFileOff + (tlsAddr - dataAddr), tlsAddr, tlsFileLen, tlsMemLen, tlsAlign);
 
         // Segment data.
         void Put(ulong segFileOff, ulong segBase, ulong addr, byte[] bytes)
@@ -849,7 +880,9 @@ public static class DynamicWriter
         if (ehFrameHdr.Length > 0)
             Put(roFileOff, roAddr, ehFrameHdrAddr, ehFrameHdr);
         Put(dataFileOff, dataAddr, gotAddr, got);
-        Put(dataFileOff, dataAddr, procAddr, proc);
+        Put(procFileOff, procAddr, procAddr, proc);
+        comment.AsSpan().CopyTo(file.AsSpan((int)commentFileOff));
+        Put(dynlibFileOff, dynlibAddr, versionAddr, versionBlob);
         Put(dynlibFileOff, dynlibAddr, dynsymAddr, dynsym);
         Put(dynlibFileOff, dynlibAddr, dynstrAddr, dynstr);
         Put(dynlibFileOff, dynlibAddr, hashAddr, hash);
@@ -884,10 +917,11 @@ public static class DynamicWriter
             (DtSceModuleInfo, (ulong)(uint)moduleInfoName | ((ulong)StubLibrary.DefaultModuleVersion << 32)),
             (DtSceModuleAttr, 0),
         };
-        // A module that exports symbols records its own file name and its export library.
+        // Every module records its own file name, whether or not it exports anything.
+        e.Add((DtSceOrigFilename, (uint)origFileNameOff));
+        // A module that exports symbols also records the library it publishes them under.
         if (hasExports)
         {
-            e.Add((DtSceOrigFilename, (uint)origFileNameOff));
             e.Add((DtSceExportLib, (ulong)(uint)exportLibNameOff | ((ulong)StubLibrary.DefaultLibraryVersion << 32) | ((ulong)(uint)exportLibId << 48)));
             e.Add((DtSceExportLibAttr, ((ulong)(uint)exportLibId << 48) | 0x01));
         }
@@ -898,20 +932,26 @@ public static class DynamicWriter
             e.Add((DtSceImportLib, (ulong)(uint)libraryNameOff | ((ulong)libraryVersion << 32) | ((ulong)(uint)libraryId << 48)));
             e.Add((DtSceImportLibAttr, ((ulong)(uint)libraryId << 48) | 0x09));
         }
+        // The tables are named by the ordinary tags. A module whose linking segment carries an address
+        // must not also name them through the module-specific aliases: the loader routes an alias and
+        // its ordinary tag to the same handler, so the alias reads as a duplicate and the module is
+        // refused while its dynamic table is being read. Only the two size tags below have no ordinary
+        // equivalent, and both are required.
         e.Add((DtHash, hash)); e.Add((DtSceHashSz, hashsz));
-        e.Add((DtSymTab, symtab)); e.Add((DtSceSymTab, symtab)); e.Add((DtSceSymTabSz, (ulong)dynsymSize));
-        e.Add((DtSymEnt, 24)); e.Add((DtSceSymEnt, 24));
-        e.Add((DtStrTab, strtab)); e.Add((DtSceStrTab, strtab)); e.Add((DtStrSz, strsz)); e.Add((DtSceStrSz, strsz));
+        e.Add((DtSymTab, symtab)); e.Add((DtSceSymTabSz, (ulong)dynsymSize));
+        e.Add((DtSymEnt, 24));
+        e.Add((DtStrTab, strtab)); e.Add((DtStrSz, strsz));
         e.Add((DtPltGot, pltgot)); e.Add((DtPltRel, 7 /* DT_RELA */)); e.Add((DtPltRelSz, pltrelsz)); e.Add((DtJmpRel, jmprel));
         if (initArray.Size > 0) { e.Add((DtInitArray, initArray.Address)); e.Add((DtInitArraySz, initArray.Size)); }
         if (finiArray.Size > 0) { e.Add((DtFiniArray, finiArray.Address)); e.Add((DtFiniArraySz, finiArray.Size)); }
-        if (relasz > 0)
-        {
-            e.Add((DtRela, rela)); e.Add((DtSceRela, rela));
-            e.Add((DtRelaSz, relasz)); e.Add((DtSceRelaSz, relasz));
-            e.Add((DtRelaEnt, 24));
-            if (relativeCount > 0) e.Add((DtRelaCount, (ulong)relativeCount));
-        }
+        // The relocation table is named even when it is empty. The loader checks that the table, its
+        // size and its entry size were all named and refuses the module if any is missing, so leaving
+        // them out for a module with nothing to relocate would make that module unloadable. An empty
+        // table is expressed as a zero size, which the loader accepts.
+        e.Add((DtRela, rela));
+        e.Add((DtRelaSz, relasz));
+        e.Add((DtRelaEnt, 24));
+        e.Add((DtRelaCount, (ulong)relativeCount));
         e.Add((DtNull, 0));
         byte[] d = new byte[e.Count * 16];
         for (int i = 0; i < e.Count; i++)
@@ -994,6 +1034,33 @@ public static class DynamicWriter
         BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(0x58), 1);
         return p;
     }
+
+    // The comment segment. Its content is not read - the loader checks only that it reserves no
+    // memory and that its size and offset fit - but every module carries one, so one is written. The
+    // form follows what a module carries: a tag, the length of the text, then the text.
+    private static byte[] BuildComment(string moduleFileName)
+    {
+        byte[] text = Encoding.ASCII.GetBytes(moduleFileName);
+        byte[] blob = new byte[AlignInt(12 + text.Length, 16)];
+        Encoding.ASCII.GetBytes("PATH\\").CopyTo(blob, 0);
+        BinaryPrimitives.WriteUInt32LittleEndian(blob.AsSpan(8), (uint)text.Length);
+        text.CopyTo(blob, 12);
+        return blob;
+    }
+
+    // The version segment, recording the module's own name and version. The loader passes over it; it
+    // is written because every module carries one.
+    private static byte[] BuildVersion(string moduleFileName)
+    {
+        byte[] name = Encoding.ASCII.GetBytes(moduleFileName + ":");
+        byte[] blob = new byte[AlignInt(4 + name.Length + 8, 16)];
+        BinaryPrimitives.WriteUInt16LittleEndian(blob, (ushort)(name.Length + 8));
+        BinaryPrimitives.WriteUInt16LittleEndian(blob.AsSpan(2), StubLibrary.DefaultModuleVersion);
+        name.CopyTo(blob, 4);
+        return blob;
+    }
+
+    private static int AlignInt(int value, int alignment) => (value + alignment - 1) & ~(alignment - 1);
 
     private static byte[] BuildNote()
     {

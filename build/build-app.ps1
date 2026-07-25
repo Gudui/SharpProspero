@@ -194,6 +194,28 @@ foreach ($folder in @("sce_sys", "sce_module")) {
     Copy-Item -Recurse -Force $source $destination
 }
 
+# 4b. Some of the modules an application imports from are not published by the system: the application
+# carries its own copy, and one that names such a module without shipping it installs cleanly and then
+# hangs the console at launch, with nothing written to the log. The step below gathers what is missing
+# from a module folder and stops the build when it cannot, so that package is never produced.
+Write-Host "== Modules =="
+$sceModuleFolder = Join-Path $moduleFolder "sce_module"
+$moduleSource = $env:PROSPERO_MODULES
+if (-not $moduleSource) {
+    $property = (& dotnet msbuild $ProjectPath -getProperty:ProsperoModuleFolder `
+        -p:Configuration=$Configuration "-p:SharpProsperoRoot=$SdkRoot" --nologo | Out-String).Trim()
+    if ($property) { $moduleSource = $property }
+}
+$linkedModule = @(Get-ChildItem -Path $moduleFolder -File |
+    Where-Object { $_.Extension -in @(".bin", ".prx", ".elf", ".sprx", ".self") }) | Select-Object -First 1
+if ($linkedModule) {
+    $modulesArgs = @("modules", "--module", $linkedModule.FullName, "--folder", $sceModuleFolder)
+    if ($moduleSource -and (Test-Path $moduleSource)) { $modulesArgs += @("--source", $moduleSource) }
+    & dotnet run --project (Join-Path $SdkRoot "tools/SharpProspero.Bindings.Generator/SharpProspero.Bindings.Generator.csproj") `
+        -c $Configuration -- @modulesArgs
+    if ($LASTEXITCODE -ne 0) { throw "The application is missing a module it has to carry. See the message above." }
+}
+
 # 5. Settle the system version the application requires. This lives in the application metadata; a
 # library module has none (the application that bundles it settles its own version), so the step runs
 # only when that metadata is present.
@@ -206,12 +228,14 @@ if (Test-Path (Join-Path $moduleFolder "sce_sys/param.json")) {
     if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 4) { throw "Could not settle the system version." }
 }
 
-# 6. Wrap the built module in the container the loader expects. A module left as a plain ELF is turned
-# away before any of its code runs, so this is what makes the result launchable. Only the module built
-# here is wrapped: anything the project ships in sce_module/ arrives wrapped already, and the step
-# leaves an already-wrapped file untouched, so re-running a build is safe.
-$builtModules = @(Get-ChildItem -Path $moduleFolder -File |
-    Where-Object { $_.Extension -in @(".bin", ".prx", ".elf", ".sprx", ".self") })
+# 6. Wrap every module in the container the loader expects. A module left as a plain ELF is turned away
+# before any of its code runs, so this is what makes the result launchable. The modules the application
+# carries are wrapped alongside the one built here: a copy taken from a module folder is an unwrapped
+# ELF and is turned away exactly as an unwrapped eboot.bin is. The step leaves an already-wrapped file
+# untouched, so re-running a build is safe and a project that ships wrapped modules is handled too.
+$builtModules = @(Get-ChildItem -Path $moduleFolder -File) +
+    @(Get-ChildItem -Path (Join-Path $moduleFolder "sce_module") -File -ErrorAction SilentlyContinue)
+$builtModules = @($builtModules | Where-Object { $_.Extension -in @(".bin", ".prx", ".elf", ".sprx", ".self") })
 if ($builtModules.Count -gt 0) {
     Write-Host "== Sign =="
     foreach ($builtModule in $builtModules) {

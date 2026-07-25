@@ -116,10 +116,11 @@ public sealed class DynamicWriterTests
 
         Assert.Equal(0x464C457Fu, BinaryPrimitives.ReadUInt32LittleEndian(file));
         Assert.Equal(0xFE10, BinaryPrimitives.ReadUInt16LittleEndian(file.AsSpan(0x10)));
-        // The code, writable and linking loads + dynamic + procparam + build-id note + reserved note.
-        // This object has no read-only content, so the read-only load is left out.
+        // The code, writable, parameter and linking loads, the relro header, dynamic, procparam, the
+        // comment, the version record, the build-id note and the reserved note. This object has no
+        // read-only content, no frame index and no thread-local template, so those three are left out.
         int phnum = BinaryPrimitives.ReadUInt16LittleEndian(file.AsSpan(0x38));
-        Assert.Equal(7, phnum);
+        Assert.Equal(11, phnum);
 
         // Find PT_DYNAMIC (type 2) among the program headers, and count the two PT_NOTE segments.
         bool hasDynamic = false, hasProcParam = false;
@@ -607,11 +608,17 @@ public sealed class DynamicWriterTests
         for (int i = 0; i < phnum; i++, ph += 0x38)
             if (BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan(ph)) == 2)
             { dynOff = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 8)); dynSz = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 40)); }
-        // DT_RELACOUNT (0x6ffffff9) is written only when there is at least one base-relative record.
-        bool hasRelaCount = false;
+        // The relocation tags are always present, so the count itself carries the answer: no
+        // base-relative record was emitted, and the table is empty.
+        ulong relaCount = 1, relaSize = 1;
         for (ulong d = dynOff; d + 16 <= dynOff + dynSz; d += 16)
-            if (BinaryPrimitives.ReadInt64LittleEndian(file.AsSpan((int)d)) == 0x6ffffff9) hasRelaCount = true;
-        Assert.False(hasRelaCount, "A weak-undefined reference must not emit a base-relative relocation.");
+        {
+            long tag = BinaryPrimitives.ReadInt64LittleEndian(file.AsSpan((int)d));
+            if (tag == 0x6ffffff9) relaCount = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan((int)d + 8));
+            if (tag == 0x08) relaSize = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan((int)d + 8));
+        }
+        Assert.Equal(0ul, relaCount);
+        Assert.Equal(0ul, relaSize);
     }
 
     [Fact]
@@ -831,6 +838,132 @@ public sealed class DynamicWriterTests
         List<Phdr> phdrs = ReadProgramHeaders(WriteShape(shape));
         Phdr proc = Assert.Single(phdrs, p => p.Type == 0x61000001);
         Assert.Contains(phdrs, p => p.Type == 1 && (p.Flags & 2) != 0 && Contains(p, proc));
+    }
+
+    // Reading the dynamic table is the last gate before a module binds. The loader walks every entry
+    // and refuses one it does not expect, so the table may only carry tags a module is allowed to
+    // name. The module-specific aliases for the symbol, string and relocation tables are the trap:
+    // they name data the ordinary tags already name, the loader routes both to the same handler, and
+    // the alias reads as a duplicate.
+
+    // Every tag a module may name. The ordinary set, plus the module-specific tags that carry
+    // information no ordinary tag does: the module and library records, the two table sizes, and the
+    // module's own file name.
+    private static readonly long[] AllowedDynamicTags =
+    [
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E,
+        0x14, 0x15, 0x17, 0x19, 0x1A, 0x1B, 0x1C, 0x20, 0x21, 0x6FFFFFF9,
+        0x61000011, 0x61000017, 0x61000019, 0x6100003D, 0x6100003F,
+        0x61000041, 0x61000043, 0x61000045, 0x61000047, 0x61000049,
+    ];
+
+    // The aliases the loader refuses outright once the linking segment carries an address.
+    private static readonly long[] RefusedDynamicTags =
+    [
+        0x61000025, 0x61000027, 0x61000029, 0x6100002B, 0x6100002D,
+        0x6100002F, 0x61000031, 0x61000033, 0x61000039, 0x6100003B,
+    ];
+
+    private static List<long> ReadDynamicTags(byte[] file)
+    {
+        (ulong offset, ulong size) = FindDynamic(file);
+        var tags = new List<long>();
+        for (ulong i = 0; i < size; i += 16)
+        {
+            long tag = BinaryPrimitives.ReadInt64LittleEndian(file.AsSpan((int)(offset + i)));
+            tags.Add(tag);
+            if (tag == 0) break;
+        }
+        return tags;
+    }
+
+    [Theory]
+    [MemberData(nameof(EveryModuleShape))]
+    public void Write_NamesOnlyDynamicTagsAModuleMayCarry(string shape)
+    {
+        foreach (long tag in ReadDynamicTags(WriteShape(shape)))
+        {
+            Assert.DoesNotContain(tag, RefusedDynamicTags);
+            Assert.Contains(tag, AllowedDynamicTags);
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(EveryModuleShape))]
+    public void Write_CarriesEveryDynamicTagTheLoaderRequires(string shape)
+    {
+        // The loader tallies these while reading the table and refuses the module if any is absent,
+        // whatever its value. The relocation trio is the easy one to lose: a module with nothing to
+        // relocate must still name an empty table rather than omit the tags.
+        List<long> tags = ReadDynamicTags(WriteShape(shape));
+        long[] required =
+        [
+            0x04,        // hash
+            0x05, 0x0A,  // string table, its size
+            0x06, 0x0B,  // symbol table, its entry size
+            0x07, 0x08, 0x09,  // relocations, size, entry size
+            0x03, 0x02, 0x14, 0x17,  // linkage table, its size, its type, its relocations
+            0x6100003D,  // hash size
+            0x6100003F,  // symbol table size
+        ];
+        foreach (long tag in required)
+            Assert.Contains(tag, tags);
+    }
+
+    [Fact]
+    public void Write_NamesTheRelocationTableEvenWithNothingToRelocate()
+    {
+        // BuildResolution has one import and no data relocations, so the relocation table is empty.
+        // The tags still have to be there.
+        List<long> tags = ReadDynamicTags(DynamicWriter.Write(BuildResolution(), "main"));
+        Assert.Contains(0x07, tags);
+        Assert.Contains(0x08, tags);
+        Assert.Contains(0x09, tags);
+    }
+
+    [Theory]
+    [MemberData(nameof(EveryModuleShape))]
+    public void Write_SizesTheRelocationTablesInWholeEntries(string shape)
+    {
+        // The loader divides both sizes by the entry size and rejects a remainder.
+        byte[] file = WriteShape(shape);
+        (ulong offset, ulong size) = FindDynamic(file);
+        for (ulong i = 0; i < size; i += 16)
+        {
+            long tag = BinaryPrimitives.ReadInt64LittleEndian(file.AsSpan((int)(offset + i)));
+            ulong value = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan((int)(offset + i) + 8));
+            if (tag == 0) break;
+            if (tag is 0x08 or 0x02) Assert.Equal(0ul, value % 24);
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(EveryModuleShape))]
+    public void Write_RecordsTheModulesOwnFileNameWhetherOrNotItExports(string shape)
+    {
+        // Every module carries this, exporting or not.
+        Assert.Contains(0x61000041, ReadDynamicTags(WriteShape(shape)));
+    }
+
+    [Theory]
+    [MemberData(nameof(EveryModuleShape))]
+    public void Write_ResolvesEveryTableTagInsideTheLinkingSegment(string shape)
+    {
+        // The loader converts each of these to an offset by subtracting the linking segment's address
+        // and rejects a value that falls outside it.
+        byte[] file = WriteShape(shape);
+        Phdr dynlib = Assert.Single(ReadProgramHeaders(file), p => p.Type == 1 && p.Flags == 0);
+        (ulong offset, ulong size) = FindDynamic(file);
+
+        long[] tableTags = [0x04, 0x05, 0x06, 0x07, 0x17];   // hash, strtab, symtab, rela, jmprel
+        for (ulong i = 0; i < size; i += 16)
+        {
+            long tag = BinaryPrimitives.ReadInt64LittleEndian(file.AsSpan((int)(offset + i)));
+            ulong value = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan((int)(offset + i) + 8));
+            if (tag == 0) break;
+            if (!tableTags.Contains(tag) || value == 0) continue;
+            Assert.InRange(value, dynlib.Addr, dynlib.Addr + dynlib.MemSize);
+        }
     }
 
     [Theory]
