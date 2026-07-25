@@ -138,10 +138,12 @@ public sealed class SelfContainerTests
         Assert.Equal(ModuleForm.UnsignedElf, SelfContainer.Classify(module));
         Assert.Equal(ModuleForm.SignedPlaintext, SelfContainer.Classify(SelfContainer.Sign(module)));
 
-        byte[] encrypted = new byte[64];
-        BinaryPrimitives.WriteUInt32LittleEndian(encrypted, SelfContainer.EncryptedMagic);
+        // Encryption is a per-segment property, not a different header, so a container is read as
+        // encrypted only once one of its segments says so.
+        byte[] encrypted = MarkFirstDataSegmentEncrypted(SelfContainer.Sign(module));
         Assert.Equal(ModuleForm.SignedEncrypted, SelfContainer.Classify(encrypted));
-        Assert.True(SelfContainer.IsEncryptedSelf(encrypted));
+        Assert.True(SelfContainer.HasEncryptedSegments(encrypted));
+        Assert.False(SelfContainer.HasEncryptedSegments(SelfContainer.Sign(module)));
 
         Assert.Equal(ModuleForm.Unknown, SelfContainer.Classify([1, 2, 3, 4, 5, 6, 7, 8]));
     }
@@ -149,10 +151,68 @@ public sealed class SelfContainerTests
     [Fact]
     public void ModuleFile_RejectsAnEncryptedRetailContainerClearly()
     {
-        byte[] encrypted = new byte[64];
-        BinaryPrimitives.WriteUInt32LittleEndian(encrypted, SelfContainer.EncryptedMagic);
+        byte[] encrypted = MarkFirstDataSegmentEncrypted(SelfContainer.Sign(BuildModule()));
         PrxFormatException ex = Assert.Throws<PrxFormatException>(() => ModuleFile.Parse(encrypted));
         Assert.Contains("encrypted", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Sign_ProducesTheContainerTheLoaderAccepts()
+    {
+        byte[] signed = SelfContainer.Sign(BuildModule());
+
+        // The header values a module must carry to be read by the loader at launch.
+        Assert.Equal(0xEEF51454u, BinaryPrimitives.ReadUInt32LittleEndian(signed));
+        Assert.Equal(0, signed[0x04]);                                             // version
+        Assert.Equal(1, signed[0x05]);                                             // mode
+        Assert.Equal(1, signed[0x06]);                                             // endian
+        Assert.Equal(0x12, signed[0x07]);                                          // attributes
+        Assert.Equal(0x00000101u, BinaryPrimitives.ReadUInt32LittleEndian(signed.AsSpan(0x08)));
+        Assert.Equal(0x0022, BinaryPrimitives.ReadUInt16LittleEndian(signed.AsSpan(0x1A)));
+        Assert.Equal((ulong)signed.Length, BinaryPrimitives.ReadUInt64LittleEndian(signed.AsSpan(0x10)));
+
+        // The header region ends where the metadata footer begins, and the footer is sized from the
+        // segment count.
+        int segCount = BinaryPrimitives.ReadUInt16LittleEndian(signed.AsSpan(0x18));
+        int headerSize = BinaryPrimitives.ReadUInt16LittleEndian(signed.AsSpan(0x0C));
+        int metaSize = BinaryPrimitives.ReadUInt16LittleEndian(signed.AsSpan(0x0E));
+        Assert.Equal(0x110 + (segCount + 8) * 0x40, metaSize);
+
+        // Content comes in pairs: a digest segment then the data segment it covers.
+        Assert.Equal(0, segCount % 2);
+        for (int k = 0; k < segCount / 2; k++)
+        {
+            ulong digest = BinaryPrimitives.ReadUInt64LittleEndian(signed.AsSpan(0x20 + k * 2 * 0x20));
+            ulong data = BinaryPrimitives.ReadUInt64LittleEndian(signed.AsSpan(0x20 + (k * 2 + 1) * 0x20));
+            Assert.Equal((ulong)(k * 2 + 1) << 20 | 0x10004, digest);
+            Assert.Equal(0x2804u, data & 0xFFFFF);
+        }
+
+        // The embedded ELF sits after the segment table, and the extended info carries the authority
+        // id a container without a real signature uses.
+        int elfStart = 0x20 + segCount * 0x20;
+        Assert.True(SelfContainer.IsElf(signed.AsSpan(elfStart)));
+        int phnum = BinaryPrimitives.ReadUInt16LittleEndian(signed.AsSpan(elfStart + 0x38));
+        int extStart = (elfStart + 0x40 + phnum * 0x38 + 15) & ~15;
+        Assert.Equal(extStart + 0x40 + 0x30, headerSize);
+        Assert.Equal(SelfContainer.DeveloperAuthorityId,
+            BinaryPrimitives.ReadUInt64LittleEndian(signed.AsSpan(extStart)));
+    }
+
+    // Returns a copy of a container whose first data segment claims encrypted storage.
+    private static byte[] MarkFirstDataSegmentEncrypted(byte[] signed)
+    {
+        byte[] copy = (byte[])signed.Clone();
+        int segCount = BinaryPrimitives.ReadUInt16LittleEndian(copy.AsSpan(0x18));
+        for (int i = 0; i < segCount; i++)
+        {
+            int entry = 0x20 + i * 0x20;
+            ulong flags = BinaryPrimitives.ReadUInt64LittleEndian(copy.AsSpan(entry));
+            if ((flags & 0x800) == 0) continue;   // a digest segment, not payload
+            BinaryPrimitives.WriteUInt64LittleEndian(copy.AsSpan(entry), flags | 0x2);
+            return copy;
+        }
+        throw new InvalidOperationException("The container has no data segment to mark.");
     }
 
     [Fact]

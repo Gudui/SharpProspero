@@ -24,23 +24,33 @@ An **unsigned** file is a plain ELF. The linker produces this form: an `eboot.bi
 and a library the linker builds is a `.prx`, also an ELF.
 
 A **signed** file wraps that ELF in a container: a header, a segment table, the ELF header and
-program headers, extended information, and the program's segment data. There are two signed forms:
+program headers, extended information, and the program's segment data. Every container shares one
+header magic; the two signed forms differ in how their segment data is stored, which each segment
+records in its own flags word:
 
 - **Developer-accepted (readable).** The container's digest and signature slots are zero-filled and
   its segment data is plaintext. A development console accepts it. The toolchain produces and reads
   this form.
-- **Retail (encrypted).** The container is signed with a certificate and its segment data is
-  encrypted. A retail console requires this form. Its contents cannot be read without its key, so the
-  tools report the form but cannot open it.
+- **Retail (sealed).** The container is signed with a certificate and its segment data is encrypted.
+  A retail console requires this form. Its contents cannot be read without its key, so the tools
+  report the form but cannot open it.
 
-## Which form a console runs
+## Why a module has to be wrapped
 
-A development console runs an unsigned ELF wrapped in a developer-accepted signed container. A retail
-console runs only a retail signed, encrypted container.
+**A plain ELF does not launch.** The loader reads and authenticates a module's container header
+before any of its code runs, so an `eboot.bin` left as an ELF is turned away at that point — the
+application installs and then never starts, with nothing of yours having executed.
 
-The normal build produces an unsigned ELF, and the packager wraps it in a developer-accepted signed
-container while it assembles the package. You rarely sign a file by hand; you do so only to produce a
-loose `.self` or `.sprx` outside a package.
+The build wraps the module for you. `build-app.ps1` runs a wrapping step after it settles the system
+version and before it produces either output, so both a package and a plain folder ship a module the
+loader accepts. The step leaves an already-wrapped module alone, so re-running a build is safe and a
+folder that mixes a built module with ones you supply is handled correctly.
+
+Sign a file by hand only to produce a loose `.self` or `.sprx` outside a build:
+
+```
+dotnet run --project tools/SharpProspero.Bindings.Generator -- self --sign --in module.elf --out module.self
+```
 
 ## Reading any readable form
 

@@ -93,20 +93,24 @@ if (-not $targetName) { throw "Could not resolve the project's target name." }
 $objectPath = Join-Path $projectDir "obj/$Configuration/net10.0/$rid/native/$targetName.o"
 if (Test-Path $objectPath) { Remove-Item $objectPath -Force }
 
+# The publish always ends in that failed host link, so its output would report an error on every
+# successful build. Keep it and show it only when the object is missing, which is the real failure.
 if ($onWindows) {
     if (-not $haveWsl) {
         throw "The compile step needs a Linux host. Install WSL (wsl --install) so this runs automatically, or build on Linux."
     }
     $wslProject = ConvertTo-WslPath $ProjectPath
     $wslSdk = ConvertTo-WslPath $SdkRoot
-    & wsl.exe -e bash -lc "dotnet publish '$wslProject' -c $Configuration -r $rid -p:SharpProsperoRoot='$wslSdk' --nologo" 2>&1 | Out-Host
+    $publishLog = (& wsl.exe -e bash -lc "dotnet publish '$wslProject' -c $Configuration -r $rid -p:SharpProsperoRoot='$wslSdk' --nologo" 2>&1 | Out-String)
 } else {
-    & dotnet publish $ProjectPath -c $Configuration -r $rid "-p:SharpProsperoRoot=$SdkRoot" --nologo 2>&1 | Out-Host
+    $publishLog = (& dotnet publish $ProjectPath -c $Configuration -r $rid "-p:SharpProsperoRoot=$SdkRoot" --nologo 2>&1 | Out-String)
 }
 
 if (-not (Test-Path $objectPath)) {
-    throw "No compiled object was produced at $objectPath. The ahead-of-time compile did not run to completion; check the publish output above for a compile error."
+    Write-Host $publishLog
+    throw "No compiled object was produced at $objectPath. The ahead-of-time compile did not run to completion; the publish output above shows why."
 }
+Write-Host "  Compiled $targetName.o for $rid."
 
 # 2. Gather the ahead-of-time runtime archives. They are restored by the publish above (the .NET SDK's
 # NativeAOT runtime pack), so they are found in the package cache rather than assembled by hand. On
@@ -202,7 +206,22 @@ if (Test-Path (Join-Path $moduleFolder "sce_sys/param.json")) {
     if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 4) { throw "Could not settle the system version." }
 }
 
-# 6. Either pack the result or leave the folder as the output.
+# 6. Wrap the built module in the container the loader expects. A module left as a plain ELF is turned
+# away before any of its code runs, so this is what makes the result launchable. Only the module built
+# here is wrapped: anything the project ships in sce_module/ arrives wrapped already, and the step
+# leaves an already-wrapped file untouched, so re-running a build is safe.
+$builtModules = @(Get-ChildItem -Path $moduleFolder -File |
+    Where-Object { $_.Extension -in @(".bin", ".prx", ".elf", ".sprx", ".self") })
+if ($builtModules.Count -gt 0) {
+    Write-Host "== Sign =="
+    foreach ($builtModule in $builtModules) {
+        & dotnet run --project (Join-Path $SdkRoot "tools/SharpProspero.Bindings.Generator/SharpProspero.Bindings.Generator.csproj") `
+            -c $Configuration -- self --sign --in $builtModule.FullName --out $builtModule.FullName
+        if ($LASTEXITCODE -ne 0) { throw "Could not wrap $($builtModule.Name) for the loader." }
+    }
+}
+
+# 7. Either pack the result or leave the folder as the output.
 if ($Output -eq "Folder") {
     Write-Host "== Done =="
     Write-Host "Files written to $moduleFolder"

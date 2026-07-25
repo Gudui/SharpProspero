@@ -947,6 +947,15 @@ internal static class Program
             string kind;
             if (sign)
             {
+                // Wrapping a module that is already wrapped would nest one container inside another and
+                // produce a file nothing can load. Report it and leave the input as it is, so running
+                // the step twice - or over a folder that mixes built and supplied modules - is safe.
+                if (SelfContainer.IsSelf(data))
+                {
+                    Console.WriteLine($"{file} is already wrapped; left unchanged.");
+                    return 0;
+                }
+
                 // A version or authority given but not a valid hex number is a mistake (a dotted "9.00",
                 // say); reject it rather than signing with a silently defaulted zero.
                 if (!ValidHexOrAbsent(args, "--app-version", out ulong appVersion)

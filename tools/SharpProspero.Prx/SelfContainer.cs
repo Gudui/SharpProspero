@@ -7,7 +7,11 @@
 // accepted by a development console without a real signature; the extended-info digest is a SHA-256
 // over the embedded ELF. This type reads such a container back to a plaintext ELF and produces one
 // from an ELF, so the inspector and the toolchain handle a signed file the same way as an unsigned
-// one. A retail container encrypts its segment data and cannot be read without its key.
+// one. Every container shares one header magic; a container signed for retail marks its data segments
+// encrypted, and those cannot be read without the matching key.
+//
+// A module has to be wrapped in this container to launch. An executable left as a plain ELF is turned
+// away by the loader before any of its code runs, so the build pipeline wraps what it ships.
 
 using System;
 using System.Buffers.Binary;
@@ -85,7 +89,10 @@ public sealed class SelfSignOptions
     /// <summary>Firmware version written to the extended info.</summary>
     public ulong FirmwareVersion { get; init; }
 
-    /// <summary>Overrides the authority id. When null it is derived from the ELF type.</summary>
+    /// <summary>
+    /// Overrides the program authority id. When null the developer id is written, which is what a
+    /// container carries when it is accepted without a real signature.
+    /// </summary>
     public ulong? AuthorityId { get; init; }
 
     /// <summary>
@@ -103,7 +110,7 @@ public sealed class SelfSignOptions
 /// <remarks>
 /// Layout, little-endian scalars:
 /// <list type="bullet">
-/// <item>Header, 0x20 bytes: magic <c>0x1D3D154F</c>, version, mode, endian and attribute bytes,
+/// <item>Header, 0x20 bytes: magic <c>0xEEF51454</c>, version, mode, endian and attribute bytes,
 /// program type, header size, metadata size, file size, segment count, flags.</item>
 /// <item>Segment table at 0x20, one 0x20-byte entry per segment: flags, file offset, file size,
 /// memory size. Content comes in pairs, a zero-filled digest segment then the data segment.</item>
@@ -116,7 +123,7 @@ public sealed class SelfSignOptions
 public static class SelfContainer
 {
     /// <summary>Container header magic at file offset 0x00.</summary>
-    public const uint Magic = 0x1D3D154F;
+    public const uint Magic = 0xEEF51454;
 
     private const int ContainerHeaderSize = 0x20;
     private const int SegEntrySize = 0x20;
@@ -129,7 +136,6 @@ public static class SelfContainer
 
     private const int ElfHeaderSize = 0x40;
     private const int ElfPhdrSize = 0x38;
-    private const int ExInfoByteOffset = 0x3F00;
 
     // ELF header field offsets used by the writer and the normalizer.
     private const int EiOsAbi = 0x07;
@@ -143,13 +149,11 @@ public static class SelfContainer
     private const byte OsAbiGnu = 0x03;
     private const byte OsAbiFreeBsd = 0x09;
 
-    // Authority ids selected by the ex-info byte at ELF offset 0x3f00, split by executable type.
-    private const ulong PaidExec = 0x3100000000000001;
-    private const ulong PaidDynamic = 0x3100000000000002;
-    private const ulong PaidExecA = 0x3100000000001101;
-    private const ulong PaidDynamicA = 0x3100000000001102;
-    private const ulong PaidExecB = 0x3100000000001001;
-    private const ulong PaidDynamicB = 0x3100000000001002;
+    /// <summary>
+    /// Program authority id a container carries when it is accepted without a real signature. The same
+    /// value is used for an executable and for a library; it does not vary with the module type.
+    /// </summary>
+    public const ulong DeveloperAuthorityId = 0x3100000000000002;
 
     // Program-header types whose file content becomes a container data segment.
     private const uint PtLoad = 0x00000001;
@@ -165,24 +169,33 @@ public static class SelfContainer
     public static bool IsElf(ReadOnlySpan<byte> data) =>
         data.Length >= ElfHeaderSize && data[0] == 0x7F && data[1] == (byte)'E' && data[2] == (byte)'L' && data[3] == (byte)'F';
 
-    /// <summary>The on-disk magic of a signed and encrypted (retail) container.</summary>
-    public const uint EncryptedMagic = 0xEEF51454;
-
     /// <summary>
-    /// Returns whether the buffer begins with a signed and encrypted container header. This form is
-    /// signed for a retail console and its segment data is encrypted, so its contents cannot be read
-    /// without its key.
+    /// Returns whether any data segment of a container stores its bytes encrypted. Every container
+    /// shares one magic; whether the contents can be read is a per-segment property, so a container
+    /// signed for a development console and one signed for retail are told apart by this, not by the
+    /// header.
     /// </summary>
-    public static bool IsEncryptedSelf(ReadOnlySpan<byte> data) =>
-        data.Length >= 4 && BinaryPrimitives.ReadUInt32LittleEndian(data) == EncryptedMagic;
+    public static bool HasEncryptedSegments(ReadOnlySpan<byte> data)
+    {
+        if (!IsSelf(data))
+            return false;
+        int segCount = BinaryPrimitives.ReadUInt16LittleEndian(data[0x18..]);
+        for (int i = 0; i < segCount; i++)
+        {
+            int e = ContainerHeaderSize + i * SegEntrySize;
+            if (e + SegEntrySize > data.Length)
+                break;
+            if ((BinaryPrimitives.ReadUInt64LittleEndian(data[e..]) & 0x2) != 0)
+                return true;
+        }
+        return false;
+    }
 
-    /// <summary>Classifies a file as one of the module and executable forms, without reading its contents.</summary>
+    /// <summary>Classifies a file as one of the module and executable forms.</summary>
     public static ModuleForm Classify(ReadOnlySpan<byte> data)
     {
         if (IsSelf(data))
-            return ModuleForm.SignedPlaintext;
-        if (IsEncryptedSelf(data))
-            return ModuleForm.SignedEncrypted;
+            return HasEncryptedSegments(data) ? ModuleForm.SignedEncrypted : ModuleForm.SignedPlaintext;
         if (IsElf(data))
             return ModuleForm.UnsignedElf;
         return ModuleForm.Unknown;
@@ -385,7 +398,6 @@ public static class SelfContainer
             NormalizeHeader(elf);
         }
 
-        ushort eType = BinaryPrimitives.ReadUInt16LittleEndian(elf.AsSpan(OffType));
         int phoff = (int)BinaryPrimitives.ReadUInt64LittleEndian(elf.AsSpan(OffPhOff));
         int phentSize = BinaryPrimitives.ReadUInt16LittleEndian(elf.AsSpan(OffPhEntSize));
         int phnum = BinaryPrimitives.ReadUInt16LittleEndian(elf.AsSpan(OffPhNum));
@@ -408,7 +420,9 @@ public static class SelfContainer
         int elfHdrLen = ElfHeaderSize + phnum * ElfPhdrSize;
         int extInfoStart = AlignUp(afterSeg + elfHdrLen, 0x10);
         int headerSize = extInfoStart + ExtInfoSize + ControlRegionSize;
-        int metaSize = MetaFooterBase + (segCount + 4) * 0x40;
+        // The metadata footer holds one 0x40-byte block per segment plus a fixed group of blocks that
+        // close it out. Both sizes are matched against containers a console accepts.
+        int metaSize = MetaFooterBase + (segCount + 8) * 0x40;
         int dataStart = headerSize + metaSize;
 
         // The header stores headerSize and metaSize as u16 fields; an ELF with enough program headers
@@ -460,7 +474,7 @@ public static class SelfContainer
 
         elf.AsSpan(0, elfHdrLen).CopyTo(span[afterSeg..]);
 
-        ulong authorityId = options.AuthorityId ?? DeriveAuthorityId(elf, eType);
+        ulong authorityId = options.AuthorityId ?? DeveloperAuthorityId;
         BinaryPrimitives.WriteUInt64LittleEndian(span[extInfoStart..], authorityId);
         BinaryPrimitives.WriteUInt64LittleEndian(span[(extInfoStart + 0x08)..], 1); // program type
         BinaryPrimitives.WriteUInt64LittleEndian(span[(extInfoStart + 0x10)..], options.AppVersion);
@@ -495,18 +509,6 @@ public static class SelfContainer
                 result.Add(new SelectedSegment(i, (int)off, (int)fsz));
         }
         return result;
-    }
-
-    private static ulong DeriveAuthorityId(byte[] elf, ushort eType)
-    {
-        bool exec = eType == 0x02 || eType == 0xFE00 || eType == 0xFE10;
-        byte ex = ExInfoByteOffset < elf.Length ? elf[ExInfoByteOffset] : (byte)0;
-        return ex switch
-        {
-            0x40 => exec ? PaidExecA : PaidDynamicA,
-            0x80 => exec ? PaidExecB : PaidDynamicB,
-            _ => exec ? PaidExec : PaidDynamic,
-        };
     }
 
     // Sets the machine to x86-64, a System V or GNU OS/ABI to FreeBSD, and an unset type to

@@ -34,8 +34,9 @@ $dotnetOk = $dotnet -and ($dotnetVersion -like "10.*")
 Report ".NET 10 SDK" $dotnetOk $dotnetVersion "Install the .NET 10 SDK from https://dotnet.microsoft.com/download" $true
 
 # Linux compile host. The ahead-of-time compile runs on Linux; on Windows the build uses WSL for it.
-$isWindows = [System.Environment]::OSVersion.Platform -eq "Win32NT"
-if ($isWindows) {
+# The name here avoids $IsWindows, which newer PowerShell defines as a read-only variable of its own.
+$onWindows = [System.Environment]::OSVersion.Platform -eq "Win32NT"
+if ($onWindows) {
     $wsl = Get-Command wsl.exe -ErrorAction SilentlyContinue
     $wslDotnet = $false
     if ($wsl) {

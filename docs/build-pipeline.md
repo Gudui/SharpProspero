@@ -74,7 +74,31 @@ dotnet msbuild src/SharpProspero.Sample/SharpProspero.Sample.csproj /t:ProsperoL
 Override the runtime archive list and its order with `ProsperoRuntimeLibraries` (semicolon-separated)
 when the default folder scan is not the order you want.
 
-## Step 3: output
+## Step 3: wrap the module
+
+The linker's output is a plain ELF, and **a plain ELF does not launch** — the loader authenticates a
+module's container header before running any of its code, so an unwrapped `eboot.bin` is turned away
+and the application never starts. The build therefore wraps the module it produced, after settling
+the system version and before either output is written:
+
+```
+== Sign ==
+Wrote .../module/eboot.bin (1090320 bytes, signed container).
+```
+
+Only the module built here is wrapped. Anything the project ships in `sce_module/` already arrives
+wrapped, and the step leaves an already-wrapped file untouched, so re-running a build is safe. The
+packager reports the result as part of its launch-readiness summary:
+
+```
+Launch readiness: ready
+  module:      wrapped for the loader, contents readable
+```
+
+If that line reads *a plain ELF*, the module was not wrapped and the application will not start.
+[Unsigned and signed](signed-and-unsigned.md) covers the forms in full.
+
+## Step 4: output
 
 The build gathers `eboot.bin` next to the `sce_sys` metadata and any `sce_module` libraries, then
 writes one of two outputs. `build-app.ps1` picks with `-Output`:

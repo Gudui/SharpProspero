@@ -7,6 +7,7 @@
 using LibProsperoPkg;
 using LibProsperoPkg.Content;
 using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO;
 
@@ -53,7 +54,11 @@ internal static class Program
             Console.WriteLine();
             Console.WriteLine($"Package: {result.OutputPath}");
             Console.WriteLine($"Module:  {result.ModulePath}");
-            PrintReadiness(result.LaunchReadiness);
+            // The result names the module; the copy to inspect is the one staged in the input folder.
+            PrintReadiness(result.LaunchReadiness,
+                Path.IsPathRooted(result.ModulePath)
+                    ? result.ModulePath
+                    : Path.Combine(input, result.ModulePath));
             PrintWarnings(result.Warnings);
             return 0;
         }
@@ -69,27 +74,78 @@ internal static class Program
         }
     }
 
-    // The builder classifies every module and the metadata for the launch service; surface that so the
-    // author knows whether the package will start before they copy it to a console.
-    private static void PrintReadiness(ProsperoLaunchReadinessReport report)
+    // Reports whether the package will start, so the author knows before they copy it to a console.
+    // The module's own form is checked here rather than taken from the packer: the packer recognizes an
+    // older container form, so it reads a module wrapped for this platform as unreadable. Everything
+    // else in the report - the metadata the launch service needs - is the packer's to judge.
+    private static void PrintReadiness(ProsperoLaunchReadinessReport report, string modulePath)
     {
+        ModuleForm form = ReadModuleForm(modulePath);
+        bool moduleReady = form == ModuleForm.Wrapped;
+        bool ready = moduleReady && report.HasEboot && report.HasParamJson && !report.HasParamSfo;
+
         Console.WriteLine();
-        Console.WriteLine($"Launch readiness: {(report.IsLaunchReady ? "ready" : "not ready")}");
+        Console.WriteLine($"Launch readiness: {(ready ? "ready" : "not ready")}");
         Console.WriteLine($"  eboot.bin:   {(report.HasEboot ? "present" : "missing")}");
         Console.WriteLine($"  param.json:  {(report.HasParamJson ? "present" : "missing")}");
         if (report.HasParamSfo)
             Console.WriteLine("  param.sfo:   present (the launch service refuses this metadata form)");
-        if (report.RequiresDebugConsole)
-            Console.WriteLine("  console:     starts on a debug-mode console only (fake-authority or raw modules)");
-        foreach (ModuleLaunchReadiness module in report.Modules)
-            Console.WriteLine($"  module {module.Path}: {module.Note}");
+        Console.WriteLine($"  module:      {DescribeForm(form)}");
+        if (!moduleReady)
+        {
+            Console.WriteLine("    A module has to be wrapped for the loader to accept it. Build through");
+            Console.WriteLine("    build-app.ps1, or wrap it with: sharpprospero-bindgen self --sign --in <module> --out <module>");
+        }
         if (report.Issues.Count > 0)
         {
-            Console.WriteLine("  Blocking issues:");
+            Console.WriteLine("  Packer notes:");
             foreach (string issue in report.Issues)
                 Console.WriteLine($"    - {issue}");
         }
     }
+
+    /// <summary>How a staged module is stored, read from its first bytes.</summary>
+    private enum ModuleForm { Unknown, PlainElf, Wrapped, WrappedSealed }
+
+    // Container magic, then the ELF magic. Whether a wrapped module can be read is a per-segment
+    // property (bit 1 of each segment's flags word), not a different header.
+    private const uint ContainerMagic = 0xEEF51454;
+    private const uint ElfMagic = 0x464C457F;
+
+    private static ModuleForm ReadModuleForm(string modulePath)
+    {
+        byte[] data;
+        try { data = File.ReadAllBytes(modulePath); }
+        catch (IOException) { return ModuleForm.Unknown; }
+        catch (UnauthorizedAccessException) { return ModuleForm.Unknown; }
+
+        if (data.Length < 0x20)
+            return ModuleForm.Unknown;
+        uint magic = BinaryPrimitives.ReadUInt32LittleEndian(data);
+        if (magic == ElfMagic)
+            return ModuleForm.PlainElf;
+        if (magic != ContainerMagic)
+            return ModuleForm.Unknown;
+
+        int segCount = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(0x18));
+        for (int i = 0; i < segCount; i++)
+        {
+            int entry = 0x20 + i * 0x20;
+            if (entry + 0x20 > data.Length)
+                break;
+            if ((BinaryPrimitives.ReadUInt64LittleEndian(data.AsSpan(entry)) & 0x2) != 0)
+                return ModuleForm.WrappedSealed;
+        }
+        return ModuleForm.Wrapped;
+    }
+
+    private static string DescribeForm(ModuleForm form) => form switch
+    {
+        ModuleForm.Wrapped => "wrapped for the loader, contents readable",
+        ModuleForm.WrappedSealed => "wrapped, contents sealed (it needs the key path)",
+        ModuleForm.PlainElf => "a plain ELF - the loader turns this away before it runs",
+        _ => "not a form this reads",
+    };
 
     private static void PrintWarnings(IReadOnlyList<string> warnings)
     {
