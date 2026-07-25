@@ -74,6 +74,36 @@ dotnet msbuild src/SharpProspero.Sample/SharpProspero.Sample.csproj /t:ProsperoL
 Override the runtime archive list and its order with `ProsperoRuntimeLibraries` (semicolon-separated)
 when the default folder scan is not the order you want.
 
+### What the linker lays out
+
+The module the linker writes carries four load segments, in this order:
+
+| Segment | Protection | Holds |
+|---|---|---|
+| Code | read + execute | the compiled code and the procedure-linkage table |
+| Read-only | read | read-only data and the exception-frame index |
+| Writable | read + write | writable data, the global-offset table, and the process parameters |
+| Linking | **none** | the symbol, string and hash tables, both relocation tables, the module note, and the dynamic table |
+
+The fourth one is the part that is easy to get wrong. It is a load segment that requests no memory
+protection at all, and that is exactly what marks it as linking data rather than image content: the
+loader reads it to bind the module instead of mapping it into the running process. **A module that
+names a dynamic table without also carrying this segment does not start.** Its program headers are
+scanned before any of its code runs, the pair is found inconsistent, and the launch is refused with a
+segment-header error while the application sits on a splash screen.
+
+Alongside it, two placements are equally load-bearing: the dynamic table and the module note must
+both lie *inside* that linking segment, and the process parameters must lie inside a writable load
+segment.
+
+You do not configure any of this — the linker always produces this shape. It is documented because
+it is what the loader checks, so it is what a hand-built or externally produced module has to match
+to launch. Confirm a module's shape with the inspector:
+
+```
+sharpprospero-bindgen elf --file eboot.bin
+```
+
 ## Step 3: wrap the module
 
 The linker's output is a plain ELF, and **a plain ELF does not launch** — the loader authenticates a

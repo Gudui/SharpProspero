@@ -305,6 +305,13 @@ binding generator with no verb turns the SDK headers into more bindings from a c
 - **Signed and unsigned forms**: a program is a `.elf` or a signed `.self`, a library a `.prx` or a
   signed `.sprx`. The reader and inspector take either, unwrapping a signed module to its ELF first,
   and a container tool reports which form a file is and converts between them.
+- **A module shaped the way the loader checks it**: the linker writes four load segments — code,
+  read-only data, writable data, and a fourth carrying no memory protection that holds the linking
+  tables, the module note and the dynamic table. The container writer sizes each segment's digest
+  table from its content. Both are what decide whether an installed application starts, and the build
+  handles both without configuration. See
+  [docs/build-pipeline.md](docs/build-pipeline.md) and
+  [docs/signed-and-unsigned.md](docs/signed-and-unsigned.md).
 - **A module toolkit** that reads a `.prx` or `.sprx`, lists its exports, and generates a C# wrapper
   for it, so a project needs only its own module to interact with it.
 - **Firmware tooling**: dump a module's export identifiers and addresses (and how it covers the names

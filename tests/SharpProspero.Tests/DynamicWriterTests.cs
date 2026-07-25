@@ -5,6 +5,7 @@ using SharpProspero.Link;
 using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using Xunit;
 
@@ -115,7 +116,8 @@ public sealed class DynamicWriterTests
 
         Assert.Equal(0x464C457Fu, BinaryPrimitives.ReadUInt32LittleEndian(file));
         Assert.Equal(0xFE10, BinaryPrimitives.ReadUInt16LittleEndian(file.AsSpan(0x10)));
-        // Three loads + dynamic + procparam + build-id note + reserved note.
+        // The code, writable and linking loads + dynamic + procparam + build-id note + reserved note.
+        // This object has no read-only content, so the read-only load is left out.
         int phnum = BinaryPrimitives.ReadUInt16LittleEndian(file.AsSpan(0x38));
         Assert.Equal(7, phnum);
 
@@ -761,5 +763,88 @@ public sealed class DynamicWriterTests
         var common = new ElfSymbol { Name = "tentative", Info = (SymBind.Global << 4) | SymType.Object, Other = 0, SectionIndex = 0xFFF2, Value = 4, Size = 4 };
         var ex = Assert.Throws<ElfLinkException>(() => DynamicWriter.Write(BuildSingleReloc(common, RelType.R64, defineTarget: true), "main"));
         Assert.Contains("-fno-common", ex.Message);
+    }
+
+    // The dynamic-linking tables live in their own load segment that requests no memory protection.
+    // That segment is how the loader finds the linking data; a module that names a dynamic table
+    // without carrying one is rejected while its program headers are scanned, so these lock the shape.
+
+    private readonly record struct Phdr(uint Type, uint Flags, ulong Offset, ulong Addr, ulong FileSize, ulong MemSize);
+
+    private static List<Phdr> ReadProgramHeaders(byte[] file)
+    {
+        int phnum = BinaryPrimitives.ReadUInt16LittleEndian(file.AsSpan(0x38));
+        var result = new List<Phdr>(phnum);
+        for (int i = 0, ph = 0x40; i < phnum; i++, ph += 0x38)
+            result.Add(new Phdr(
+                BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan(ph)),
+                BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan(ph + 4)),
+                BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 8)),
+                BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 16)),
+                BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 32)),
+                BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 40))));
+        return result;
+    }
+
+    private static bool Contains(Phdr outer, Phdr inner) =>
+        inner.Offset >= outer.Offset && inner.Offset + inner.FileSize <= outer.Offset + outer.FileSize;
+
+    public static TheoryData<string> EveryModuleShape() =>
+        ["plain", "imports", "tls", "ehframe", "got"];
+
+    private static byte[] WriteShape(string shape) => shape switch
+    {
+        "imports" => DynamicWriter.Write(BuildThreeNameResolution(), "main"),
+        "tls" => DynamicWriter.Write(BuildTlsResolution(), "main"),
+        "ehframe" => DynamicWriter.Write(BuildEhFrameResolution(GoodFrames), "main"),
+        "got" => DynamicWriter.Write(BuildGotResolution(), "main"),
+        _ => DynamicWriter.Write(BuildResolution(), "main"),
+    };
+
+    [Theory]
+    [MemberData(nameof(EveryModuleShape))]
+    public void Write_PutsTheLinkingTablesInAnUnprotectedLoadSegment(string shape)
+    {
+        List<Phdr> phdrs = ReadProgramHeaders(WriteShape(shape));
+
+        List<Phdr> unprotected = [.. phdrs.Where(p => p.Type == 1 && p.Flags == 0)];
+        Assert.Single(unprotected);
+        Phdr dynlib = unprotected[0];
+        Assert.True(dynlib.FileSize > 0, "The linking segment must carry its tables.");
+        Assert.Equal(dynlib.FileSize, dynlib.MemSize);
+
+        Phdr dynamic = Assert.Single(phdrs, p => p.Type == 2);
+        Assert.True(dynamic.FileSize > 0, "A dynamic module must name a dynamic table.");
+        Assert.True(Contains(dynlib, dynamic), "The dynamic table must lie in the linking segment.");
+
+        // The module note is loaded (it has a memory size); the reserved note in the tail is not.
+        Phdr note = Assert.Single(phdrs, p => p.Type == 4 && p.MemSize > 0);
+        Assert.True(Contains(dynlib, note), "The module note must lie in the linking segment.");
+    }
+
+    [Theory]
+    [MemberData(nameof(EveryModuleShape))]
+    public void Write_PutsTheProcessParametersInAWritableLoadSegment(string shape)
+    {
+        List<Phdr> phdrs = ReadProgramHeaders(WriteShape(shape));
+        Phdr proc = Assert.Single(phdrs, p => p.Type == 0x61000001);
+        Assert.Contains(phdrs, p => p.Type == 1 && (p.Flags & 2) != 0 && Contains(p, proc));
+    }
+
+    [Theory]
+    [MemberData(nameof(EveryModuleShape))]
+    public void Write_KeepsLoadSegmentsOrderedAndWithinTheFile(string shape)
+    {
+        byte[] file = WriteShape(shape);
+        List<Phdr> phdrs = ReadProgramHeaders(file);
+
+        ulong previousEnd = 0;
+        foreach (Phdr load in phdrs.Where(p => p.Type == 1))
+        {
+            Assert.True(load.Addr >= previousEnd, "Load segments must run in ascending address order.");
+            previousEnd = load.Addr + load.MemSize;
+        }
+        foreach (Phdr p in phdrs)
+            Assert.True(p.Offset + p.FileSize <= (ulong)file.Length, "A program header runs past the file.");
     }
 }

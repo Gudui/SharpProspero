@@ -35,6 +35,19 @@ records in its own flags word:
   A retail console requires this form. Its contents cannot be read without its key, so the tools
   report the form but cannot open it.
 
+### How segment data is stored
+
+Inside the container, the program's content is not one run of bytes per segment. Each content segment
+is stored in fixed **0x4000-byte blocks**, and every content segment is paired with a preceding
+segment that holds **one 0x20-byte digest slot per block** — so a 0xB192C-byte code segment is 45
+blocks and its digest segment is 0x5A0 bytes, not 0x20.
+
+This matters because the loader derives the block count from the content size and then reads exactly
+that many slots. A digest segment sized for a single block is correct only while the content fits in
+one block; anything larger declares less digest data than the loader reads, and loading the module's
+blocks fails. The toolchain sizes every pair from its content, so you never set this by hand, but it
+is the reason a container cannot be assembled with a fixed-size digest segment.
+
 ## Why a module has to be wrapped
 
 **A plain ELF does not launch.** The loader reads and authenticates a module's container header

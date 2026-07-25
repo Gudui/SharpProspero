@@ -421,4 +421,82 @@ public sealed class SelfContainerTests
         BinaryPrimitives.WriteUInt64LittleEndian(file.AsSpan(at + 48), align);
         BinaryPrimitives.WriteUInt64LittleEndian(file.AsSpan(at + 56), entsize);
     }
+
+    // A data segment is stored in fixed-size blocks and the digest segment paired with it carries one
+    // slot per block. A pair sized for a single block is only correct while the content fits in one
+    // block; every larger segment then declares less digest data than the loader reads for it, and the
+    // module is turned away before it starts. These lock the size to the block count.
+
+    private const int BlockSize = 0x4000;
+    private const int DigestSlot = 0x20;
+
+    // A minimal module with one loadable segment of the requested size, laid out the way the writer
+    // requires: the program-header table directly after the ELF header, then the segment content.
+    private static byte[] BuildModuleWithLoadSize(int contentSize)
+    {
+        int contentOffset = 0x40 + 0x38;
+        var elf = new byte[contentOffset + contentSize];
+        elf[0] = 0x7F; elf[1] = (byte)'E'; elf[2] = (byte)'L'; elf[3] = (byte)'F';
+        elf[4] = 2; elf[5] = 1; elf[6] = 1; elf[7] = 9; elf[8] = 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(elf.AsSpan(0x10), 0xFE10);
+        BinaryPrimitives.WriteUInt16LittleEndian(elf.AsSpan(0x12), 0x3E);
+        BinaryPrimitives.WriteUInt64LittleEndian(elf.AsSpan(0x20), 0x40);
+        BinaryPrimitives.WriteUInt16LittleEndian(elf.AsSpan(0x34), 0x40);
+        BinaryPrimitives.WriteUInt16LittleEndian(elf.AsSpan(0x36), 0x38);
+        BinaryPrimitives.WriteUInt16LittleEndian(elf.AsSpan(0x38), 1);
+        BinaryPrimitives.WriteUInt32LittleEndian(elf.AsSpan(0x40), 1);          // PT_LOAD
+        BinaryPrimitives.WriteUInt32LittleEndian(elf.AsSpan(0x44), 5);          // read + execute
+        BinaryPrimitives.WriteUInt64LittleEndian(elf.AsSpan(0x48), (ulong)contentOffset);
+        BinaryPrimitives.WriteUInt64LittleEndian(elf.AsSpan(0x60), (ulong)contentSize);
+        BinaryPrimitives.WriteUInt64LittleEndian(elf.AsSpan(0x68), (ulong)contentSize);
+        for (int i = 0; i < contentSize; i++)
+            elf[contentOffset + i] = (byte)(i * 7 + 1);
+        return elf;
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(BlockSize)]
+    [InlineData(BlockSize + 1)]
+    [InlineData(BlockSize * 3)]
+    [InlineData(BlockSize * 5 + 123)]
+    public void Sign_SizesEachDigestSegmentToTheBlockCountOfItsContent(int contentSize)
+    {
+        SelfImage image = SelfContainer.Parse(SelfContainer.Sign(BuildModuleWithLoadSize(contentSize)));
+        int expectedSlots = (contentSize + BlockSize - 1) / BlockSize;
+
+        var pairs = 0;
+        for (int i = 0; i + 1 < image.Segments.Count; i += 2)
+        {
+            SelfSegment digest = image.Segments[i], data = image.Segments[i + 1];
+            Assert.False(digest.Blocked);
+            Assert.True(data.Blocked);
+            Assert.Equal((ulong)contentSize, data.FileSize);
+            Assert.Equal((ulong)(expectedSlots * DigestSlot), digest.FileSize);
+            Assert.Equal(digest.FileSize, digest.MemSize);
+            pairs++;
+        }
+        Assert.Equal(1, pairs);
+    }
+
+    [Fact]
+    public void Sign_PlacesEverySegmentWithinTheFileAndRoundTripsAMultiBlockModule()
+    {
+        byte[] module = BuildModuleWithLoadSize(BlockSize * 4 + 9);
+        byte[] signed = SelfContainer.Sign(module);
+        SelfImage image = SelfContainer.Parse(signed);
+
+        // Nothing overlaps or runs past the end: each segment starts where the previous one finished,
+        // allowing for the 16-byte padding after a content segment.
+        ulong cursor = (ulong)(image.HeaderSize + image.MetaSize);
+        foreach (SelfSegment seg in image.Segments)
+        {
+            Assert.True(seg.FileOffset >= cursor, "A segment starts before the end of the one before it.");
+            Assert.True(seg.FileOffset + seg.FileSize <= (ulong)signed.Length, "A segment runs past the file.");
+            cursor = seg.FileOffset + seg.FileSize;
+        }
+        Assert.Equal(image.FileSize, (ulong)signed.Length);
+        Assert.True(SelfContainer.CheckIntegrity(signed).Matches);
+        Assert.Equal(module, SelfContainer.ExtractElf(signed)[..module.Length]);
+    }
 }

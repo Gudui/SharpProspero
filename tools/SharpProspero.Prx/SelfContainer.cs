@@ -113,7 +113,8 @@ public sealed class SelfSignOptions
 /// <item>Header, 0x20 bytes: magic <c>0xEEF51454</c>, version, mode, endian and attribute bytes,
 /// program type, header size, metadata size, file size, segment count, flags.</item>
 /// <item>Segment table at 0x20, one 0x20-byte entry per segment: flags, file offset, file size,
-/// memory size. Content comes in pairs, a zero-filled digest segment then the data segment.</item>
+/// memory size. Content comes in pairs, a zero-filled digest segment then the data segment; the
+/// digest segment holds one 0x20-byte slot per 0x4000-byte block of the data it describes.</item>
 /// <item>The ELF header and program headers, copied verbatim.</item>
 /// <item>Extended info, 0x40 bytes, after the program headers: authority id, program type, versions,
 /// and the SHA-256 of the embedded ELF.</item>
@@ -130,7 +131,15 @@ public static class SelfContainer
     private const int ExtInfoSize = 0x40;
     private const int ControlRegionSize = 0x30;
     private const int MetaFooterBase = 0x110;
-    private const int DigestSegSize = 0x20;
+
+    // A data segment is stored in fixed-size blocks and its paired segment holds one digest slot per
+    // block, so the pair's size follows from the data size rather than being fixed. The block size is
+    // fixed at 0x4000: the loader divides the data size by it to get a block count and then requires
+    // the paired segment to be exactly that many slots, so a pair sized for a single block turns away
+    // every segment larger than one block. The segment flags carry a matching block-size selector in
+    // bits 12..15 (value 2, its log2 less 12) which the data flags below set for consistency.
+    private const int SegmentBlockSize = 0x4000;
+    private const int DigestSlotSize = 0x20;
     private const int FooterMarkerOffset = 0x3F0;
     private const uint DefaultProgramType = 0x00000101;
 
@@ -431,13 +440,16 @@ public static class SelfContainer
             throw new PrxFormatException(
                 $"The ELF has too many segments to sign (header 0x{headerSize:X}, meta 0x{metaSize:X} exceed the 16-bit container fields).");
 
-        // Assign segment file offsets: a 0x20 digest segment then the data, padded to 16, per pair.
+        // Assign segment file offsets: the digest segment for a content segment, then the content
+        // itself padded to 16, per pair. A digest segment carries one slot per block of its content.
         var segOffsets = new int[segCount];
+        var digestSizes = new int[selected.Count];
         int cursor = dataStart;
         for (int k = 0; k < selected.Count; k++)
         {
+            digestSizes[k] = DigestSize(selected[k].FileSize);
             segOffsets[k * 2] = cursor;
-            cursor += DigestSegSize;
+            cursor += digestSizes[k];
             segOffsets[k * 2 + 1] = cursor;
             cursor = AlignUp(cursor + selected[k].FileSize, 0x10);
         }
@@ -465,7 +477,8 @@ public static class SelfContainer
             int dataTableIndex = k * 2 + 1;
 
             ulong digestFlags = ((ulong)dataTableIndex << 20) | 0x10004;
-            WriteSegment(span, digestEntry, digestFlags, (ulong)segOffsets[k * 2], DigestSegSize, DigestSegSize);
+            WriteSegment(span, digestEntry, digestFlags, (ulong)segOffsets[k * 2],
+                (ulong)digestSizes[k], (ulong)digestSizes[k]);
 
             ulong dataFlags = ((ulong)selected[k].PhdrIndex << 20) | 0x2804;
             WriteSegment(span, dataEntry, dataFlags, (ulong)segOffsets[k * 2 + 1],
@@ -569,6 +582,11 @@ public static class SelfContainer
     }
 
     private static int AlignUp(int value, int alignment) => (value + alignment - 1) & ~(alignment - 1);
+
+    // The size of the digest segment that pairs with a data segment of dataSize bytes: one slot per
+    // stored block. Only a segment with content is ever paired, so the count is at least one.
+    private static int DigestSize(int dataSize) =>
+        Math.Max(1, (dataSize + SegmentBlockSize - 1) / SegmentBlockSize) * DigestSlotSize;
 
     // True when [offset, offset + size) lies within [0, length]; false for any value out of range or
     // that would wrap. Every offset and size read from a container or an ELF is bounded through this
