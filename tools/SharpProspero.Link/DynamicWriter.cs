@@ -811,7 +811,10 @@ public static class DynamicWriter
             BinaryPrimitives.WriteUInt64LittleEndian(file.AsSpan(ph + 48), align);
             ph += 0x38;
         }
-        WritePh(PtLoad, PfR | PfX, textFileOff, text.Addr, textSegEnd - text.Addr, textSegEnd - text.Addr, SegAlign);
+        // Execute without read. A load segment that asks for both is refused outright, so the code
+        // segment carries the execute bit alone; the loader grants the read access the processor needs
+        // when it maps the segment. Read-only content belongs in the segment below, not beside code.
+        WritePh(PtLoad, PfX, textFileOff, text.Addr, textSegEnd - text.Addr, textSegEnd - text.Addr, SegAlign);
         if (hasRo)
             WritePh(PtLoad, PfR, roFileOff, roAddr, roSegEnd - roAddr, roSegEnd - roAddr, SegAlign);
         WritePh(PtLoad, PfR | PfW, dataFileOff, dataAddr, dataSegEnd - dataAddr, dataSegEnd - dataAddr, SegAlign);

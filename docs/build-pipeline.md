@@ -78,12 +78,19 @@ when the default folder scan is not the order you want.
 
 The module the linker writes carries four load segments, in this order:
 
-| Segment | Protection | Holds |
+| Segment | Protection asked for | Holds |
 |---|---|---|
-| Code | read + execute | the compiled code and the procedure-linkage table |
+| Code | **execute only** | the compiled code and the procedure-linkage table |
 | Read-only | read | read-only data and the exception-frame index |
 | Writable | read + write | writable data, the global-offset table, and the process parameters |
 | Linking | **none** | the symbol, string and hash tables, both relocation tables, the module note, and the dynamic table |
+
+Two of those protections look wrong at first glance and are not.
+
+The code segment asks for **execute without read**. A load segment that asks for read and execute
+together is refused and the module does not start, so the read bit has to be left off; the loader
+grants the read access the processor needs when it maps the segment. The practical consequence is
+that read-only data must live in the read-only segment and never beside code.
 
 The fourth one is the part that is easy to get wrong. It is a load segment that requests no memory
 protection at all, and that is exactly what marks it as linking data rather than image content: the
@@ -95,6 +102,19 @@ segment-header error while the application sits on a splash screen.
 Alongside it, two placements are equally load-bearing: the dynamic table and the module note must
 both lie *inside* that linking segment, and the process parameters must lie inside a writable load
 segment.
+
+The rest of what the loader insists on, in one list:
+
+- A load segment asks for exactly one of: nothing, execute, read, or read and write. Read together
+  with execute is refused.
+- At least one load segment is executable and at least one other is writable without being executable.
+- Every load segment that is actually mapped — that is, every one asking for some protection — has its
+  address, file offset and alignment all on a `0x4000` boundary. The linking segment is exempt, since
+  it is never mapped.
+- Physical address matches virtual address, and memory size is never smaller than file size.
+- A relro header is only accepted when a writable load segment matches it exactly on offset, address
+  and both sizes. The linker emits no relro header at all, which sidesteps the check; anything
+  producing one has to satisfy the match.
 
 You do not configure any of this — the linker always produces this shape. It is documented because
 it is what the loader checks, so it is what a hand-built or externally produced module has to match

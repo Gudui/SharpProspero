@@ -35,7 +35,9 @@ public enum XmlNodeType
 public readonly struct XmlAttribute(string name, string value)
 {
     /// <summary>The attribute name, including any namespace prefix.</summary>
-    public string Name { get; } = name;     /// <summary>The attribute value, with entity references resolved.</summary>
+    public string Name { get; } = name;
+
+    /// <summary>The attribute value, with entity references resolved.</summary>
     public string Value { get; } = value;
 }
 

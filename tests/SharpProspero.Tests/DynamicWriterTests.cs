@@ -735,11 +735,12 @@ public sealed class DynamicWriterTests
         ulong entry = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(0x18));
         Assert.NotEqual(0ul, entry);
 
-        // Map the entry back to a file offset through the executable segment (PT_LOAD, flags R+X).
+        // Map the entry back to a file offset through the code segment, which carries the execute bit
+        // and never the read bit.
         int ph = 0x40, phnum = BinaryPrimitives.ReadUInt16LittleEndian(file.AsSpan(0x38));
         ulong textOff = 0, textVaddr = 0;
         for (int i = 0; i < phnum; i++, ph += 0x38)
-            if (BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan(ph)) == 1 && BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan(ph + 4)) == 5)
+            if (BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan(ph)) == 1 && (BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan(ph + 4)) & 1) != 0)
             { textOff = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 8)); textVaddr = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 16)); }
 
         int stub = (int)(textOff + (entry - textVaddr));
@@ -769,7 +770,7 @@ public sealed class DynamicWriterTests
     // That segment is how the loader finds the linking data; a module that names a dynamic table
     // without carrying one is rejected while its program headers are scanned, so these lock the shape.
 
-    private readonly record struct Phdr(uint Type, uint Flags, ulong Offset, ulong Addr, ulong FileSize, ulong MemSize);
+    private readonly record struct Phdr(uint Type, uint Flags, ulong Offset, ulong Addr, ulong FileSize, ulong MemSize, ulong Align);
 
     private static List<Phdr> ReadProgramHeaders(byte[] file)
     {
@@ -782,7 +783,8 @@ public sealed class DynamicWriterTests
                 BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 8)),
                 BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 16)),
                 BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 32)),
-                BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 40))));
+                BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 40)),
+                BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 48))));
         return result;
     }
 
@@ -829,6 +831,58 @@ public sealed class DynamicWriterTests
         List<Phdr> phdrs = ReadProgramHeaders(WriteShape(shape));
         Phdr proc = Assert.Single(phdrs, p => p.Type == 0x61000001);
         Assert.Contains(phdrs, p => p.Type == 1 && (p.Flags & 2) != 0 && Contains(p, proc));
+    }
+
+    [Theory]
+    [MemberData(nameof(EveryModuleShape))]
+    public void Write_NeverAsksForALoadSegmentThatIsBothReadableAndExecutable(string shape)
+    {
+        // A load segment requesting read and execute together is refused outright, and the module does
+        // not start. Code carries the execute bit alone; the loader adds the read access the processor
+        // needs when it maps the segment.
+        const uint Executable = 1, Writable = 2, Readable = 4;
+        List<Phdr> phdrs = ReadProgramHeaders(WriteShape(shape));
+
+        foreach (Phdr load in phdrs.Where(p => p.Type == 1))
+            Assert.False((load.Flags & (Readable | Executable)) == (Readable | Executable),
+                $"A load segment at 0x{load.Addr:X} asks for read and execute together.");
+
+        // Only the four protections a module is built from ever appear.
+        foreach (Phdr load in phdrs.Where(p => p.Type == 1))
+            Assert.Contains(load.Flags, (uint[])[0, Executable, Readable, Readable | Writable]);
+
+        // The mapped pair the loader requires: something to run, and something to write to.
+        Assert.Contains(phdrs, p => p.Type == 1 && (p.Flags & Executable) != 0);
+        Assert.Contains(phdrs, p => p.Type == 1 && (p.Flags & Executable) == 0 && (p.Flags & Writable) != 0);
+    }
+
+    [Theory]
+    [MemberData(nameof(EveryModuleShape))]
+    public void Write_PageAlignsEveryMappedLoadSegment(string shape)
+    {
+        // Every load segment that is mapped has to sit on a page boundary in address, file offset and
+        // alignment. The linking segment carries no protection and is not mapped, so it is exempt.
+        const ulong Page = 0x4000;
+        foreach (Phdr load in ReadProgramHeaders(WriteShape(shape)).Where(p => p.Type == 1 && p.Flags != 0))
+        {
+            Assert.Equal(Page, load.Align);
+            Assert.Equal(0ul, load.Addr % Page);
+            Assert.Equal(0ul, load.Offset % Page);
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(EveryModuleShape))]
+    public void Write_OmitsRelroRatherThanEmittingOneWithoutItsLoadSegment(string shape)
+    {
+        // A relro header is only accepted when a writable load segment matches it on offset, address
+        // and both sizes; an unmatched one is rejected. The linker does not emit the header at all,
+        // which skips the check. If it ever starts emitting one, the match has to hold.
+        List<Phdr> phdrs = ReadProgramHeaders(WriteShape(shape));
+        foreach (Phdr relro in phdrs.Where(p => p.Type == 0x6474E552))
+            Assert.Contains(phdrs, p => p.Type == 1 && p.Flags == 6
+                && p.Offset == relro.Offset && p.Addr == relro.Addr
+                && p.FileSize == relro.FileSize && p.MemSize == relro.MemSize);
     }
 
     [Theory]
