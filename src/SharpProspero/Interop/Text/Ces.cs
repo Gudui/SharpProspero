@@ -6,39 +6,21 @@ using System.Runtime.InteropServices;
 namespace SharpProspero.Interop.Text;
 
 /// <summary>
-/// Character-encoding conversion, for text the managed framework's own encodings do not cover. Each call
-/// converts a source buffer into a destination buffer, writing how many source units it consumed and how
-/// many destination units it produced. The Unicode transformations need no profile; the legacy Asian
-/// encodings take a conversion-profile pointer, which may be null for the default profile. Signatures from
-/// the ces headers; the module is <c>libSceCesCs</c>.
+/// Character-encoding conversion for the legacy Asian encodings, which the managed framework's own
+/// encodings do not cover. Each call converts a source buffer into a destination buffer, writing how many
+/// source units it consumed and how many it produced, and takes a conversion-profile pointer which may be
+/// null for the default profile. The module is <c>libSceCesCs</c>; it converts between these encodings and
+/// UTF-8 only, so use the framework's own encodings to go on to UTF-16 or UTF-32.
 /// </summary>
 public static unsafe partial class Ces
 {
     private const string Lib = "libSceCesCs";
 
-    /// <summary>Converts UTF-8 to UTF-16.</summary>
-    [LibraryImport(Lib)]
-    public static partial int sceCesUtf8ToUtf16(byte* utf8Buffer, uint utf8Max, uint* utf8Length, ushort* utf16Buffer, uint utf16Max, uint* utf16Length);
 
-    /// <summary>Converts UTF-16 to UTF-8.</summary>
-    [LibraryImport(Lib)]
-    public static partial int sceCesUtf16ToUtf8(ushort* utf16Buffer, uint utf16Max, uint* utf16Length, byte* utf8Buffer, uint utf8Max, uint* utf8Length);
 
-    /// <summary>Converts one UTF-8 sequence to a UTF-32 code point.</summary>
-    [LibraryImport(Lib)]
-    public static partial int sceCesUtf8ToUtf32(byte* utf8Buffer, uint utf8Max, uint* consumed, uint* utf32);
 
-    /// <summary>Converts a UTF-32 code point to UTF-8.</summary>
-    [LibraryImport(Lib)]
-    public static partial int sceCesUtf32ToUtf8(uint utf32, byte* utf8Buffer, uint utf8Max, uint* utf8Length);
 
-    /// <summary>Converts one UTF-16 sequence to a UTF-32 code point.</summary>
-    [LibraryImport(Lib)]
-    public static partial int sceCesUtf16ToUtf32(ushort* utf16Buffer, uint utf16Max, uint* utf16Length, uint* utf32);
 
-    /// <summary>Converts a UTF-32 code point to UTF-16.</summary>
-    [LibraryImport(Lib)]
-    public static partial int sceCesUtf32ToUtf16(uint utf32, ushort* utf16Buffer, uint utf16Max, uint* utf16Length);
 
     /// <summary>Converts EUC-JP (Japanese) to UTF-8. Pass null for the default profile.</summary>
     [LibraryImport(Lib)]

@@ -117,12 +117,38 @@ The rest of what the loader insists on, in one list:
   size rounds up to the page, because the loader protects whole pages — it does not match the load's
   memory size, and a module built by the toolchain the format comes from carries that rounding.
 
+Sections are placed one **output section** at a time, not one object at a time: every object's
+contribution to a name is gathered into one run, and a name the compiler splits (`.text.f`) belongs to
+its prefix (`.text`). The order within each segment is the one a built module uses:
+
+| Segment | Order |
+|---|---|
+| Code | `.init`, `.text`, `.fini`, then the rest, then the linkage table |
+| Read-only | `.rodata`, `.eh_frame`, then the rest, then the frame index |
+| Bound-then-constant | `.data.rel.ro`, `.got`, `.init_array`, `.fini_array`, `.sce_process_param`, `__modules`, then the thread-local template aligned to 32 |
+| Writable | `.data`, `.bss`, then the rest — what it stores before what it only reserves |
+
+Gathering by name is what makes a name a contiguous run, which two things depend on: the call-frame
+records are read as one chain, and the constructor array is named by one address and one length.
+
 Where the linking segment goes is fixed too, and by measurement rather than by rule. Across seventy
 installed titles that start, without exception: its address is where the writable segment's memory
 ends, so it falls inside the pages that segment is mapped over, and its file offset is never
 page-aligned — it carries the same page offset as its address, at the first such offset past the
 writable segment's stored bytes. Rounding it up to its own page instead is a shape no module that
 starts has.
+
+Every mapped segment stores something. A segment that stores nothing is carried by the container as a
+pair of zero-length entries sharing one file offset with whatever follows, and none of the seventy
+containers measured that start carries a zero-length entry. A module with no writable data of its own is
+where this happens: the group is still there, and it still has to store a word. The container refuses
+such a segment as well, so it cannot be reached from either direction.
+
+The linking group's tables come in one order: the **string table at the group's base address**, then the
+symbol table, the binding records, the relocation table, the hash, the note, and the dynamic table last.
+Sixty-nine of the seventy modules measured lay them out this way and the seventieth names no tables to
+read; the modules the SDK ships agree. Each table begins where the one before it ends, rounded up to
+eight — four for the note — with no padding beyond that.
 
 Three more things the linker writes that are easy to leave out, and that only show up much later:
 
@@ -263,8 +289,28 @@ Wrote .../module/eboot.bin (1090320 bytes, signed container).
 
 Every module is wrapped, the one built here and the ones the application carries: a copy taken from
 a module folder is an unwrapped ELF and is turned away exactly as an unwrapped `eboot.bin` is. The
-step leaves an already-wrapped file untouched, so re-running a build is safe. The
-packager reports the result as part of its launch-readiness summary:
+step leaves an already-wrapped file untouched, so re-running a build is safe.
+
+### What the header carries
+
+The writer produces the header shape built around the magic `0xEEF51454`: a metadata region ending in a
+`0x200`-byte signature area, which for the twelve entries a module carries makes the region `0x610`
+bytes. The magic and the region length go together — a container that mixes one magic with the other's
+region length matches nothing that has been measured — so the two are written as a pair and never
+separately.
+
+A module's **version records** live in a segment nothing maps, so no container segment carries them.
+They follow the last stored segment instead, past the size the header declares, and reading a container
+back puts them where the program header places them.
+
+A module already wrapped in the other header shape is re-wrapped rather than left alone, so a library
+carried over from an earlier build cannot ship with a mismatched header:
+
+```
+sce_module/libc.prx is wrapped in the older header shape; wrapping it again.
+```
+
+The packager reports the result as part of its launch-readiness summary:
 
 ```
 Launch readiness: ready
@@ -318,11 +364,16 @@ refuses.
 
 Two of the forwarders in the compat object are worth knowing about, because they do more than forward:
 
-- **Memory** comes from the flexible pool, which has no equivalent of the ordinary anonymous mapping.
-  Asking for no access reserves address room without spending the pool; the first write arrives as a
-  protection change, and that is where memory is taken. Both round to whole pages, because the pool
-  refuses any length that is not a multiple of one, while the ordinary call answers a request for a
-  few hundred bytes with a page.
+- **Memory** comes from the flexible pool. The device publishes the calls that change protection and
+  release memory, but not the one that takes it, so a module brings its own — and its own protection
+  change too, because the two have to agree. Asking for no access reserves address room without
+  spending the pool. The protection change then takes the memory: it asks the pool first, at that exact
+  address and refusing rather than replacing anything already there, and only falls back to a plain
+  protection change when the range already holds memory. That order matters. A protection change over a
+  reserved range *succeeds* without attaching anything to it, so asking for it first would leave the
+  memory untaken, tell the caller the range is his, and fault on the first write. Both round to whole
+  pages, because the pool refuses any length that is not a multiple of one, while the ordinary call
+  answers a request for a few hundred bytes with a page.
 - **The module's own address** is reported by reading the image start instruction-relative, which is
   the only way a module can learn where it was placed. The runtime uses that as the handle identifying
   the module, so answering "not found" would register it under a handle no address matches.

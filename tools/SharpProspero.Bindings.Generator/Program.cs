@@ -10,6 +10,7 @@ using SharpProspero.Link;
 using SharpProspero.Prx;
 using SharpProspero.Texture;
 using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -1036,10 +1037,19 @@ internal static class Program
                 // Wrapping a module that is already wrapped would nest one container inside another and
                 // produce a file nothing can load. Report it and leave the input as it is, so running
                 // the step twice - or over a folder that mixes built and supplied modules - is safe.
+                // A module wrapped in the other header shape is the exception: its metadata region is
+                // sized for the other magic, which the loader turns away, so unwrap it and wrap it again
+                // rather than shipping it as it stands.
                 if (SelfContainer.IsSelf(data))
                 {
-                    Console.WriteLine($"{file} is already wrapped; left unchanged.");
-                    return 0;
+                    if (BinaryPrimitives.ReadUInt32LittleEndian(data) == SelfContainer.Magic)
+                    {
+                        Console.WriteLine($"{file} is already wrapped; left unchanged.");
+                        return 0;
+                    }
+
+                    Console.WriteLine($"{file} is wrapped in the older header shape; wrapping it again.");
+                    data = SelfContainer.ExtractElf(data);
                 }
 
                 // A version or authority given but not a valid hex number is a mistake (a dotted "9.00",

@@ -124,15 +124,18 @@ public sealed class SelfSignOptions
 public static class SelfContainer
 {
     /// <summary>
-    /// The container header magic this type writes, at file offset 0x00. Two magics are in use and
-    /// the loader recognises both, treating them the same; modules carrying either one run. They are
-    /// not interchangeable in isolation, because each goes with a different signature-area size in the
-    /// metadata region. This is the pairing carried by the modules the toolchain is matched against.
+    /// The container header magic this type writes, at file offset 0x00. Two magics appear on modules,
+    /// and each goes together with a particular signature-area size in the metadata region. Modules
+    /// carrying either pairing run; one magic with the other's size matches no module measured, so the
+    /// two are written together and never separately. This magic pairs with <see cref="SignatureSize"/>.
     /// </summary>
-    public const uint Magic = 0x1D3D154F;
+    public const uint Magic = 0xEEF51454;
 
-    /// <summary>The second valid container header magic, which pairs with a larger signature area.</summary>
-    public const uint AlternateMagic = 0xEEF51454;
+    /// <summary>
+    /// The other container header magic a reader accepts. It pairs with a signature area 0x100 bytes
+    /// smaller than <see cref="SignatureSize"/>, so this type reads it but does not write it.
+    /// </summary>
+    public const uint AlternateMagic = 0x1D3D154F;
 
     private const int ContainerHeaderSize = 0x20;
     private const int SegEntrySize = 0x20;
@@ -145,7 +148,10 @@ public static class SelfContainer
     // code runs and without anything being written to the log.
     private const int MetaBlockSize = 0x50;
     private const int MetaFooterSize = 0x50;
-    private const int SignatureSize = 0x100;
+    // The signature area closes the metadata region out. Its size goes with the header magic rather
+    // than with the segment count, and it stays zero-filled: nothing reads what occupies it, but the
+    // region still has to reach its full length, because the segment data starts where it ends.
+    internal const int SignatureSize = 0x200;
 
     /// <summary>The metadata region size for <paramref name="segmentCount"/> segment-table entries.</summary>
     internal static int MetaSize(int segmentCount) =>
@@ -189,6 +195,9 @@ public static class SelfContainer
     private const uint PtModuleData = 0x61000000;
     private const uint PtRelro = 0x61000010;
     private const uint PtComment = 0x6FFFFF00;
+    // The record segment that holds the component version entries. It is never mapped, so the container
+    // keeps its bytes after the last stored segment rather than as a segment of its own.
+    private const uint PtVersionRecords = 0x6FFFFF01;
 
     /// <summary>Returns whether the buffer begins with a signed-container header.</summary>
     public static bool IsSelf(ReadOnlySpan<byte> data)
@@ -385,9 +394,34 @@ public static class SelfContainer
             payload.AsSpan(0, copy).CopyTo(output.AsSpan((int)pOffset));
         }
 
+        // The version records sit after the last stored segment rather than in a segment of their own,
+        // so put them back where the program header places them. Without this the rebuilt module is
+        // short exactly those bytes and no digest over it agrees with the one the container carries.
+        (int versionOffset, int versionLength) = FindVersionRecords(image.Elf, phnum, size);
+        if (versionLength > 0)
+        {
+            int tail = LastStoredEnd(image.Segments);
+            if (tail > 0 && RangeInBounds((ulong)tail, (ulong)versionLength, data.Length)
+                && RangeInBounds((ulong)versionOffset, (ulong)versionLength, size))
+                data.Slice(tail, versionLength).CopyTo(output.AsSpan(versionOffset));
+        }
+
         // The stored ELF header and program headers are authoritative for the first region.
         image.Elf.AsSpan(0, phTableEnd).CopyTo(output);
         return output;
+    }
+
+    // Where the last stored segment ends, which is where the version records begin.
+    private static int LastStoredEnd(IReadOnlyList<SelfSegment> segments)
+    {
+        long end = 0;
+        foreach (SelfSegment seg in segments)
+        {
+            if (seg.FileOffset > int.MaxValue || seg.FileSize > (ulong)int.MaxValue - seg.FileOffset)
+                continue;
+            end = Math.Max(end, (long)(seg.FileOffset + seg.FileSize));
+        }
+        return end > int.MaxValue ? 0 : (int)end;
     }
 
     /// <summary>
@@ -397,11 +431,23 @@ public static class SelfContainer
     /// </summary>
     /// <param name="data">The container file bytes.</param>
     public static SelfIntegrity CheckIntegrity(ReadOnlySpan<byte> data)
+        => CheckIntegrity(data, ReadOnlySpan<byte>.Empty);
+
+    /// <summary>
+    /// Compares the digest stored in the container's extended info with a SHA-256 over
+    /// <paramref name="module"/>, which is the module the container was built from. The digest covers
+    /// the module in full, including any record-keeping the container does not store, so this is the
+    /// form that can confirm a match for every module. Passing an empty span falls back to the image
+    /// rebuilt from the container, which agrees only when the container stores the whole module.
+    /// </summary>
+    /// <param name="data">The container file bytes.</param>
+    /// <param name="module">The module the container carries, or empty to rebuild it from the container.</param>
+    public static SelfIntegrity CheckIntegrity(ReadOnlySpan<byte> data, ReadOnlySpan<byte> module)
     {
         SelfImage image = Parse(data);
         if (image.ExtInfo is not SelfExtInfo ext || ext.Digest is null || ext.Digest.Length != 32)
             return new SelfIntegrity(false, false, [], []);
-        byte[] computed = SHA256.HashData(ExtractElf(data));
+        byte[] computed = SHA256.HashData(module.IsEmpty ? ExtractElf(data) : module.ToArray());
         bool matches = computed.AsSpan().SequenceEqual(ext.Digest);
         return new SelfIntegrity(true, matches, ext.Digest, computed);
     }
@@ -479,7 +525,16 @@ public static class SelfContainer
         }
         int fileSize = cursor;
 
-        var buffer = new byte[fileSize];
+        // A module keeps its version records in a segment that is never mapped, so no container segment
+        // carries them and the offset the program header records means nothing once the module is
+        // wrapped. The records follow the last stored segment instead, starting where it ends rather
+        // than on the next boundary, and they sit past the size the header declares.
+        int versionStart = selected.Count == 0
+            ? cursor
+            : segOffsets[^1] + selected[^1].FileSize;
+        (int versionOffset, int versionLength) = FindVersionRecords(elf, phnum, elf.Length);
+
+        var buffer = new byte[Math.Max(fileSize, versionStart + versionLength)];
         Span<byte> span = buffer.AsSpan();
 
         BinaryPrimitives.WriteUInt32LittleEndian(span, Magic);
@@ -516,12 +571,12 @@ public static class SelfContainer
         BinaryPrimitives.WriteUInt64LittleEndian(span[(extInfoStart + 0x08)..], 1); // program type
         BinaryPrimitives.WriteUInt64LittleEndian(span[(extInfoStart + 0x10)..], options.AppVersion);
         BinaryPrimitives.WriteUInt64LittleEndian(span[(extInfoStart + 0x18)..], options.FirmwareVersion);
-        // The digest covers what the container carries. A module keeps some of its record-keeping past
-        // the last segment the container stores - the version record and the note in the tail - and a
-        // digest taken over the input rather than over what is stored would never match again once the
-        // container is read back. Zeroing what is not carried, then digesting, covers every stored byte
-        // and still changes the moment one of them does.
-        SHA256.HashData(CarriedImage(elf, phnum, selected)).CopyTo(span[(extInfoStart + 0x20)..]);
+        // The digest covers the module exactly as it was handed in, every byte of it. A module keeps
+        // some of its record-keeping past the last segment the container stores - the note in the tail -
+        // so a reader working from the container alone cannot arrive at this value again; that is a
+        // property of the format, and <see cref="CheckIntegrity(ReadOnlySpan{byte}, ReadOnlySpan{byte})"/>
+        // checks it against the module instead.
+        SHA256.HashData(elf).CopyTo(span[(extInfoStart + 0x20)..]);
 
         BinaryPrimitives.WriteUInt64LittleEndian(span[(extInfoStart + ExtInfoSize)..], 3); // control block type
 
@@ -532,7 +587,31 @@ public static class SelfContainer
         for (int k = 0; k < selected.Count; k++)
             elf.AsSpan(selected[k].FileOffset, selected[k].FileSize).CopyTo(span[segOffsets[k * 2 + 1]..]);
 
+        if (versionLength > 0)
+            elf.AsSpan(versionOffset, versionLength).CopyTo(span[versionStart..]);
+
         return buffer;
+    }
+
+    // The version records a module keeps in its unmapped record segment, as an offset and length into
+    // the module. A module without that segment reports a zero length and nothing is appended.
+    // <paramref name="limit"/> is how far the records are allowed to reach: the module's own length when
+    // the whole module is at hand, and the rebuilt extent when only the header region is.
+    private static (int Offset, int Length) FindVersionRecords(byte[] elf, int phnum, long limit)
+    {
+        for (int i = 0; i < phnum; i++)
+        {
+            int p = ElfHeaderSize + i * ElfPhdrSize;
+            if (BinaryPrimitives.ReadUInt32LittleEndian(elf.AsSpan(p)) != PtVersionRecords)
+                continue;
+            ulong off = BinaryPrimitives.ReadUInt64LittleEndian(elf.AsSpan(p + 0x08));
+            ulong size = BinaryPrimitives.ReadUInt64LittleEndian(elf.AsSpan(p + 0x20));
+            if (size == 0 || off > int.MaxValue || size > (ulong)int.MaxValue - off
+                || off + size > (ulong)limit)
+                return (0, 0);
+            return ((int)off, (int)size);
+        }
+        return (0, 0);
     }
 
     private readonly record struct SelectedSegment(int PhdrIndex, int FileOffset, int FileSize);
@@ -575,6 +654,19 @@ public static class SelfContainer
             ulong fsz = BinaryPrimitives.ReadUInt64LittleEndian(elf.AsSpan(p + 0x20));
             if (!RangeInBounds(off, fsz, elf.Length))
                 continue;
+            // A segment storing nothing is carried as a pair of zero-length entries sharing one file
+            // offset with whatever follows. None of the seventy modules measured that start carries a
+            // zero-length entry, its digest table covers no blocks, and two entries at one offset leave
+            // the table no longer ascending. A module that stores nothing in a mapped segment is
+            // malformed at the source, so it is refused here rather than wrapped into that shape.
+            if (fsz == 0)
+            {
+                if (pType == PtLoad && BinaryPrimitives.ReadUInt32LittleEndian(elf.AsSpan(p + 4)) != 0)
+                    throw new PrxFormatException(
+                        $"Program header {i} is mapped but stores nothing. A container carries such a segment as a " +
+                        "zero-length entry, which no module that starts has.");
+                continue;
+            }
             if (pType == PtLoad || pType == PtModuleData || pType == PtRelro || pType == PtComment)
                 result.Add(new SelectedSegment(i, (int)off, (int)fsz));
         }

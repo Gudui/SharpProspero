@@ -11,6 +11,7 @@
 using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 
 namespace SharpProspero.Link;
@@ -91,18 +92,29 @@ public static class PayloadWriter
         bool haveInit = false, haveFini = false;
         void PlaceArray(string name, ref ulong start, ref ulong end, ref bool have)
         {
+            // A constructor array given a priority carries that priority in its name, so it belongs to
+            // this array and has to be placed inside its run - matching the bare name skips it, and the
+            // run then covers only part of what should be walked. Within the run the order is the one
+            // the priorities ask for, lowest first, with the plain name last.
+            var members = new List<(ElfObject Obj, int Index)>();
             foreach (ElfObject obj in resolution.Included)
                 for (int i = 0; i < obj.Sections.Count; i++)
                 {
                     ElfSection sec = obj.Sections[i];
-                    if (sec is not { IsAlloc: true, IsTls: false, IsWritable: true } || sec.Name != name) continue;
-                    ulong o = Align(dataMem, sec.AddrAlign);
-                    offsetInGroup[(obj, i)] = o;
-                    dataMem = o + sec.Size;
-                    if (!sec.IsNoBits) dataFile = dataMem;
-                    if (!have) { start = o; have = true; }
-                    end = dataMem;
+                    if (sec is not { IsAlloc: true, IsTls: false, IsWritable: true }
+                        || DynamicWriter.OutputSectionName(sec.Name) != name) continue;
+                    members.Add((obj, i));
                 }
+            foreach ((ElfObject obj, int i) in members.OrderBy(m => DynamicWriter.ArrayPriority(m.Obj.Sections[m.Index].Name)))
+            {
+                ElfSection sec = obj.Sections[i];
+                ulong o = Align(dataMem, sec.AddrAlign);
+                offsetInGroup[(obj, i)] = o;
+                dataMem = o + sec.Size;
+                if (!sec.IsNoBits) dataFile = dataMem;
+                if (!have) { start = o; have = true; }
+                end = dataMem;
+            }
         }
         PlaceArray(".init_array", ref initStart, ref initEnd, ref haveInit);
         PlaceArray(".fini_array", ref finiStart, ref finiEnd, ref haveFini);

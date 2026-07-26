@@ -177,7 +177,4 @@ public static unsafe partial class Depth2
     [LibraryImport(Lib)]
     public static partial int sceDepth2GetImage(int handle, SceDepth2ImageType imageType, void* destinationBuffer, int destinationBufferSize);
 
-    /// <summary>Loads the camera's calibration data for depth generation.</summary>
-    [LibraryImport(Lib)]
-    public static partial int sceDepth2LoadCalibrationData(int handle);
 }

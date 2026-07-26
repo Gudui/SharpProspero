@@ -3,6 +3,7 @@
 
 using SharpProspero.Graphics;
 using SharpProspero.Prx;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -54,6 +55,73 @@ public sealed class StubCatalogCoverageTests
     }
 
     [Fact]
+    public void TheCatalogNamesEachLibraryTheWayAModuleThatStartsNamesIt()
+    {
+        // An import records three names: the library it binds to, the module publishing that library,
+        // and the file the loader loads. They are not always the same word, and getting the file wrong
+        // means naming a module that is not there. Each pairing below was read out of the import records
+        // of launching titles - the count is how many of them agree - so none of it is inferred from the
+        // library's name.
+        (string Library, string Module, string File, int Titles)[] measured =
+        [
+            ("libSceAjm", "libSceAjm", "libSceAjm.native.prx", 55),
+            ("libSceAppContent", "libSceAppContentUtil", "libSceAppContent.prx", 66),
+            ("libSceAudiodec", "libSceAudiodec", "libSceAudiodec.native.prx", 10),
+            ("libSceAvPlayer", "libSceAvPlayer", "libSceAvPlayer.native.prx", 33),
+            // These four are read out of the publishing modules themselves rather than out of the
+            // titles that import them, because each module records which libraries it publishes and
+            // under which file. The bus module publishes three libraries, and the device enquiries are
+            // in the second of them rather than the one named after the module; the character-set
+            // converter and the font engines each live in a file named nothing like their library.
+            ("libSceCes", "libSceCes", "libSceCesCs-module.prx", 0),
+            ("libSceDeviceService", "libSceMbus", "libSceMbus.prx", 0),
+            ("libSceFont", "libSceFont", "libSceFont-module.prx", 0),
+            ("libSceFontFt", "libSceFontFt", "libSceFontFt-module.prx", 0),
+            // Already right, kept here so the whole set is checked together.
+            ("libSceMsgDialog.native", "libSceMsgDialog", "libSceMsgDialog.native.prx", 0),
+            ("libSceSaveData_native", "libSceSaveData_native", "libSceSaveData.native.prx", 0),
+            ("libScePosix", "libkernel", "libkernel.prx", 0),
+        ];
+
+        foreach ((string library, string module, string file, int _) in measured)
+        {
+            StubCatalog.Entry entry = Assert.Single(StubCatalog.Core, e => e.Library == library);
+            Assert.Equal(module, entry.ModuleName ?? entry.Library);
+            Assert.Equal(file, entry.Soname ?? entry.Library + ".prx");
+        }
+    }
+
+    [Fact]
+    public void EveryNameTheCompatObjectReachesForIsOneTheCatalogResolves()
+    {
+        // The compat object defines what nothing publishes by reaching for what something does, so its
+        // own undefined names are imports like any other. A name it reaches that the catalog does not
+        // list is left unresolved, and a module whose imports do not all bind never reaches its first
+        // instruction - so adding a call here and forgetting the catalog breaks the module rather than
+        // the build. This is the check that turns that into a build failure.
+        var named = new HashSet<string>(StringComparer.Ordinal);
+        foreach (StubCatalog.Entry entry in StubCatalog.Core)
+            foreach (string name in entry.Exports)
+                named.Add(name);
+
+        SharpProspero.Link.ElfObject obj =
+            SharpProspero.Link.ElfObjectReader.Read(SharpProspero.Link.CompatEmitter.BuildObject(), "compat.o");
+        string[] reached = [.. obj.Symbols
+            .Where(s => s.IsUndefined && s.Name.Length > 0)
+            .Select(s => s.Name)
+            .Where(n => !named.Contains(n))
+            // The linker places these itself; they name no module.
+            .Where(n => n != SharpProspero.Link.CompatEmitter.ModuleBaseSymbol
+                     && n != SharpProspero.Link.CompatEmitter.TextEndSymbol
+                     && n != SharpProspero.Link.CompatEmitter.FrameIndexSymbol)
+            .Distinct().Order()];
+
+        Assert.True(reached.Length == 0,
+            "The compat object reaches for these, and no catalog entry names them, so a module using " +
+            "them would carry imports that cannot bind:\n  " + string.Join("\n  ", reached));
+    }
+
+    [Fact]
     public void TheCatalogNamesTheExpandedUserServiceEntries()
     {
         // A direct pin for the login-user query set, the omission the audit found: these are reached
@@ -62,5 +130,140 @@ public sealed class StubCatalogCoverageTests
         Assert.Contains("sceUserServiceGetLoginUserIdList", provided);
         Assert.Contains("sceUserServiceGetUserName", provided);
         Assert.Contains("sceUserServiceGetUserNumber", provided);
+    }
+
+    // Where the toolchain is installed, or null when it is not.
+    private static string? ToolchainRoot()
+    {
+        string? root = System.Environment.GetEnvironmentVariable("PROSPERO_SDK_DIR");
+        if (!string.IsNullOrEmpty(root) && System.IO.Directory.Exists(root))
+            return root;
+        const string Installed = @"C:\Program Files (x86)\SCE\Prospero SDKs\2.000";
+        return System.IO.Directory.Exists(Installed) ? Installed : null;
+    }
+
+    // The names a stub library publishes, read from its dynamic symbol table.
+    private static HashSet<string> PublishedNames(string path)
+    {
+        byte[] f = System.IO.File.ReadAllBytes(path);
+        var names = new HashSet<string>(System.StringComparer.Ordinal);
+        ulong shoff = System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(f.AsSpan(0x28));
+        int shnum = System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(f.AsSpan(0x3C));
+        for (int i = 0; i < shnum; i++)
+        {
+            int sh = (int)shoff + i * 64;
+            uint type = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(f.AsSpan(sh + 4));
+            if (type != 11) continue;                       // SHT_DYNSYM
+            ulong off = System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(f.AsSpan(sh + 0x18));
+            ulong size = System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(f.AsSpan(sh + 0x20));
+            uint link = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(f.AsSpan(sh + 0x28));
+            ulong strOff = System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(
+                f.AsSpan((int)shoff + (int)link * 64 + 0x18));
+            for (ulong e = 24; e < size; e += 24)
+            {
+                uint nameOff = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(f.AsSpan((int)(off + e)));
+                int at = (int)strOff + (int)nameOff;
+                int end = System.Array.IndexOf(f, (byte)0, at);
+                if (end > at) names.Add(System.Text.Encoding.ASCII.GetString(f, at, end - at));
+            }
+        }
+        return names;
+    }
+
+    // The file name a library's own stub declares for itself, or null when it declares none.
+    private static string? DeclaredFileName(string path)
+    {
+        byte[] f = System.IO.File.ReadAllBytes(path);
+        ulong shoff = System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(f.AsSpan(0x28));
+        int shnum = System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(f.AsSpan(0x3C));
+        for (int i = 0; i < shnum; i++)
+        {
+            int sh = (int)shoff + i * 64;
+            if (System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(f.AsSpan(sh + 4)) != 6)
+                continue;                                   // SHT_DYNAMIC
+            ulong off = System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(f.AsSpan(sh + 0x18));
+            ulong size = System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(f.AsSpan(sh + 0x20));
+            uint link = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(f.AsSpan(sh + 0x28));
+            ulong strOff = System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(
+                f.AsSpan((int)shoff + (int)link * 64 + 0x18));
+            for (ulong e = 0; e + 16 <= size; e += 16)
+            {
+                long tag = System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(f.AsSpan((int)(off + e)));
+                ulong value = System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(f.AsSpan((int)(off + e) + 8));
+                if (tag == 0) break;
+                if (tag != 14) continue;                    // DT_SONAME
+                int at = (int)strOff + (int)value;
+                int end = System.Array.IndexOf(f, (byte)0, at);
+                return System.Text.Encoding.ASCII.GetString(f, at, end - at);
+            }
+        }
+        return null;
+    }
+
+    [Fact]
+    public void EveryCatalogEntryNamesTheFileItsOwnLibraryDeclares()
+    {
+        // An import records three names, and the one the loader acts on is the file. Getting it wrong
+        // names a module that is not there, and every import bound to that library then fails - which
+        // stops the module before its first instruction rather than at the call. The file is not
+        // guessable from the library name: several libraries live in a file named nothing like them,
+        // and there is no rule to it. Each library declares its own file, and that is what is checked
+        // here, so the whole class is settled by the toolchain rather than one entry at a time.
+        string? root = ToolchainRoot();
+        if (root is null)
+            return;                                        // toolchain not installed on this machine
+
+        var wrong = new List<string>();
+        foreach (StubCatalog.Entry entry in StubCatalog.Core)
+        {
+            string library = entry.Library.Replace(".native", "").Replace("_native", "");
+            string stub = System.IO.Path.Combine(root, "target", "lib", library + "_stub_weak.a");
+            if (!System.IO.File.Exists(stub))
+                continue;
+            string? declared = DeclaredFileName(stub);
+            if (declared is null)
+                continue;
+            string named = entry.Soname ?? entry.Library + ".prx";
+            if (named != declared)
+                wrong.Add($"{entry.Library}: the catalog loads {named}, the library declares {declared}");
+        }
+
+        Assert.True(wrong.Count == 0,
+            "These entries name a file the library itself does not:\n  " + string.Join("\n  ", wrong));
+    }
+
+    [Fact]
+    public void EveryCatalogNameIsOneTheToolchainPublishes()
+    {
+        // The inverse of the check above. A name listed under a library that does not publish it
+        // produces an import nothing can bind, and the module never reaches its first instruction. The
+        // toolchain ships one stub library per module, and that is what each entry is measured against.
+        // Entries whose library ships no stub library are reached on the device only and are checked
+        // elsewhere; they are skipped rather than failed.
+        string? root = ToolchainRoot();
+        if (root is null)
+            return;                                        // toolchain not installed on this machine
+
+        // Names the device carries that the toolchain does not offer an application. Each one is
+        // confirmed present in the module that publishes it, so an import of it binds; the toolchain
+        // simply does not hand it out. Add to this only with that confirmation.
+        var deviceOnly = new HashSet<string>(StringComparer.Ordinal) { "sceSystemServiceLaunchApp" };
+
+        var wrong = new List<string>();
+        foreach (StubCatalog.Entry entry in StubCatalog.Core)
+        {
+            string library = entry.Library.Replace(".native", "").Replace("_native", "");
+            string stub = System.IO.Path.Combine(root, "target", "lib", library + "_stub_weak.a");
+            if (!System.IO.File.Exists(stub))
+                continue;
+            HashSet<string> published = PublishedNames(stub);
+            foreach (string name in entry.Exports)
+                if (!published.Contains(name) && !deviceOnly.Contains(name))
+                    wrong.Add($"{entry.Library}: {name}");
+        }
+
+        Assert.True(wrong.Count == 0,
+            "These catalog names are not published by the library they are listed under, so an import " +
+            "of them could never bind:\n  " + string.Join("\n  ", wrong));
     }
 }

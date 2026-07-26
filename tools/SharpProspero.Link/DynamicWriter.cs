@@ -19,6 +19,7 @@ using SharpProspero.Prx;
 using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 
 namespace SharpProspero.Link;
@@ -30,11 +31,56 @@ public static class DynamicWriter
     private const ushort TypeSceDynExec = 0xFE10;
     private const ushort TypeSceDynamic = 0xFE18;
     private const uint PfX = 1, PfW = 2, PfR = 4;
-    private const int EntryStubSize = 40; // the constructor walker the entry calls
+    private const int EntryStubSize = 47; // the constructor walker the entry calls
     /// <summary>Bytes reserved in front of the code so no address the module publishes is zero.</summary>
     public const ulong ImageHeadReserve = 16;
     // The section holding the call-frame records, which are laid end to end and closed by a terminator.
     private const string FrameSectionName = ".eh_frame";
+
+    // The order a built module carries its sections in, per group, read off a link map the toolchain the
+    // format comes from prints for itself. A name not listed follows the ones that are, in the order the
+    // objects carry it.
+    // A built module aligns the thread-local template to this before placing it, whatever its own
+    // sections ask for.
+    private const ulong TlsBlockAlign = 32;
+
+    private static readonly string[] CodeOrder = [".init", ".text", ".fini"];
+    private static readonly string[] ReadOnlyOrder = [".rodata", FrameSectionName];
+    private static readonly string[] RelroOrder =
+        [".data.rel.ro", ".got", ".got.plt", ".ctors", ".dtors", ".init_array", ".fini_array",
+         ".sce_process_param", "__modules"];
+    private static readonly string[] DataOrder = [".shader_header", ".data", ".bss"];
+
+    // The prefixes a compiler splits one output section across. `.text.f` belongs to `.text`, so the
+    // pieces every object contributes land together instead of being scattered among whatever else that
+    // object carries. Longest first, so `.data.rel.ro.x` is not taken for `.data.x`.
+    private static readonly string[] SectionPrefixes =
+        [".data.rel.ro", ".text", ".rodata", ".data", ".bss", ".init_array", ".fini_array",
+         ".tdata", ".tbss", ".gcc_except_table", FrameSectionName];
+
+    /// <summary>The name a section ends up under: its own, or the prefix it is a piece of.</summary>
+    internal static string OutputSectionName(string name)
+    {
+        foreach (string prefix in SectionPrefixes)
+            if (name.Length > prefix.Length && name[prefix.Length] == '.'
+                && name.StartsWith(prefix, StringComparison.Ordinal))
+                return prefix;
+        return name;
+    }
+
+    /// <summary>The two arrays whose order within a group is set by the priority in each section name.</summary>
+    private static readonly string[] ConstructorArrays = [".init_array", ".fini_array"];
+
+    /// <summary>
+    /// The priority a constructor-array section carries in its own name. A section named for one runs
+    /// before a section named for a higher one; a plain name carries none and runs last.
+    /// </summary>
+    internal static int ArrayPriority(string name)
+    {
+        int dot = name.LastIndexOf('.');
+        return dot > 0 && int.TryParse(name.AsSpan(dot + 1), out int priority) ? priority : int.MaxValue;
+    }
+
     // The linking group starts where the writable group's memory ends rather than on the next page, and
     // its file offset carries the same page offset as its address. Every module measured that starts is
     // laid out this way; none puts the group on a page of its own.
@@ -136,7 +182,13 @@ public static class DynamicWriter
         // Exported symbols: the module's own functions and data other modules can import. Each is a
         // defined symbol given a mangled export name under the module's own export library, numbered
         // after the import libraries. Their addresses are filled in once the layout is fixed.
-        int exportLibId = moduleIndex.Count;
+        //
+        // The number has to follow the **libraries**, not the modules. A module publishes more than one
+        // library often enough that the two counts differ, and when they do, counting modules names a
+        // library that is already an import library - so an export and an import share an id, and a
+        // reader resolving one gets the other. Libraries are numbered from zero without gaps, so their
+        // count is the first free id.
+        int exportLibId = libraryIndex.Count;
         var exports = new List<(string Mangled, ElfObject Obj, ElfSymbol Sym, bool IsFunc)>();
         if (exportSymbols is not null)
         {
@@ -170,30 +222,76 @@ public static class DynamicWriter
         ulong relroDataLen = 0, relroDataAlign = 8;
         ulong initArrayOff = 0, initArrayEnd = 0, finiArrayOff = 0, finiArrayEnd = 0;
         bool haveInit = false, haveFini = false;
-        void PlaceRelro(Func<ElfSection, bool> match, ref ulong start, ref ulong end, ref bool have)
+
+        // Sections are gathered by the name they end up under and placed one output section at a time,
+        // in the order a built module carries them. A section named `.text.f` belongs to `.text`, so
+        // every object's contribution to a name lands together rather than being scattered among the
+        // other sections that object happens to carry. That is what makes a name a contiguous run - the
+        // frame records need it to be read as one chain, and the constructor array needs it to be named
+        // by one address and one length.
+        var placed = new HashSet<(ElfObject, int)>();
+        List<(ElfObject Obj, int Index)> Gather(Func<ElfSection, bool> inGroup, string[] order)
         {
+            var byName = new Dictionary<string, List<(ElfObject, int)>>(StringComparer.Ordinal);
+            var seen = new List<string>();
             foreach (ElfObject obj in resolution.Included)
                 for (int i = 0; i < obj.Sections.Count; i++)
                 {
                     ElfSection sec = obj.Sections[i];
-                    if (sec is not { IsAlloc: true, IsTls: false, IsWritable: true, IsNoBits: false }
-                        || sectionOffsetInGroup.ContainsKey((obj, i)) || !match(sec))
+                    if (!sec.IsAlloc || sec.IsTls || placed.Contains((obj, i)) || !inGroup(sec))
                         continue;
-                    ulong o = Align(relroDataLen, sec.AddrAlign);
-                    sectionOffsetInGroup[(obj, i)] = o;
-                    relroSections.Add((obj, i));
-                    relroDataLen = o + sec.Size;
-                    if (sec.AddrAlign > relroDataAlign) relroDataAlign = sec.AddrAlign;
-                    if (!have) { start = o; have = true; }
-                    end = relroDataLen;
+                    string name = OutputSectionName(sec.Name);
+                    if (!byName.TryGetValue(name, out List<(ElfObject, int)>? list))
+                    {
+                        byName[name] = list = [];
+                        seen.Add(name);
+                    }
+                    list.Add((obj, i));
                 }
+            // Known names in the recorded order, then anything else in the order it was first seen.
+            seen.Sort((a, b) =>
+            {
+                int ra = Array.IndexOf(order, a), rb = Array.IndexOf(order, b);
+                if (ra < 0) ra = order.Length;
+                if (rb < 0) rb = order.Length;
+                return ra != rb ? ra.CompareTo(rb) : seen.IndexOf(a).CompareTo(seen.IndexOf(b));
+            });
+            // Within either constructor array, the order is the one each section's own name asks for:
+            // a section named for a priority runs before one named for a higher priority, and the
+            // plain name runs last. Grouping alone keeps them together but in the order the objects
+            // happened to be read, which is not the order the priority asks for.
+            foreach (string arrayName in ConstructorArrays)
+                if (byName.TryGetValue(arrayName, out List<(ElfObject, int)>? array))
+                    byName[arrayName] = [.. array.OrderBy(e => ArrayPriority(e.Item1.Sections[e.Item2].Name))];
+
+            var result = new List<(ElfObject, int)>();
+            foreach (string name in seen)
+                result.AddRange(byName[name]);
+            foreach ((ElfObject, int) s in result)
+                placed.Add(s);
+            return result;
         }
-        bool unused = false;
-        ulong ignore = 0;
-        PlaceRelro(s => s.Name == ".init_array", ref initArrayOff, ref initArrayEnd, ref haveInit);
-        PlaceRelro(s => s.Name == ".fini_array", ref finiArrayOff, ref finiArrayEnd, ref haveFini);
-        PlaceRelro(s => s.Name == ".data.rel.ro" || s.Name.StartsWith(".data.rel.ro.", StringComparison.Ordinal),
-            ref ignore, ref ignore, ref unused);
+
+        // The relocated-then-constant group, in the order a built module carries it. The two arrays are
+        // contiguous within it so a single address and length names each.
+        foreach ((ElfObject obj, int i) in Gather(
+            s => s is { IsWritable: true, IsNoBits: false } && RelroOrder.Contains(OutputSectionName(s.Name)),
+            RelroOrder))
+        {
+            ElfSection sec = obj.Sections[i];
+            ulong o = Align(relroDataLen, sec.AddrAlign);
+            sectionOffsetInGroup[(obj, i)] = o;
+            relroSections.Add((obj, i));
+            relroDataLen = o + sec.Size;
+            if (sec.AddrAlign > relroDataAlign) relroDataAlign = sec.AddrAlign;
+            // The bounds are taken from the name the section is placed under, not the name it carries.
+            // A constructor array given a priority carries that priority in its name, so matching the
+            // raw name missed it entirely: the array was laid out, and the walker was then told it
+            // spanned nothing, so those constructors were never run and nothing said so.
+            string placedAs = OutputSectionName(sec.Name);
+            if (placedAs == ".init_array") { if (!haveInit) { initArrayOff = o; haveInit = true; } initArrayEnd = relroDataLen; }
+            if (placedAs == ".fini_array") { if (!haveFini) { finiArrayOff = o; haveFini = true; } finiArrayEnd = relroDataLen; }
+        }
 
         // An executable runs its own global constructors: the loader runs the init array of a shared
         // library it loads, but not of the main executable - that is the start code's job. Without this
@@ -225,43 +323,48 @@ public static class DynamicWriter
         bool hasTls = tlsMemLen > 0;
         ulong tlsAlignedMem = Align(tlsMemLen, tlsAlign);
 
-        // The writable group is laid out in two passes: everything with stored bytes first, then
-        // everything that is only reserved. That keeps the stored bytes contiguous at the front, so the
-        // group stores what it has and reserves the rest. Placing sections in the order the objects
-        // carry them instead would put a reserved section between two stored ones, and the group would
-        // have to store the whole span, writing out as zeros what it could have simply reserved.
+        // The code group. A built module opens it with the start-up and shutdown routines and the code,
+        // and closes it with whatever else the objects mark executable.
+        foreach ((ElfObject obj, int i) in Gather(s => s.IsExecutable, CodeOrder))
+        {
+            ElfSection sec = obj.Sections[i];
+            sectionOffsetInGroup[(obj, i)] = textLen = Align(textLen, sec.AddrAlign);
+            textLen += sec.Size;
+        }
+
+        // The read-only group. The frame records form one chain read from the first record to a
+        // terminator, so every object's contribution has to sit in one run with nothing between: a gap
+        // ends the chain early and leaves every record after it unreachable to anything reading the
+        // chain rather than the index. Gathering by name is what puts them in one run.
+        bool frameRunClosed = false;
+        foreach ((ElfObject obj, int i) in Gather(s => !s.IsWritable && !s.IsExecutable, ReadOnlyOrder))
+        {
+            ElfSection sec = obj.Sections[i];
+            bool frames = OutputSectionName(sec.Name) == FrameSectionName;
+            // The chain's terminating zero closes the run, before whatever follows it. Nothing is
+            // written there: the image starts out zeroed, so reserving the four bytes is what puts the
+            // terminator in. Without it a reader walking the chain runs off the last record into
+            // whatever follows and keeps going.
+            if (!frames && frameLen > 0 && !frameRunClosed) { roLen = Align(roLen, 4) + 4; frameRunClosed = true; }
+            sectionOffsetInGroup[(obj, i)] = roLen = frames && frameLen > 0 ? roLen : Align(roLen, sec.AddrAlign);
+            roLen += sec.Size;
+            if (frames) frameLen += sec.Size;
+        }
+        if (frameLen > 0 && !frameRunClosed) roLen = Align(roLen, 4) + 4;
+
+        // The writable group: what it stores first, then what it only reserves. Placing a reserved
+        // section between two stored ones would force the group to store the whole span and write out as
+        // zeros what it could have reserved.
+        var writable = Gather(s => s.IsWritable, DataOrder);
         for (int pass = 0; pass < 2; pass++)
-            foreach (ElfObject obj in resolution.Included)
-                for (int i = 0; i < obj.Sections.Count; i++)
-                {
-                    ElfSection sec = obj.Sections[i];
-                    if (!sec.IsAlloc || sec.IsTls || sectionOffsetInGroup.ContainsKey((obj, i))) continue;
-                    if (!sec.IsWritable)
-                    {
-                        // Frame sections close the read-only group, laid end to end. They form one chain
-                        // that is read record by record from the first to the terminator, so a gap or an
-                        // unrelated section between two of them ends the chain early - every record after
-                        // it is then unreachable to anything reading the chain rather than the index.
-                        bool frames = !sec.IsExecutable && sec.Name == FrameSectionName;
-                        if ((pass == 0) == frames) continue;
-                        if (sec.IsExecutable) { sectionOffsetInGroup[(obj, i)] = textLen = Align(textLen, sec.AddrAlign); textLen += sec.Size; }
-                        else
-                        {
-                            sectionOffsetInGroup[(obj, i)] = roLen = frames && frameLen > 0 ? roLen : Align(roLen, sec.AddrAlign);
-                            roLen += sec.Size;
-                            if (frames) frameLen += sec.Size;
-                        }
-                        continue;
-                    }
-                    if ((pass == 0) == sec.IsNoBits) continue;          // stored sections in pass 0
-                    ulong o = Align(dataMem, sec.AddrAlign);
-                    sectionOffsetInGroup[(obj, i)] = o; dataMem = o + sec.Size;
-                    if (!sec.IsNoBits) dataLen = dataMem;
-                }
-        // The chain ends with a length of zero. Nothing is written there: the image starts out zeroed, so
-        // reserving the four bytes is what puts the terminator in. Without it a reader walking the chain
-        // runs straight off the last record into whatever follows and keeps going.
-        if (frameLen > 0) roLen += 4;
+            foreach ((ElfObject obj, int i) in writable)
+            {
+                ElfSection sec = obj.Sections[i];
+                if ((pass == 0) == sec.IsNoBits) continue;
+                ulong o = Align(dataMem, sec.AddrAlign);
+                sectionOffsetInGroup[(obj, i)] = o; dataMem = o + sec.Size;
+                if (!sec.IsNoBits) dataLen = dataMem;
+            }
 
         // The exception-frame index is built from the frame sections when the compiler emitted them in
         // a form the index covers; otherwise it is omitted and the frames still resolve by linear scan.
@@ -393,12 +496,16 @@ public static class DynamicWriter
         }
         byte[] dynstrBytes = dynstr.ToBytes();
         byte[] dynsymBytes = [.. dynsym];
-        // The hash table is indexed by name, so it is built from the names in symbol-table order.
+        // The hash table is indexed by the name a symbol was written with, not by the shortened name the
+        // string table ends up holding. Every module measured that starts is built this way: the string
+        // table holds the shortened form, and the bucket a symbol sits in is the hash of the plain name
+        // it had before it was shortened. Checked over four modules the other toolchain built - 581
+        // symbols - and every one of them lands where hashing the plain name puts it.
         var dynsymNames = new List<string>(imports.Count + exports.Count + 1) { "" };
         foreach (Import imp in imports)
-            dynsymNames.Add(imp.MangledName);
-        foreach ((string mangled, ElfObject _, ElfSymbol _, bool _) in exports)
-            dynsymNames.Add(mangled);
+            dynsymNames.Add(imp.PlainName);
+        foreach ((string _, ElfObject _, ElfSymbol sym, bool _) in exports)
+            dynsymNames.Add(sym.Name);
         byte[] hashBytes = BuildSysVHash(dynsymNames);
         // The imports that something calls, in the order they were collected. Only these take a slot in
         // the linkage table and a binding record; the rest are reached through a relocation on the
@@ -419,10 +526,19 @@ public static class DynamicWriter
             if (gs.Type != SymType.Tls && ProducesDynReloc(resolution, importByName, gs))
                 gotDataRelocCount++;
         }
-        byte[] relaDynBytes = new byte[(gotDataRelocCount + abs64Count) * 24];
+        // Six of the parameter-block pointers are always written; the seventh names the marker recording
+        // which C library the module was linked against, and a module linked against none has no such
+        // import to name. Sizing the table for seven regardless left a record of nothing but zeros
+        // inside the declared extent, which reads as a relocation of type none against address zero -
+        // something a reader walking the table to its declared end has to make sense of. The count is
+        // taken from the same condition the records are written under, so the two cannot drift apart.
+        int paramBlockPointers = ParamBlockPointers
+            + (importByName.ContainsKey(CompatEmitter.LibcMarkerName) ? 1 : 0);
+        byte[] relaDynBytes = new byte[(gotDataRelocCount + abs64Count + paramBlockPointers) * 24];
         byte[] pltBytes = new byte[16 + boundImports.Count * 16 + InitFiniSize];
         byte[] gotBytes = new byte[24 + boundImports.Count * 8 + gotDataOrder.Count * 8];
         byte[] procParam = BuildProcParam();
+        byte[] paramBlocks = BuildParamBlocks();
         byte[] note = BuildNote();
         string ownFileName = moduleFileName ?? (kind == ModuleKind.Library ? "prospero_module.prx" : "eboot.bin");
         byte[] comment = BuildComment(ownFileName);
@@ -461,6 +577,14 @@ public static class DynamicWriter
         // frame index, rather than the four its contents alone would need.
         ulong ehFrameHdrAddr = Align(roAddr + roLen, 8);
         ulong roEndAddr = ehFrameHdrSize > 0 ? ehFrameHdrAddr + (ulong)ehFrameHdrSize : roAddr + roLen;
+        // Where the code ends and where the frame index sits. A module describing itself to the
+        // unwinder needs both, and neither can be read back out of the image at runtime: they live in
+        // the image header, which is inside the code group, and that group is mapped to execute without
+        // read. Naming them here is what lets the description be built from instruction-relative
+        // addresses instead. A module carrying no frame index names the image start for it, which the
+        // description reads as having none.
+        linkerDefined[CompatEmitter.TextEndSymbol] = textSegEndAddr;
+        linkerDefined[CompatEmitter.FrameIndexSymbol] = ehFrameHdrSize > 0 ? ehFrameHdrAddr : textAddr;
         // First writable group: the global-offset table and the process parameters. The
         // relocation-read-only header covers this group, so the loader turns it read-only once it has
         // finished binding the module. That is what the table is for, and where the parameters belong -
@@ -475,16 +599,26 @@ public static class DynamicWriter
         // rather than in the plain writable group: it is a template each thread copies, written while
         // the module is bound and read-only afterwards. Only its stored bytes live in the image - the
         // rest of the template is per-thread and reserved when a thread is made.
-        ulong tlsAddr = Align(procAddr + (ulong)procParam.Length, tlsAlign);
-        ulong relroEndAddr = hasTls ? tlsAddr + tlsFileLen : procAddr + (ulong)procParam.Length;
+        // The template starts on a 32-byte boundary whatever its own sections ask for, which is what a
+        // built module does: the address is aligned to 32 before the first thread-local section is
+        // placed, so a template whose sections only need eight still begins at 32.
+        ulong paramBlocksAddr = Align(procAddr + (ulong)procParam.Length, 8);
+        ulong tlsAddr = Align(paramBlocksAddr + (ulong)paramBlocks.Length, Math.Max(TlsBlockAlign, tlsAlign));
+        ulong relroEndAddr = hasTls ? tlsAddr + tlsFileLen : paramBlocksAddr + (ulong)paramBlocks.Length;
 
         // Second writable group: the data the module writes to, and whatever it reserves past what it
         // stores. This one stays writable for the life of the process, so it has to sit outside the
         // group above - data covered by the relocation-read-only header faults on its first write.
         ulong dataAddr = Align(relroEndAddr, SegAlign);
-        // A module with no writable data still carries the segment, so the shape stays the same; it
-        // reserves a page and stores nothing.
-        ulong dataSegMem = dataMem > 0 ? dataMem : SegAlign;
+        // A module with no writable data of its own still carries the group, and it has to *store*
+        // something. A mapped segment that stores nothing is carried by the container as a pair of
+        // zero-length segments sharing one file offset, and none of the seventy modules measured that
+        // start carries a zero-length segment at all. It also has to reserve less than a whole page:
+        // reserving a page would end the group flush on a page boundary, and the linking group - which
+        // starts where this group's memory ends - would then begin on a page of its own at a
+        // page-aligned file offset, which no module that starts does either.
+        if (dataLen == 0) dataLen = 8;
+        ulong dataSegMem = Math.Max(dataMem, dataLen);
         ulong dataEndAddr = dataAddr + dataSegMem;
 
         // The dynamic-linking group holds every table the loader reads to bind the module: the symbol
@@ -493,13 +627,19 @@ public static class DynamicWriter
         // rather than image content. A module that names a dynamic table without also carrying this
         // segment is rejected while its program headers are scanned, before any of its code runs, so
         // the group is not an optional nicety - the module does not start without it.
+        // The tables come in one order and one only: the string table at the very base of the group,
+        // then the symbol table, the two relocation tables with the binding records first, the hash, the
+        // note, and the dynamic table last. Sixty-nine of the seventy modules measured that start lay
+        // them out exactly this way, as do the modules the SDK ships and a build of the same source by
+        // the other linker; nothing that starts uses a different one. Each table begins on an 8-aligned
+        // address, the note on a 4-aligned one, with no padding beyond what that alignment asks for.
         ulong dynlibAddr = Align(dataEndAddr, DynlibAlign);
-        ulong dynsymAddr = dynlibAddr;
-        ulong dynstrAddr = Align(dynsymAddr + (ulong)dynsymBytes.Length, 8);
-        ulong hashAddr = Align(dynstrAddr + (ulong)dynstrBytes.Length, 8);
-        ulong relaAddr = Align(hashAddr + (ulong)hashBytes.Length, 8);
+        ulong dynstrAddr = dynlibAddr;
+        ulong dynsymAddr = Align(dynstrAddr + (ulong)dynstrBytes.Length, 8);
+        ulong relaAddr = Align(dynsymAddr + (ulong)dynsymBytes.Length, 8);
         ulong relaDynAddr = Align(relaAddr + (ulong)relaBytes.Length, 8);
-        ulong noteAddr = Align(relaDynAddr + (ulong)relaDynBytes.Length, 4);
+        ulong hashAddr = Align(relaDynAddr + (ulong)relaDynBytes.Length, 8);
+        ulong noteAddr = Align(hashAddr + (ulong)hashBytes.Length, 4);
         ulong dynamicAddr = Align(noteAddr + (ulong)note.Length, 8);
 
         // Table slot and stub for each import something calls. An import nobody calls keeps both at
@@ -574,6 +714,21 @@ public static class DynamicWriter
             }
         }
 
+        // The process parameters name the three blocks. A built module leaves the pointers zero in the
+        // image and fills them in at load time, because the addresses are only known once the module is
+        // placed - which is why the block reads as all zeros in a finished module and is still not the
+        // same as one that has no pointers at all. Every module measured carries all three.
+        dynRelocs.Add(new DynReloc(procAddr + LibcParamOffset, RRelative, 0, paramBlocksAddr + (ulong)ParamBlockOffsets[0]));
+        dynRelocs.Add(new DynReloc(procAddr + KernelMemParamOffset, RRelative, 0, paramBlocksAddr + (ulong)ParamBlockOffsets[1]));
+        dynRelocs.Add(new DynReloc(procAddr + KernelFsParamOffset, RRelative, 0, paramBlocksAddr + (ulong)ParamBlockOffsets[2]));
+        // The C library's block names the three replacement tables, and the marker recording which
+        // library the module was linked against - that one is imported, so it is bound by name.
+        dynRelocs.Add(new DynReloc(paramBlocksAddr + MallocReplacePointer, RRelative, 0, paramBlocksAddr + (ulong)ParamBlockOffsets[3]));
+        dynRelocs.Add(new DynReloc(paramBlocksAddr + NewReplacePointer, RRelative, 0, paramBlocksAddr + (ulong)ParamBlockOffsets[4]));
+        dynRelocs.Add(new DynReloc(paramBlocksAddr + TlsMallocReplacePointer, RRelative, 0, paramBlocksAddr + (ulong)ParamBlockOffsets[5]));
+        if (importByName.TryGetValue(CompatEmitter.LibcMarkerName, out Import? marker))
+            dynRelocs.Add(new DynReloc(paramBlocksAddr + LibcMarkerPointer, RAbs64, (uint)marker.DynSymIndex, 0));
+
         // Order the table so every base-relative record leads it: the loader treats the first
         // relative-count records as relative and fast-paths them.
         int relativeCount = 0, w = 0;
@@ -629,7 +784,12 @@ public static class DynamicWriter
             relaAddr, (ulong)relaBytes.Length, gotAddr, dynsymBytes.Length,
             relaDynAddr, (ulong)relaDynBytes.Length, relativeCount,
             hasExports, origFileNameOff, moduleInfoName, exportLibId,
-            initArray, finiArray,
+            // An executable declares both arrays empty and runs its own constructors from the entry;
+            // declaring a real one would have the loader run them again before the entry is reached.
+            // A library has no entry of its own, so the loader is what runs its constructors and it
+            // names the array it actually carries.
+            kind == ModuleKind.Library ? initArray : (0, 0),
+            kind == ModuleKind.Library ? finiArray : (0, 0),
             initAddr, finiAddr);
 
         // The first reserved word of the linkage table holds the address of the dynamic table. The two
@@ -637,10 +797,37 @@ public static class DynamicWriter
         BinaryPrimitives.WriteUInt64LittleEndian(gotBytes, dynamicAddr);
 
         // Assemble the file.
-        return WriteFile(resolution, kind, entry, sectionData, SectionAddr,
+        // The extent of every output section, for the table the module names its regions with. Sections
+        // are already grouped by the name they end up under, so each name is one run.
+        var outputSections = new List<(string Name, ulong Addr, ulong Size, ulong Align, bool Exec, bool Writable, bool NoBits)>();
+        var outputIndex = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (ElfObject o in resolution.Included)
+            for (int i = 0; i < o.Sections.Count; i++)
+            {
+                ElfSection sec = o.Sections[i];
+                if (!sec.IsAlloc || sec.IsTls || !sectionOffsetInGroup.ContainsKey((o, i)) || sec.Size == 0)
+                    continue;
+                string name = OutputSectionName(sec.Name);
+                ulong at = SectionAddr(o, i);
+                if (outputIndex.TryGetValue(name, out int at2))
+                {
+                    var e = outputSections[at2];
+                    ulong lo = Math.Min(e.Addr, at), hi = Math.Max(e.Addr + e.Size, at + sec.Size);
+                    outputSections[at2] = (name, lo, hi - lo, Math.Max(e.Align, sec.AddrAlign),
+                        e.Exec, e.Writable, e.NoBits && sec.IsNoBits);
+                }
+                else
+                {
+                    outputIndex[name] = outputSections.Count;
+                    outputSections.Add((name, at, sec.Size, sec.AddrAlign, sec.IsExecutable, sec.IsWritable, sec.IsNoBits));
+                }
+            }
+        outputSections.Sort((a, b) => a.Addr.CompareTo(b.Addr));
+
+        return WriteFile(resolution, kind, entry, sectionData, SectionAddr, outputSections,
             text: (textAddr, textLen), pltAddr, pltBytes,
             roAddr, roLen, dynlibAddr, dynsymAddr, dynsymBytes, dynstrAddr, dynstrBytes, hashAddr, hashBytes,
-            relaAddr, relaBytes, relaDynAddr, relaDynBytes, procAddr, procParam, noteAddr, note,
+            relaAddr, relaBytes, relaDynAddr, relaDynBytes, procAddr, procParam, paramBlocksAddr, paramBlocks, noteAddr, note,
             ehFrameHdrAddr, ehFrameHdr, hasTls, tlsAddr, tlsFileLen, tlsMemLen, tlsAlign,
             relroAddr, relroEndAddr, dataAddr, dataLen, dataSegMem, gotAddr, gotBytes,
             dynamicAddr, dynamicBytes, comment, versionBlob);
@@ -1021,10 +1208,11 @@ public static class DynamicWriter
     private static byte[] WriteFile(
         LinkResolution resolution, ModuleKind kind, ulong entry,
         Dictionary<(ElfObject, int), byte[]> sectionData, Func<ElfObject, int, ulong> sectionAddr,
+        List<(string Name, ulong Addr, ulong Size, ulong Align, bool Exec, bool Writable, bool NoBits)> outputSections,
         (ulong Addr, ulong Len) text, ulong pltAddr, byte[] plt,
         ulong roAddr, ulong roLen, ulong dynlibAddr, ulong dynsymAddr, byte[] dynsym, ulong dynstrAddr, byte[] dynstr,
         ulong hashAddr, byte[] hash, ulong relaAddr, byte[] rela, ulong relaDynAddr, byte[] relaDyn,
-        ulong procAddr, byte[] proc, ulong noteAddr, byte[] note, ulong ehFrameHdrAddr, byte[] ehFrameHdr,
+        ulong procAddr, byte[] proc, ulong paramBlocksAddr, byte[] paramBlocks, ulong noteAddr, byte[] note, ulong ehFrameHdrAddr, byte[] ehFrameHdr,
         bool hasTls, ulong tlsAddr, ulong tlsFileLen, ulong tlsMemLen, ulong tlsAlign,
         ulong relroAddr, ulong relroEndAddr, ulong dataAddr, ulong dataLen, ulong dataSegMem,
         ulong gotAddr, byte[] got, ulong dynamicAddr, byte[] dynamic,
@@ -1088,15 +1276,36 @@ public static class DynamicWriter
         }
         const uint ShtProgBits = 1, ShtStrTab = 3, ShtRela = 4, ShtHash = 5, ShtDynamic = 6,
                    ShtNote = 7, ShtNoBits = 8, ShtDynSym = 11;
-        const ulong ShfWrite = 1, ShfAlloc = 2, ShfExec = 4;
-        AddSection(".text", ShtProgBits, ShfAlloc | ShfExec, text.Addr, textFileOff, textSegEnd - text.Addr, align: 16);
-        AddSection(".rodata", ShtProgBits, ShfAlloc, roAddr, roFileOff, roLen, align: 16);
+        const ulong ShfWrite = 1, ShfAlloc = 2, ShfExec = 4, ShfTls = 0x400;
+        // Every output section the objects contributed, named as it ends up.
+        foreach ((string nm, ulong addr, ulong size, ulong al, bool ex, bool wr, bool nb) in outputSections)
+        {
+            ulong groupOff = ex ? textFileOff
+                : addr >= relroAddr && addr < relroEndAddr ? relroFileOff
+                : wr ? dataFileOff : roFileOff;
+            ulong groupBase = ex ? text.Addr
+                : addr >= relroAddr && addr < relroEndAddr ? relroAddr
+                : wr ? dataAddr : roAddr;
+            AddSection(nm, nb ? ShtNoBits : ShtProgBits,
+                ShfAlloc | (ex ? ShfExec : 0) | (wr ? ShfWrite : 0),
+                addr, groupOff + (addr - groupBase), size, align: al);
+        }
+        AddSection(".plt", ShtProgBits, ShfAlloc | ShfExec, pltAddr, textFileOff + (pltAddr - text.Addr), (ulong)plt.Length, align: 16);
         AddSection(".eh_frame_hdr", ShtProgBits, ShfAlloc, ehFrameHdrAddr,
             roFileOff + (ehFrameHdrAddr - roAddr), (ulong)ehFrameHdr.Length, align: 8);
-        AddSection(".data.rel.ro", ShtProgBits, ShfAlloc | ShfWrite, relroAddr, relroFileOff, relroLen, align: 16);
-        AddSection(".data", ShtProgBits, ShfAlloc | ShfWrite, dataAddr, dataFileOff, dataLen, align: 16);
-        AddSection(".bss", ShtNoBits, ShfAlloc | ShfWrite, dataAddr + dataLen, dataFileOff + dataLen,
-            dataSegMem - dataLen, align: 16);
+        // The reserved head, and the regions the linker builds rather than taking from an object.
+        AddSection(".sce_padding", ShtProgBits, ShfAlloc, text.Addr, textFileOff, ImageHeadReserve, align: 1);
+        AddSection(".got", ShtProgBits, ShfAlloc | ShfWrite, gotAddr, relroFileOff + (gotAddr - relroAddr),
+            (ulong)got.Length, align: 8);
+        AddSection(".sce_process_param", ShtProgBits, ShfAlloc | ShfWrite, procAddr,
+            relroFileOff + (procAddr - relroAddr), (ulong)proc.Length, align: 8);
+        if (hasTls)
+        {
+            AddSection(".tdata", ShtProgBits, ShfAlloc | ShfWrite | ShfTls, tlsAddr,
+                relroFileOff + (tlsAddr - relroAddr), tlsFileLen, align: tlsAlign);
+            AddSection(".tbss", ShtNoBits, ShfAlloc | ShfWrite | ShfTls, tlsAddr + tlsFileLen,
+                relroFileOff + (tlsAddr + tlsFileLen - relroAddr), tlsMemLen - tlsFileLen, align: tlsAlign);
+        }
         // The linking tables, each named where the dynamic table says it is.
         AddSection(".dynstr", ShtStrTab, ShfAlloc, dynstrAddr, dynlibFileOff + (dynstrAddr - dynlibAddr), (ulong)dynstr.Length, align: 16);
         AddSection(".dynsym", ShtDynSym, ShfAlloc, dynsymAddr, dynlibFileOff + (dynsymAddr - dynlibAddr), (ulong)dynsym.Length,
@@ -1107,9 +1316,14 @@ public static class DynamicWriter
             link: ".dynsym", align: 8, entSize: 24);
         AddSection(".rela.dyn", ShtRela, ShfAlloc, relaDynAddr, dynlibFileOff + (relaDynAddr - dynlibAddr), (ulong)relaDyn.Length,
             link: ".dynsym", align: 8, entSize: 24);
-        AddSection(".note", ShtNote, ShfAlloc, noteAddr, dynlibFileOff + (noteAddr - dynlibAddr), (ulong)note.Length, align: 4);
+        AddSection(".note.gnu.build-id", ShtNote, ShfAlloc, noteAddr, dynlibFileOff + (noteAddr - dynlibAddr), (ulong)note.Length, align: 4);
         AddSection(".dynamic", ShtDynamic, ShfAlloc | ShfWrite, dynamicAddr, dynlibFileOff + (dynamicAddr - dynlibAddr),
             (ulong)dynamic.Length, link: ".dynstr", align: 8, entSize: 16);
+        // The regions past the last segment: the comment, the version records and the tail note. They
+        // carry no address, and naming them is what lets a reader show their contents.
+        AddSection(".prodg_meta_data", ShtProgBits, 0, 0, commentFileOff, (ulong)comment.Length, align: 16);
+        AddSection(".sceversion", ShtProgBits, 0, 0, versionFileOff, (ulong)versionBlob.Length, align: 1);
+        AddSection(".note", ShtNote, 0, 0, tailNoteFileOff, TailNoteLen, align: 4);
         int shstrIndex = sections.Count;
         sections.Add((shstr.Add(".shstrtab"), ShtStrTab, 0, 0, 0, 0, 0, 0, 1, 0));
         byte[] shstrBytes = shstr.ToBytes();
@@ -1177,8 +1391,10 @@ public static class DynamicWriter
         WritePh(PtDynamic, PfR | PfW, dynlibFileOff + (dynamicAddr - dynlibAddr), dynamicAddr, (ulong)dynamic.Length, (ulong)dynamic.Length, 8);
         WritePh(PtTls, PfR, hasTls ? relroFileOff + (tlsAddr - relroAddr) : relroFileOff,
             hasTls ? tlsAddr : relroAddr, tlsFileLen, tlsMemLen, hasTls ? tlsAlign : 1);
+        // The frame-lookup header asks for four, which is what all seventy modules measured that start
+        // carry and what the table's own entries are sized to; eight is an alignment no module uses.
         if (ehFrameHdr.Length > 0)
-            WritePh(PtGnuEhFrame, PfR, roFileOff + (ehFrameHdrAddr - roAddr), ehFrameHdrAddr, (ulong)ehFrameHdr.Length, (ulong)ehFrameHdr.Length, 8);
+            WritePh(PtGnuEhFrame, PfR, roFileOff + (ehFrameHdrAddr - roAddr), ehFrameHdrAddr, (ulong)ehFrameHdr.Length, (ulong)ehFrameHdr.Length, 4);
         // The dynamic-linking segment requests no protection: the loader reads it to bind the module
         // rather than mapping it into the running image.
         WritePh(PtLoad, 0, dynlibFileOff, dynlibAddr, dynlibSegEnd - dynlibAddr, dynlibSegEnd - dynlibAddr, SegAlign);
@@ -1216,6 +1432,7 @@ public static class DynamicWriter
             Put(roFileOff, roAddr, ehFrameHdrAddr, ehFrameHdr);
         Put(relroFileOff, relroAddr, gotAddr, got);
         Put(relroFileOff, relroAddr, procAddr, proc);
+        Put(relroFileOff, relroAddr, paramBlocksAddr, paramBlocks);
         comment.AsSpan().CopyTo(file.AsSpan((int)commentFileOff));
         versionBlob.AsSpan().CopyTo(file.AsSpan((int)versionFileOff));
         Put(dynlibFileOff, dynlibAddr, dynsymAddr, dynsym);
@@ -1255,9 +1472,12 @@ public static class DynamicWriter
         // the module carries a real, reproducible identifier rather than a run of zeros. The 20-byte
         // descriptor sits 16 bytes into the note (after its name/size/type header and the "GNU" name);
         // it is hashed while still zero, so the same inputs always yield the same identifier.
+        // Only the first sixteen bytes carry the identifier and the last four stay zero: that is what
+        // sixty-nine of the seventy modules measured that start hold, and what the system reports back
+        // when it names a module. Filling all twenty names a module in a shape none of them uses.
         int noteFileOff = (int)(dynlibFileOff + (noteAddr - dynlibAddr));
         byte[] buildId = System.Security.Cryptography.SHA1.HashData(file);
-        buildId.AsSpan(0, 20).CopyTo(file.AsSpan(noteFileOff + 16, 20));
+        buildId.AsSpan(0, BuildIdBytes).CopyTo(file.AsSpan(noteFileOff + 16, BuildIdBytes));
         // The tail note's identifier is the first eight bytes of the same fingerprint, so the two agree
         // on which build they name.
         buildId.AsSpan(0, 8).CopyTo(file.AsSpan((int)tailNoteFileOff + 16, 8));
@@ -1326,9 +1546,11 @@ public static class DynamicWriter
         e.Add((DtSymTab, symtab)); e.Add((DtSymEnt, 24));
         e.Add((DtStrTab, strtab)); e.Add((DtStrSz, strsz));
         e.Add((DtHash, hash));
-        // The constructor and destructor arrays are named whether or not they hold anything, which is
-        // what a module carries. They stay empty when the entry runs the constructors itself, so the
-        // loader does not run them a second time.
+        // The constructor and destructor arrays are always named. For an executable they are named
+        // empty: sixty-nine of the seventy modules measured that start declare both at zero and the
+        // seventieth declares neither, so none of them hands the loader an array to run. Its entry runs
+        // its constructors itself, and declaring a real array here as well would run every one of them
+        // twice. A library keeps the array it carries, because the loader is what runs those.
         e.Add((DtPreInitArray, 0)); e.Add((DtPreInitArraySz, 0));
         e.Add((DtInitArray, initArray.Address)); e.Add((DtInitArraySz, initArray.Size));
         e.Add((DtFiniArray, finiArray.Address)); e.Add((DtFiniArraySz, finiArray.Size));
@@ -1392,38 +1614,99 @@ public static class DynamicWriter
 
     // A position-independent routine that runs the global constructors in [initStart, initEnd) - each a
     // relocated function pointer, skipping any left null - and returns. It addresses the array with
-    // instruction-relative displacements, so it needs no load-time relocation. It is called with a
-    // 16-aligned stack, and the two saved registers keep every call it makes aligned. See
+    // instruction-relative displacements, so it needs no load-time relocation. See
     // <see cref="EntryStubSize"/> for the byte count.
+    //
+    // The saved registers are what make each call it makes a properly aligned one, and there have to be
+    // an odd number of them. This is entered with the stack eight past a sixteen-byte boundary, because
+    // the call that got here left a return address on it; a call it makes has to leave the stack **on**
+    // a boundary at the moment the call is made. Two saved registers give back the state this was
+    // entered in, so every constructor ran eight bytes out - and a constructor that assumes otherwise,
+    // which any that touches a wide value does, faults on its first such access. Three restore it.
+    // Keeping a frame pointer as well costs nothing here and leaves a walk back through this routine
+    // readable, which the toolchain's own does.
     private static byte[] BuildInitWalker(ulong stubAddr, ulong initStart, ulong initEnd)
     {
-        // Byte offsets, used for the branch displacements: loop=16, skip=31, done=37, and the code ends
-        // at 40. rbx walks the array, rbp marks its end.
+        // Byte offsets, used for the branch displacements: loop=21, skip=36, done=42, and the code ends
+        // at 47. rbx walks the array, r14 marks its end.
         byte[] c = new byte[EntryStubSize];
         int i = 0;
-        c[i++] = 0x53;                                     // 0:  push rbx
-        c[i++] = 0x55;                                     // 1:  push rbp
-        c[i++] = 0x48; c[i++] = 0x8D; c[i++] = 0x1D;       // 2:  lea rbx, [rip + (initStart - next)]
-        BinaryPrimitives.WriteInt32LittleEndian(c.AsSpan(i), checked((int)((long)initStart - (long)(stubAddr + 9)))); i += 4;
-        c[i++] = 0x48; c[i++] = 0x8D; c[i++] = 0x2D;       // 9:  lea rbp, [rip + (initEnd - next)]
-        BinaryPrimitives.WriteInt32LittleEndian(c.AsSpan(i), checked((int)((long)initEnd - (long)(stubAddr + 16)))); i += 4;
-        c[i++] = 0x48; c[i++] = 0x39; c[i++] = 0xEB;       // 16: loop: cmp rbx, rbp
-        c[i++] = 0x73; c[i++] = 0x10;                      // 19: jae done      (-> 37)
-        c[i++] = 0x48; c[i++] = 0x8B; c[i++] = 0x03;       // 21: mov rax, [rbx]
-        c[i++] = 0x48; c[i++] = 0x85; c[i++] = 0xC0;       // 24: test rax, rax
-        c[i++] = 0x74; c[i++] = 0x02;                      // 27: jz skip       (-> 31, past the call)
-        c[i++] = 0xFF; c[i++] = 0xD0;                      // 29: call rax
-        c[i++] = 0x48; c[i++] = 0x83; c[i++] = 0xC3; c[i++] = 0x08; // 31: skip: add rbx, 8
-        c[i++] = 0xEB; c[i++] = 0xEB;                      // 35: jmp loop      (-> 16)
-        c[i++] = 0x5D;                                     // 37: done: pop rbp
-        c[i++] = 0x5B;                                     // 38: pop rbx
-        c[i++] = 0xC3;                                     // 39: ret
+        c[i++] = 0x55;                                     // 0:  push rbp
+        c[i++] = 0x48; c[i++] = 0x89; c[i++] = 0xE5;       // 1:  mov rbp, rsp
+        c[i++] = 0x41; c[i++] = 0x56;                      // 4:  push r14
+        c[i++] = 0x53;                                     // 6:  push rbx
+        c[i++] = 0x48; c[i++] = 0x8D; c[i++] = 0x1D;       // 7:  lea rbx, [rip + (initStart - next)]
+        BinaryPrimitives.WriteInt32LittleEndian(c.AsSpan(i), checked((int)((long)initStart - (long)(stubAddr + 14)))); i += 4;
+        c[i++] = 0x4C; c[i++] = 0x8D; c[i++] = 0x35;       // 14: lea r14, [rip + (initEnd - next)]
+        BinaryPrimitives.WriteInt32LittleEndian(c.AsSpan(i), checked((int)((long)initEnd - (long)(stubAddr + 21)))); i += 4;
+        c[i++] = 0x4C; c[i++] = 0x39; c[i++] = 0xF3;       // 21: loop: cmp rbx, r14
+        c[i++] = 0x73; c[i++] = 0x10;                      // 24: jae done      (-> 42)
+        c[i++] = 0x48; c[i++] = 0x8B; c[i++] = 0x03;       // 26: mov rax, [rbx]
+        c[i++] = 0x48; c[i++] = 0x85; c[i++] = 0xC0;       // 29: test rax, rax
+        c[i++] = 0x74; c[i++] = 0x02;                      // 32: jz skip       (-> 36, past the call)
+        c[i++] = 0xFF; c[i++] = 0xD0;                      // 34: call rax
+        c[i++] = 0x48; c[i++] = 0x83; c[i++] = 0xC3; c[i++] = 0x08; // 36: skip: add rbx, 8
+        c[i++] = 0xEB; c[i++] = 0xEB;                      // 40: jmp loop      (-> 21)
+        c[i++] = 0x5B;                                     // 42: done: pop rbx
+        c[i++] = 0x41; c[i++] = 0x5E;                      // 43: pop r14
+        c[i++] = 0x5D;                                     // 45: pop rbp
+        c[i++] = 0xC3;                                     // 46: ret
         return c;
     }
 
-    // The block is 0x68 bytes and says 0x60: the eight bytes past the length it declares are padding,
-    // which is the shape a module built from the same objects carries.
-    private const int ProcParamSize = 0x68, ProcParamDeclaredSize = 0x60;
+    // The block is 0x60 bytes and says so. Sixty-nine of the seventy modules measured that start carry
+    // exactly that, stored and in memory, and the seventieth declares a length that reads as rubbish;
+    // a build of the same source by the other linker carries it too, byte for byte. Padding it further
+    // makes the segment longer than the length it declares and longer than any module carries.
+    private const int ProcParamSize = 0x60, ProcParamDeclaredSize = 0x60;
+
+    // The three parameter blocks the process parameters point at. Every built module carries them, and
+    // the pointers to them are filled in at load time rather than written into the image - which is why
+    // the block reads as all zeros in a finished module and still is not. Each is a size word followed
+    // by fields a module leaves at their defaults; the C library block also states its own revision.
+    private const int LibcParamOffset = 0x38, KernelMemParamOffset = 0x40, KernelFsParamOffset = 0x48;
+    private const int LibcParamSize = 0xA8, KernelMemParamSize = 0x38, KernelFsParamSize = 0x10;
+    private const int MallocReplaceSize = 0x78, NewReplaceSize = 0xC0, TlsMallocReplaceSize = 0x38;
+    private const ulong LibcParamRevision = 0x000000010000000E;
+    // Where in the C library's block the three replacement tables and the library marker are named.
+    private const int MallocReplacePointer = 0x30, NewReplacePointer = 0x38,
+                      LibcMarkerPointer = 0x48, TlsMallocReplacePointer = 0x60;
+    // The pointers written whatever the module was linked against: the three blocks the parameters
+    // name, and the three replacement tables the C library's block names. The marker recording which C
+    // library was linked against is counted separately, because a module linked against none has no
+    // such import to name and writes no record for it.
+    private const int ParamBlockPointers = 6;
+
+    /// <summary>Where each block starts, measured from the first.</summary>
+    private static readonly int[] ParamBlockOffsets =
+    [
+        0,                                                                                  // C library
+        LibcParamSize,                                                                      // memory
+        LibcParamSize + KernelMemParamSize,                                                 // file system
+        LibcParamSize + KernelMemParamSize + KernelFsParamSize,                             // allocation
+        LibcParamSize + KernelMemParamSize + KernelFsParamSize + MallocReplaceSize,          // construction
+        LibcParamSize + KernelMemParamSize + KernelFsParamSize + MallocReplaceSize + NewReplaceSize,
+    ];
+
+    /// <summary>
+    /// The six blocks a built module carries, laid end to end. Each opens with its own length; the three
+    /// replacement tables also carry a count of the entries they have room for. Everything else is a
+    /// field a module leaves at its default, or a pointer filled in at load time.
+    /// </summary>
+    private static byte[] BuildParamBlocks()
+    {
+        int[] sizes = [LibcParamSize, KernelMemParamSize, KernelFsParamSize,
+                       MallocReplaceSize, NewReplaceSize, TlsMallocReplaceSize];
+        ulong[] counts = [LibcParamRevision, 0, 0, 2, 3, 1];
+        byte[] b = new byte[ParamBlockOffsets[^1] + TlsMallocReplaceSize];
+        for (int i = 0; i < sizes.Length; i++)
+        {
+            BinaryPrimitives.WriteUInt64LittleEndian(b.AsSpan(ParamBlockOffsets[i]), (ulong)sizes[i]);
+            if (counts[i] != 0)
+                BinaryPrimitives.WriteUInt64LittleEndian(b.AsSpan(ParamBlockOffsets[i] + 8), counts[i]);
+        }
+        return b;
+    }
 
     private static byte[] BuildProcParam()
     {
@@ -1495,6 +1778,9 @@ public static class DynamicWriter
     }
 
     private static int AlignInt(int value, int alignment) => (value + alignment - 1) & ~(alignment - 1);
+
+    // The descriptor is 0x14 bytes and the identifier fills the first 16 of them.
+    private const int BuildIdBytes = 16;
 
     private static byte[] BuildNote()
     {

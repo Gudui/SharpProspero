@@ -219,8 +219,16 @@ public static class Linker
     /// an object: the constructor walker the entry calls, and the teardown routine beside it. A
     /// reference to either resolves at layout time, so neither counts as unresolved.
     /// </summary>
+    // Names the writer settles once the layout is fixed, so an object may reach for them and the
+    // resolver must not call them unresolved. Where the image starts, where its code ends, and where
+    // its frame index sits: the last two are what lets a module describe itself to whatever walks the
+    // stack, since its own header table is inside the code group and that group cannot be read.
     internal static readonly IReadOnlySet<string> LinkerProvided =
-        new HashSet<string>(StringComparer.Ordinal) { "_init", "_fini", CompatEmitter.ModuleBaseSymbol };
+        new HashSet<string>(StringComparer.Ordinal)
+        {
+            "_init", "_fini",
+            CompatEmitter.ModuleBaseSymbol, CompatEmitter.TextEndSymbol, CompatEmitter.FrameIndexSymbol,
+        };
 
     internal static bool IsEncapsulationSymbol(string name, ICollection<string> sectionNames, out string section, out bool isStop)
     {

@@ -24,9 +24,8 @@ An **unsigned** file is a plain ELF. The linker produces this form: an `eboot.bi
 and a library the linker builds is a `.prx`, also an ELF.
 
 A **signed** file wraps that ELF in a container: a header, a segment table, the ELF header and
-program headers, extended information, and the program's segment data. Every container shares one
-header magic; the two signed forms differ in how their segment data is stored, which each segment
-records in its own flags word:
+program headers, extended information, and the program's segment data. The two signed forms differ in
+how their segment data is stored, which each segment records in its own flags word:
 
 - **Developer-accepted (readable).** The container's digest and signature slots are zero-filled and
   its segment data is plaintext. A development console accepts it. The toolchain produces and reads
@@ -34,6 +33,23 @@ records in its own flags word:
 - **Retail (sealed).** The container is signed with a certificate and its segment data is encrypted.
   A retail console requires this form. Its contents cannot be read without its key, so the tools
   report the form but cannot open it.
+
+### The header magic and the region it sizes
+
+A container header carries the magic `0xEEF51454`, and the metadata region that follows it ends with a
+`0x200`-byte signature area. The two go together. A second magic, `0x1D3D154F`, goes with a signature
+area `0x100` bytes smaller. The tools read a container carrying either one and write the first.
+
+Modules carrying either pairing run, so neither magic is better than the other; what does not appear on
+any module measured is one magic with the other's region length. The tools therefore write the two
+together and never separately, and the build re-wraps a module found in the other shape rather than
+passing it through.
+
+### Records the container keeps outside its segments
+
+A module's **version records** sit in a segment nothing maps. No container segment carries them, so
+they follow the last stored segment instead, past the size the header declares. Reading a container
+back puts them where the program header places them.
 
 ### How segment data is stored
 

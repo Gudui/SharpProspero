@@ -120,10 +120,45 @@ public static class CrtEmitter
     private const int CallCatchReturnRel = 0x44;
     private const int CallExitRel = 0x4B;
 
+    // How to walk back out of the entry routine, in the form the frame index and the unwinder read.
+    //
+    // Every other routine in a module carries this and the entry did not, so a walk up the stack that
+    // reached the entry had nothing to go on there: it either stopped one frame early or carried on
+    // into whatever the registers happened to hold. The entry is the frame every walk ends at, so it is
+    // the one place a missing record is certain to be reached.
+    //
+    // The record describes a prologue of a frame pointer taken and four registers saved, which is this
+    // routine's prologue exactly - and the length it covers is this routine's length. The two are
+    // checked against each other rather than assumed: see <see cref="StartCode"/>.
+    private static ReadOnlySpan<byte> StartFrame =>
+    [
+        // The common part: version 1, an augmentation naming a personality-less record whose addresses
+        // are instruction-relative and signed four bytes, code aligned to one byte, data to minus
+        // eight, and the return address in register sixteen.
+        0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x01, 0x7A, 0x52, 0x00, 0x01, 0x78, 0x10, 0x01,
+        0x1B, 0x0C, 0x07, 0x08, 0x90, 0x01, 0x00, 0x00,
+        // This routine: where it starts (filled in by the relocation below) and how far it reaches,
+        // then where the frame address and each saved register are, as the prologue moves them.
+        0x1C, 0x00, 0x00, 0x00, 0x1C, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x51, 0x00, 0x00, 0x00,
+        0x00, 0x41, 0x0E, 0x10, 0x86, 0x02, 0x43, 0x0D,
+        0x06, 0x46, 0x83, 0x05, 0x8E, 0x04, 0x8F, 0x03,
+    ];
+
+    // Where in the record above the routine's own address is named, and the length it declares.
+    private const int StartFrameAddressAt = 0x20;
+    private const int StartFrameDeclaredLength = 0x51;
+
     /// <summary>Builds the start object bytes.</summary>
     public static byte[] BuildStartObject()
     {
         byte[] text = StartCode.ToArray();
+        if (text.Length != StartFrameDeclaredLength)
+            throw new ElfLinkException(
+                $"The entry routine is {text.Length} bytes and the record describing how to walk out of " +
+                $"it covers {StartFrameDeclaredLength}. A record that stops short of the routine it " +
+                "describes leaves the frames past that point unreadable.");
 
         // .strtab: symbol names.
         var strtab = new StringTable();
@@ -163,36 +198,53 @@ public static class CrtEmitter
         WriteRela(rela, 6, CallCatchReturnRel, symCatch, RPlt32, -4);
         WriteRela(rela, 7, CallExitRel, symExit, RPlt32, -4);
 
+        // The record naming this routine's own start, which the linker fills in once the routine has an
+        // address. It is measured from the field itself, like every other instruction-relative one here.
+        byte[] frame = StartFrame.ToArray();
+        byte[] frameRela = new byte[24];
+        WriteRela(frameRela, 0, StartFrameAddressAt, symStart, RPc32, 0);
+
         // .shstrtab: section names.
         var shstr = new StringTable();
         int nText = shstr.Add(".text");
         int nRela = shstr.Add(".rela.text");
+        int nFrame = shstr.Add(".eh_frame");
+        int nFrameRela = shstr.Add(".rela.eh_frame");
         int nSym = shstr.Add(".symtab");
         int nStr = shstr.Add(".strtab");
         int nShStr = shstr.Add(".shstrtab");
         byte[] shstrBytes = shstr.ToBytes();
 
-        // Section header indices: [0]null [1].text [2].rela.text [3].symtab [4].strtab [5].shstrtab.
-        const int shText = 1, shRela = 2, shSym = 3, shStr = 4, shShStr = 5;
+        // Section header indices: [0]null [1].text [2].rela.text [3].eh_frame [4].rela.eh_frame
+        // [5].symtab [6].strtab [7].shstrtab.
+        const int shText = 1, shRela = 2, shFrame = 3, shFrameRela = 4, shSym = 5, shStr = 6, shShStr = 7;
 
         var body = new List<byte>();
         long textOff = Place(body, text);
         long relaOff = Place(body, rela);
+        Align(body, 8);
+        long frameOff = Place(body, frame);
+        long frameRelaOff = Place(body, frameRela);
         long symOff = Place(body, symtab);
         long strOff = Place(body, strtabBytes);
         long shstrOff = Place(body, shstrBytes);
         Align(body, 8);
         long shdrOff = 64 + body.Count;
 
-        byte[] shdr = new byte[64 * 6];
+        byte[] shdr = new byte[64 * 8];
         WriteShdr(shdr, shText, nText, ShtProgBits, ShfAlloc | ShfExec, textOff, text.Length, 0, 0, 16, 0);
         WriteShdr(shdr, shRela, nRela, ShtRela, 0, relaOff, rela.Length, shSym, shText, 8, 24);
+        // Held as ordinary contents rather than under the type the toolchain gives it: the link picks
+        // the frame sections out by name and by asking for something read-only that reserves memory,
+        // and ordinary contents answers that. It reserves memory and is never written to or run.
+        WriteShdr(shdr, shFrame, nFrame, ShtProgBits, ShfAlloc, frameOff, frame.Length, 0, 0, 8, 0);
+        WriteShdr(shdr, shFrameRela, nFrameRela, ShtRela, 0, frameRelaOff, frameRela.Length, shSym, shFrame, 8, 24);
         WriteShdr(shdr, shSym, nSym, ShtSymTab, 0, symOff, symtab.Length, shStr, 1, 8, 24);
         WriteShdr(shdr, shStr, nStr, ShtStrTab, 0, strOff, strtabBytes.Length, 0, 0, 1, 0);
         WriteShdr(shdr, shShStr, nShStr, ShtStrTab, 0, shstrOff, shstrBytes.Length, 0, 0, 1, 0);
 
         var output = new List<byte>(64 + body.Count + shdr.Length);
-        output.AddRange(BuildHeader(shdrOff, shShStr, sectionCount: 6));
+        output.AddRange(BuildHeader(shdrOff, shShStr, sectionCount: 8));
         output.AddRange(body);
         output.AddRange(shdr);
         return [.. output];

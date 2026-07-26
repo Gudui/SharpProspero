@@ -32,8 +32,11 @@ public sealed class SelfContainerTests
     [Fact]
     public void CheckIntegrity_MatchesAFreshlySignedContainer()
     {
-        byte[] signed = SelfContainer.Sign(BuildModule());
-        SelfIntegrity integrity = SelfContainer.CheckIntegrity(signed);
+        // The digest covers the module in full, so the module is what it is checked against. A module
+        // that keeps records past its last stored segment cannot be rebuilt from the container alone.
+        byte[] module = BuildModule();
+        byte[] signed = SelfContainer.Sign(module);
+        SelfIntegrity integrity = SelfContainer.CheckIntegrity(signed, module);
         Assert.True(integrity.HasDigest);
         Assert.True(integrity.Matches);
         Assert.Equal(32, integrity.Stored.Length);
@@ -54,6 +57,80 @@ public sealed class SelfContainerTests
         SelfIntegrity integrity = SelfContainer.CheckIntegrity(signed);
         Assert.True(integrity.HasDigest);
         Assert.False(integrity.Matches);
+    }
+
+    [Fact]
+    public void Sign_KeepsTheVersionRecordsAfterTheLastStoredSegment()
+    {
+        // The records live in a segment nothing maps, so no container segment carries them. They follow
+        // the last stored segment instead. A container without them hands the loader a module whose
+        // records read as zero, and reading the container back has to put them where they came from.
+        byte[] module = BuildModule();
+        (int offset, int length) = FindVersionRecords(module);
+        Assert.True(length > 0, "the test module carries no version records");
+
+        byte[] signed = SelfContainer.Sign(module);
+        Assert.Equal(module.AsSpan(offset, length).ToArray(), signed.AsSpan(^length..).ToArray());
+
+        byte[] rebuilt = SelfContainer.ExtractElf(signed);
+        Assert.Equal(module.AsSpan(offset, length).ToArray(), rebuilt.AsSpan(offset, length).ToArray());
+    }
+
+    [Fact]
+    public void Sign_SizesTheMetadataRegionForTheMagicItWrites()
+    {
+        // These two travel together. Modules carrying either pairing run; one magic with the other's
+        // region length matches nothing measured, so the writer never produces that combination.
+        byte[] signed = SelfContainer.Sign(BuildModule());
+        int segCount = BinaryPrimitives.ReadUInt16LittleEndian(signed.AsSpan(0x18));
+        Assert.Equal(0xEEF51454u, BinaryPrimitives.ReadUInt32LittleEndian(signed));
+        Assert.Equal(segCount * MetaBlock + MetaFooter + 0x200,
+            BinaryPrimitives.ReadUInt16LittleEndian(signed.AsSpan(0x0E)));
+    }
+
+    // The offset and length of the module's version records, from the program header that names them.
+    private static (int Offset, int Length) FindVersionRecords(byte[] module)
+    {
+        int phnum = BinaryPrimitives.ReadUInt16LittleEndian(module.AsSpan(0x38));
+        for (int i = 0; i < phnum; i++)
+        {
+            int p = 0x40 + i * 0x38;
+            if (BinaryPrimitives.ReadUInt32LittleEndian(module.AsSpan(p)) != 0x6FFFFF01)
+                continue;
+            return ((int)BinaryPrimitives.ReadUInt64LittleEndian(module.AsSpan(p + 0x08)),
+                    (int)BinaryPrimitives.ReadUInt64LittleEndian(module.AsSpan(p + 0x20)));
+        }
+        return (0, 0);
+    }
+
+    [Fact]
+    public void Sign_RefusesAMappedSegmentThatStoresNothing()
+    {
+        // Such a segment is carried as a pair of zero-length entries sharing one file offset with
+        // whatever follows: the digest table covers no blocks and the entry table stops ascending.
+        // No container measured that starts has one, so it is refused rather than written.
+        byte[] elf = BuildModuleWithLoadSize(0x40);
+        BinaryPrimitives.WriteUInt64LittleEndian(elf.AsSpan(0x40 + 0x20), 0);   // p_filesz = 0
+        BinaryPrimitives.WriteUInt64LittleEndian(elf.AsSpan(0x40 + 0x28), 0x40); // p_memsz stays
+
+        PrxFormatException ex = Assert.Throws<PrxFormatException>(() => SelfContainer.Sign(elf));
+        Assert.Contains("stores nothing", ex.Message);
+    }
+
+    [Fact]
+    public void Sign_WritesNoZeroLengthSegment()
+    {
+        byte[] signed = SelfContainer.Sign(BuildModule());
+        int nseg = BinaryPrimitives.ReadUInt16LittleEndian(signed.AsSpan(0x18));
+        ulong previous = 0;
+        for (int i = 0; i < nseg; i++)
+        {
+            ulong off = BinaryPrimitives.ReadUInt64LittleEndian(signed.AsSpan(0x20 + i * 0x20 + 8));
+            ulong size = BinaryPrimitives.ReadUInt64LittleEndian(signed.AsSpan(0x20 + i * 0x20 + 16));
+            Assert.True(size > 0, $"segment {i} is zero length");
+            Assert.True(off > previous, $"segment {i} does not follow the one before it");
+            previous = off;
+        }
     }
 
     [Fact]
@@ -166,15 +243,23 @@ public sealed class SelfContainerTests
     {
         byte[] signed = SelfContainer.Sign(BuildModule());
 
-        // The header values a module must carry to be read by the loader at launch.
-        Assert.Equal(0x1D3D154Fu, BinaryPrimitives.ReadUInt32LittleEndian(signed));
+        // The header values a module must carry to be read by the loader at launch. The magic and the
+        // signature area that closes the metadata region out go together: the loader sizes the region
+        // from the magic, so writing this magic with the smaller area puts every segment that follows
+        // at the wrong offset and the module never starts.
+        Assert.Equal(0xEEF51454u, BinaryPrimitives.ReadUInt32LittleEndian(signed));
+        Assert.Equal(0x200, Signature);
         Assert.Equal(0, signed[0x04]);                                             // version
         Assert.Equal(1, signed[0x05]);                                             // mode
         Assert.Equal(1, signed[0x06]);                                             // endian
         Assert.Equal(0x12, signed[0x07]);                                          // attributes
         Assert.Equal(0x00000101u, BinaryPrimitives.ReadUInt32LittleEndian(signed.AsSpan(0x08)));
         Assert.Equal(0x0022, BinaryPrimitives.ReadUInt16LittleEndian(signed.AsSpan(0x1A)));
-        Assert.Equal((ulong)signed.Length, BinaryPrimitives.ReadUInt64LittleEndian(signed.AsSpan(0x10)));
+        // The declared size reaches the end of the last stored segment. A module's version records
+        // follow it, so the file itself runs at least that far and can run further.
+        ulong declared = BinaryPrimitives.ReadUInt64LittleEndian(signed.AsSpan(0x10));
+        Assert.True(declared <= (ulong)signed.Length, $"declared 0x{declared:X} past the file end");
+        Assert.Equal(0, (int)(declared % 0x10));
 
         // The header region ends where the metadata footer begins, and the footer is sized from the
         // segment count.
@@ -552,7 +637,7 @@ public sealed class SelfContainerTests
     // before any of its code runs, with nothing written to the log. These exercise several counts so a
     // count-dependent formula cannot be replaced by a constant again.
 
-    private const int MetaBlock = 0x50, MetaFooter = 0x50, Signature = 0x100;
+    private const int MetaBlock = 0x50, MetaFooter = 0x50, Signature = 0x200;
 
     // An ELF with the requested number of loadable segments, each carrying content.
     private static byte[] BuildModuleWithLoadCount(int loadCount, int contentSize = 0x40)

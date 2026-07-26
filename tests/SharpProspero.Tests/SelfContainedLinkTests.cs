@@ -158,6 +158,82 @@ public sealed class SelfContainedLinkTests
     }
 
     [Fact]
+    public void Resolve_WithTheCompatObject_BindsEveryNameItReachesFor()
+    {
+        // The compat object defines what nothing publishes by reaching for what something does, so its
+        // own undefined names are imports like any other, and the two names the linker places for it -
+        // where the code ends and where the frame index sits - have to resolve as well. A name left
+        // unresolved here is not a build failure at the call site: it is a module that carries an
+        // import nothing can bind, and such a module never reaches its first instruction. This links
+        // the whole set together, which is the only place that can be seen.
+        var options = new LinkOptions();
+        options.ExtraObjects.Add(ElfObjectReader.Read(BuildApplicationObject(), "app"));
+        options.ExtraObjects.Add(ElfObjectReader.Read(CrtEmitter.BuildStartObject(), "crt"));
+        options.ExtraObjects.Add(ElfObjectReader.Read(CompatEmitter.BuildObject(), "compat"));
+        foreach (StubCatalog.Entry entry in StubCatalog.Core)
+            options.ExtraStubs.Add(StubLibrary.Parse(
+                PrxStubEmitter.BuildObject(entry.Library, entry.Exports, entry.ModuleVersion,
+                    entry.LibraryVersion, entry.ModuleName, entry.Soname),
+                entry.Library + ".prx"));
+
+        LinkResolution result = Linker.Resolve(options);
+        Assert.Empty(result.Unresolved);
+
+        byte[] module = DynamicWriter.Write(result, CrtEmitter.StartSymbol, ModuleKind.Executable);
+        Assert.Equal(0x464C457Fu, BinaryPrimitives.ReadUInt32LittleEndian(module));
+
+        // The directory reader binds to the call underneath it, and the error number to the device's
+        // own place - both through the module that publishes them rather than being left undefined.
+        Assert.Contains(result.Imports, i => i.Name == "getdents" && i.LibraryName == "libScePosix");
+        Assert.Contains(result.Imports, i => i.Name == "__error" && i.LibraryName == "libkernel");
+        Assert.Contains(result.Imports, i => i.Name == "sceKernelMemoryPoolDecommit");
+        Assert.Contains(result.Imports, i => i.Name == "scePthreadGetaffinity");
+        Assert.Contains(result.Imports, i => i.Name == "sceKernelGetCurrentCpu");
+        Assert.Contains(result.Imports, i => i.Name == "sceKernelAvailableFlexibleMemorySize");
+
+        // And the two addresses the module hands whatever walks its stack point where they say. These
+        // are worked out from where the code and the frame index actually landed, so a displacement
+        // that is merely plausible is not enough: each is read back out of the finished module and
+        // compared with the header describing what it names.
+        int phnum = BinaryPrimitives.ReadUInt16LittleEndian(module.AsSpan(0x38));
+        ulong textOff = 0, textVa = 0, textLen = 0, frameVa = 0;
+        for (int i = 0, ph = 0x40; i < phnum; i++, ph += 0x38)
+        {
+            uint type = BinaryPrimitives.ReadUInt32LittleEndian(module.AsSpan(ph));
+            uint flags = BinaryPrimitives.ReadUInt32LittleEndian(module.AsSpan(ph + 4));
+            if (type == 1 && (flags & 1) != 0)
+            {
+                textOff = BinaryPrimitives.ReadUInt64LittleEndian(module.AsSpan(ph + 8));
+                textVa = BinaryPrimitives.ReadUInt64LittleEndian(module.AsSpan(ph + 16));
+                textLen = BinaryPrimitives.ReadUInt64LittleEndian(module.AsSpan(ph + 32));
+            }
+            if (type == 0x6474E550) frameVa = BinaryPrimitives.ReadUInt64LittleEndian(module.AsSpan(ph + 16));
+        }
+        Assert.NotEqual(0ul, frameVa);
+
+        // The description is found by the header type it writes into its own frame.
+        int at = -1;
+        for (int i = (int)textOff; i < (int)(textOff + textLen) - 8; i++)
+            if (module[i] == 0xC7 && module[i + 1] == 0x44 && module[i + 2] == 0x24 && module[i + 3] == 0x38
+                && BinaryPrimitives.ReadUInt32LittleEndian(module.AsSpan(i + 4)) == 0x6474E550)
+            { at = i; break; }
+        Assert.True(at >= 0, "the module carries no description of itself");
+
+        // The three instruction-relative loads around it, in the order they are written: where the code
+        // ends, where the image starts, and where the frame index sits.
+        var reached = new List<ulong>();
+        for (int i = at - 48; i < at + 48; i++)
+            if (module[i] == 0x48 && module[i + 1] == 0x8D && (module[i + 2] == 0x05 || module[i + 2] == 0x0D))
+                reached.Add((ulong)((long)textVa + (i - (int)textOff) + 7
+                    + BinaryPrimitives.ReadInt32LittleEndian(module.AsSpan(i + 3))));
+
+        Assert.True(reached.Count >= 3, $"expected three addresses, found {reached.Count}");
+        Assert.Equal(textVa + textLen, reached[0]);   // where the code ends
+        Assert.Equal(textVa, reached[1]);             // where the image starts
+        Assert.Equal(frameVa, reached[2]);            // the frame index, as its own header names it
+    }
+
+    [Fact]
     public void StubLibrary_ReadsBackTheVersionsItWasBuiltWith()
     {
         // A library that publishes something other than the usual versions must be carried through

@@ -57,16 +57,21 @@ public static class StubCatalog
         new Entry("libSceJpegDec", JpegDec),
         new Entry("libSceJpegEnc", JpegEnc),
         new Entry("libSceAudioIn", AudioIn),
-        new Entry("libSceAudiodec", Audiodec),
+        // The decoder publishes its library under the plain name but the loader loads the file with the dotted one
+        new Entry("libSceAudiodec", Audiodec, Soname: "libSceAudiodec.native.prx"),
         new Entry("libSceM4aacEnc", M4aacEnc),
         new Entry("libSceAt9Enc", At9Enc),
         new Entry("libSceNgs2", Ngs2),
         new Entry("libSceAudio3d", Audio3d),
-        new Entry("libSceAjm", Ajm),
+        // Named the same way as the decoder: library and module libSceAjm, file libSceAjm.native.prx.
+        new Entry("libSceAjm", Ajm, Soname: "libSceAjm.native.prx"),
         new Entry("libSceVideoRecording", VideoRecording),
-        new Entry("libSceCesCs", Ces),
+        // The character-set converter names all three apart: the file keeps the converter's name, and
+        // the library and module are named for the set of them.
+        new Entry("libSceCes", Ces, ModuleName: "libSceCes", Soname: "libSceCesCs-module.prx"),
         new Entry("libSceDepth2", Depth2),
-        new Entry("libSceMbus", Mbus),
+        // Published by the bus module, under a library of its own rather than the bus library.
+        new Entry("libSceDeviceService", DeviceService, ModuleName: "libSceMbus", Soname: "libSceMbus.prx"),
         new Entry("libSceVideodec2", Videodec2),
         new Entry("libSceRtc", Rtc),
         new Entry("libSceRandom", Random),
@@ -81,7 +86,9 @@ public static class StubCatalog
         new Entry("libSceContentSearch", ContentSearch, ModuleVersion: 0x0100),
         // This library publishes module version 1.0, like the media player and content search.
         new Entry("libScePlayGo", PlayGo, ModuleVersion: 0x0100),
-        new Entry("libSceAppContent", AppContent),
+        // The module publishes a library under a shorter name than its own: library libSceAppContent,
+        // module libSceAppContentUtil, file libSceAppContent.prx.
+        new Entry("libSceAppContent", AppContent, ModuleName: "libSceAppContentUtil"),
         new Entry("libSceNetCtl", NetCtl),
         // The save-data module names its file with a dot but its module and library with an
         // underscore, so the file name is given explicitly and the two names default from the library.
@@ -100,11 +107,14 @@ public static class StubCatalog
         new Entry("libSceSaveDataDialog.native", SaveDataDialog, ModuleName: "libSceSaveDataDialog"),
         new Entry("libSceWebBrowserDialog", WebBrowserDialog),
         // This library publishes module version 1.0, the one module in this set that does not use 1.1.
-        new Entry("libSceAvPlayer", AvPlayer, ModuleVersion: 0x0100),
-        // The font engine names its file, module and library apart the way the dialogs do: file
-        // libSceFont.native.prx, module libSceFont, library libSceFont.native.
-        new Entry("libSceFont.native", Font, ModuleName: "libSceFont"),
-        new Entry("libSceFontFt", FontFt),
+        // This library publishes module version 1.0, the one module in this set that does not use 1.1,
+        // and the loader loads the dotted file.
+        new Entry("libSceAvPlayer", AvPlayer, ModuleVersion: 0x0100, Soname: "libSceAvPlayer.native.prx"),
+        // The font engine calls its library and its module the same thing and its file something else.
+        // Both font files carry a name that is not the library's, and each module says so itself: the
+        // file is what the loader loads and the library is what an import binds to.
+        new Entry("libSceFont", Font, Soname: "libSceFont-module.prx"),
+        new Entry("libSceFontFt", FontFt, Soname: "libSceFontFt-module.prx"),
         new Entry("libSceShare", Share),
         new Entry("libSceNpTrophy2", Trophy2),
         new Entry("libSceNpUniversalDataSystem", UniversalDataSystem),
@@ -125,7 +135,10 @@ public static class StubCatalog
     public static IReadOnlyList<Entry> RuntimeResolved =>
     [
         new Entry("libSceAppInstUtil", AppInstUtil),
-        new Entry("libSceUsbStorage", UsbStorage),
+        // This module publishes version 1.0 and three libraries; the last name below is carried by the
+        // other two rather than by the one named here. It is reached by name at run time rather than
+        // bound at link time, so which library carries it does not decide whether it resolves.
+        new Entry("libSceUsbStorage", UsbStorage, ModuleVersion: 0x0100),
         new Entry("libSceAvcap2", Avcap2),
     ];
 
@@ -135,11 +148,14 @@ public static class StubCatalog
     [
         "__error", "__stack_chk_fail", "__tls_get_addr", "sceKernelAllocateDirectMemory",
         "sceKernelAvailableDirectMemorySize", "sceKernelAvailableFlexibleMemorySize", "sceKernelCheckReachability", "sceKernelClockGettime",
-        "sceKernelClose", "sceKernelDlsym", "sceKernelGetDirectMemorySize", "sceKernelGetProcessTime",
+        "sceKernelClose", "sceKernelDlsym", "sceKernelGetCurrentCpu", "sceKernelGetDirectMemorySize",
+        "sceKernelGetProcessTime",
         "sceKernelGetdents", "sceKernelLoadStartModule", "sceKernelLseek", "sceKernelMapDirectMemory",
         "sceKernelConfiguredFlexibleMemorySize", "sceKernelAvailableFlexibleMemorySize",
         "sceKernelReserveVirtualRange", "sceKernelQueryMemoryProtection",
-        "sceKernelMapFlexibleMemory", "sceKernelMapNamedFlexibleMemory", "sceKernelMkdir", "sceKernelMprotect",
+        "sceKernelMapFlexibleMemory", "sceKernelMapNamedFlexibleMemory", "sceKernelMemoryPoolCommit",
+        "sceKernelMemoryPoolDecommit", "sceKernelMemoryPoolExpand", "sceKernelMemoryPoolReserve",
+        "sceKernelMkdir", "sceKernelMprotect",
         "sceKernelMunmap", "sceKernelOpen", "sceKernelRead", "sceKernelReleaseDirectMemory",
         "sceKernelReleaseFlexibleMemory", "sceKernelRename", "sceKernelRmdir", "sceKernelSendNotificationRequest",
         "sceKernelStopUnloadModule", "sceKernelTruncate", "sceKernelUnlink", "sceKernelUsleep",
@@ -148,7 +164,7 @@ public static class StubCatalog
         "scePthreadDetach", "scePthreadExit", "scePthreadGetspecific", "scePthreadJoin",
         "scePthreadKeyCreate", "scePthreadKeyDelete", "scePthreadMutexDestroy", "scePthreadMutexInit",
         "scePthreadMutexLock", "scePthreadMutexTrylock", "scePthreadMutexUnlock", "scePthreadRename",
-        "scePthreadSelf", "scePthreadSetspecific", "scePthreadYield",
+        "scePthreadGetaffinity", "scePthreadSelf", "scePthreadSetspecific", "scePthreadYield",
     ];
 
     // The portable operating-system interface the platform layer forwards to. These are published
@@ -158,11 +174,12 @@ public static class StubCatalog
     [
         "chmod", "clock_gettime", "close", "fchmod",
         "fcntl", "flock", "fstat", "fsync",
-        "ftruncate", "getpid", "getsockopt", "gettimeofday",
+        "ftruncate", "getdents", "getpid", "getsockopt", "gettimeofday",
         "lseek", "madvise", "mkdir", "mlock",
         "mprotect", "msync", "munlock", "munmap",
         "nanosleep", "open", "pread", "preadv",
-        "pthread_attr_destroy", "pthread_attr_getstack", "pthread_attr_init", "pthread_attr_setdetachstate",
+        "pthread_attr_destroy", "pthread_attr_get_np", "pthread_attr_getstack", "pthread_attr_init",
+        "pthread_attr_setdetachstate",
         "pthread_attr_setstacksize", "pthread_cond_broadcast", "pthread_cond_destroy", "pthread_cond_init",
         "pthread_cond_signal", "pthread_cond_timedwait", "pthread_cond_wait", "pthread_condattr_destroy",
         "pthread_condattr_init", "pthread_condattr_setclock", "pthread_create", "pthread_key_create",
@@ -617,12 +634,6 @@ public static class StubCatalog
 
     private static readonly string[] Ces =
     [
-        "sceCesUtf8ToUtf16",
-        "sceCesUtf16ToUtf8",
-        "sceCesUtf8ToUtf32",
-        "sceCesUtf32ToUtf8",
-        "sceCesUtf16ToUtf32",
-        "sceCesUtf32ToUtf16",
         "sceCesEucJpToUtf8",
         "sceCesEucKrToUtf8",
         "sceCesBig5ToUtf8",
@@ -639,10 +650,12 @@ public static class StubCatalog
         "sceDepth2WaitAndExecutePostProcess",
         "sceDepth2SetRoi",
         "sceDepth2GetImage",
-        "sceDepth2LoadCalibrationData",
     ];
 
-    private static readonly string[] Mbus =
+    // The device-enquiry library. It is published by the bus module rather than by one of its own, so an
+    // import names that module's file while naming this library - the two are different words, and
+    // naming the bus library instead produces an import the bus library cannot answer.
+    private static readonly string[] DeviceService =
     [
         "sceDeviceServiceInitialize",
         "sceDeviceServiceTerminate",
@@ -1201,7 +1214,6 @@ public static class StubCatalog
 
     private static readonly string[] AgcDriver =
     [
-        "sceAgcDriverAcquireComputeQueue",
         "sceAgcDriverAddEqEvent",
         "sceAgcDriverAgrSubmitDcb",
         "sceAgcDriverAgrSubmitMultiDcbs",
@@ -1246,7 +1258,6 @@ public static class StubCatalog
         "sceAgcDriverRegisterOwner",
         "sceAgcDriverRegisterResource",
         "sceAgcDriverRegisterWorkloadStream",
-        "sceAgcDriverReleaseComputeQueue",
         "sceAgcDriverRequestCaptureStart",
         "sceAgcDriverRequestCaptureStop",
         "sceAgcDriverSetFlip",

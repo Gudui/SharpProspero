@@ -110,9 +110,9 @@ the method class name, and the library. The response files land under
 | `Interop.Audio` | Audio output, input, decode, encode, synthesis | output: init, open, output, set volume; input: open, capture, silent state, close; decode (AAC/ATRAC9/MP3) create, decode; encode AAC-LC and ATRAC9; Ngs2 synthesis and mixing (system, rack, voice, stream) |
 | `Interop.Audio` (spatial) | Object-based spatial audio (Audio3d) | initialize, open a port, reserve objects, set position and attributes, write a bed, mix to the audio-out |
 | `Interop.Audio` (jobs) | The audio job manager (Ajm) | initialize, register memory and modules, create instances, build/start/wait batches for Opus, AAC, MP3, ATRAC9 decode and encode |
-| `Interop.Text` | Character-encoding conversion (Ces) | UTF-8/16/32 interconversion; EUC-JP, EUC-KR, Big5 and UHC to UTF-8 |
+| `Interop.Text` | Character-encoding conversion (Ces) | EUC-JP, EUC-KR, Big5 and UHC to UTF-8 (use `System.Text.Encoding` between the Unicode forms) |
 | `Interop.Video` | Video decode and recording | decode: create decoder, decode, flush, reset, query memory (H.264 and HEVC via the codec type); recording: status, query memory, open, start, stop, close |
-| `Interop.Vision` | Camera depth | query memory, initialize, set command, submit, wait, get image, load calibration |
+| `Interop.Vision` | Camera depth | query memory, initialize, set command, set region, submit, wait, get image |
 | `Interop.AvCapture` | Audio-video capture | open, start, read frames, stop, close |
 | `Interop.Device` | Message-bus device service | initialize, generation counter, event state, query device info |
 | `Interop.Sysmodule` | System modules | load, unload, is-loaded |
