@@ -1,7 +1,7 @@
 // SharpProspero.Prx - module inspection and stub generation.
 // Copyright (C) 2026 SvenGDK
 
-// Reads a compiled shader binary for inspection: its stage, version, sizes, and the register writes it
+// Reads a compiled shader binary for inspection: its kind, version, sizes, and the register writes it
 // carries. A shader binary is an ELF container with two sections - a header block describing the program
 // and a block of microcode. This reads the header fields and the register arrays the header points at,
 // without preparing or running the shader.
@@ -17,7 +17,7 @@ public readonly record struct ShaderRegisterWrite(ushort Offset, uint Value);
 
 /// <summary>The inspectable contents of a compiled shader binary.</summary>
 public readonly record struct ShaderInfo(
-    uint Magic, uint Version, byte Stage, uint DeclaredHeaderSize, uint DeclaredCodeSize, int CodeSectionSize,
+    uint Magic, uint Version, byte Kind, uint DeclaredHeaderSize, uint DeclaredCodeSize, int CodeSectionSize,
     IReadOnlyList<ShaderRegisterWrite> ContextRegisters, IReadOnlyList<ShaderRegisterWrite> ShaderRegisters)
 {
     /// <summary>The magic a valid shader-binary header block starts with.</summary>
@@ -26,8 +26,8 @@ public readonly record struct ShaderInfo(
     /// <summary>Whether the header magic is the expected value.</summary>
     public bool IsValid => Magic == HeaderMagic;
 
-    /// <summary>A readable name for the pipeline stage the program runs at.</summary>
-    public string StageName => Stage switch
+    /// <summary>A readable name for the part of the pipeline the program runs at.</summary>
+    public string KindName => Kind switch
     {
         0 => "compute",
         1 => "pixel",
@@ -38,7 +38,7 @@ public readonly record struct ShaderInfo(
         6 => "geometry-back",
         7 => "hull-back",
         8 => "function",
-        _ => $"0x{Stage:X2}",
+        _ => $"0x{Kind:X2}",
     };
 
     /// <summary>Reads the shader binary from its ELF container.</summary>
@@ -93,12 +93,12 @@ public readonly record struct ShaderInfo(
         ulong shOff = BinaryPrimitives.ReadUInt64LittleEndian(header.AsSpan(32));
         uint headerSize = BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(64));
         uint shaderSize = BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(68));
-        byte stage = header[90];
+        byte kind = header[90];
         int numCx = header[91];
         int numSh = header[92];
 
         return new ShaderInfo(
-            magic, version, stage, headerSize, shaderSize, codeSize,
+            magic, version, kind, headerSize, shaderSize, codeSize,
             ReadRegisters(header, cxOff, numCx),
             ReadRegisters(header, shOff, numSh));
     }

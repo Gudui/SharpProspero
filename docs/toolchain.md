@@ -19,7 +19,8 @@ reach the device services, and the module and package formats.
 | [Signed and unsigned](signed-and-unsigned.md) | The unsigned and signed forms of a program and a library, and converting between them. |
 | [Working with module offsets](offsets.md) | Reading a module's offsets, retargeting the version it records, and contributing a firmware's facts. |
 | [The param.json fields](param-json.md) | The package metadata a title carries, and the packaging step that assembles it. |
+| [Command reference](commands.md) | Every command the toolchain offers, grouped by what you are trying to do. |
 
-The reader tool, inspector, and packager are command-line programs; each page above shows the command
-for its task. The same command-line program builds texture files from images with its `gnf` command,
-covered in [Building a texture file](graphics-gpu.md#building-a-texture-file).
+The reader tool, inspector, and packager are all the same command-line program; each page above shows
+the command for its task, and [Command reference](commands.md) lists every one of them in a single
+table.

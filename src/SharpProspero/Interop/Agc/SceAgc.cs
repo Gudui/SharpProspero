@@ -257,11 +257,11 @@ public static unsafe partial class SceAgc
     [LibraryImport(Lib)]
     public static partial int sceAgcCondExecPatchSetEnd(void* packet, void* endAddress);
 
-    /// <summary>Builds an interpolant (VS-&gt;PS attribute) mapping from two shader stages.</summary>
+    /// <summary>Builds an interpolant (VS-&gt;PS attribute) mapping from two shader programs.</summary>
     [LibraryImport(Lib)]
     public static partial int sceAgcCreateInterpolantMapping(void* outMapping, void* vsShader, void* psShader);
 
-    /// <summary>Creates a primitive/pipeline state object from shader stages, GPU addresses and flags.</summary>
+    /// <summary>Creates a primitive/pipeline state object from shader programs, GPU addresses and flags.</summary>
     [LibraryImport(Lib)]
     public static partial int sceAgcCreatePrimState(void* outPrimState, void* shader, void* gpuAddr1, void* gpuAddr2, uint flags);
 
@@ -677,7 +677,7 @@ public static unsafe partial class SceAgc
     [LibraryImport(Lib)]
     public static partial int sceAgcJumpPatchSetTarget(void* packet, void* target, uint size);
 
-    /// <summary>Links multiple shader stages into a linked pipeline.</summary>
+    /// <summary>Links multiple shader programs into a linked pipeline.</summary>
     [LibraryImport(Lib)]
     public static partial int sceAgcLinkShaders(void* linkState, void* outHandle, void* shaderA, void* shaderB, void* shaderC, uint flags);
 
@@ -761,7 +761,7 @@ public static unsafe partial class SceAgc
     [LibraryImport(Lib)]
     public static partial int sceAgcSuspendPointAndCheckStatus(void* outStatus);
 
-    /// <summary>Updates an existing interpolant mapping in place from two shader stages.</summary>
+    /// <summary>Updates an existing interpolant mapping in place from two shader programs.</summary>
     [LibraryImport(Lib)]
     public static partial int sceAgcUpdateInterpolantMapping(void* mapping, void* vsShader, void* psShader);
 

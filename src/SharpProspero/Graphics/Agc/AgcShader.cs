@@ -20,8 +20,8 @@ public enum ShaderResourceKind
     ConstantBuffer = 3,
 }
 
-/// <summary>The pipeline stage a shader runs at.</summary>
-public enum ShaderStage : byte
+/// <summary>Which part of the pipeline a shader runs at.</summary>
+public enum ShaderKind : byte
 {
     /// <summary>Compute shader.</summary>
     Compute = 0,
@@ -95,7 +95,7 @@ public sealed unsafe class AgcShader
         return true;
     }
 
-    /// <summary>The base shader-register offset for this shader stage's user-data slot zero.</summary>
+    /// <summary>The base shader-register offset for this shader kind's user-data slot zero.</summary>
     public const uint GsUserDataBaseOffset = 0x008C;
 
     /// <summary>
@@ -114,7 +114,7 @@ public sealed unsafe class AgcShader
     }
 
     /// <summary>
-    /// Fuses a front shader half and a back shader half (the two-part geometry or hull stages) into one
+    /// Fuses a front shader half and a back shader half (the two-part geometry or hull pairs) into one
     /// shader written to <paramref name="fusedStorage"/>, using <paramref name="scratch"/> as working
     /// memory. Storage must be at least the size the fused-size query reports.
     /// </summary>

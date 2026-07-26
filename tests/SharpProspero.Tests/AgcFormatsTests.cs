@@ -34,11 +34,11 @@ public sealed class AgcFormatsTests
     }
 
     [Fact]
-    public void ShaderStagesAreNumberedAsDeclared()
+    public void ShaderKindsAreNumberedAsDeclared()
     {
-        Assert.Equal(0, (int)ShaderStage.Compute);
-        Assert.Equal(1, (int)ShaderStage.Pixel);
-        Assert.Equal(2, (int)ShaderStage.Geometry);
-        Assert.Equal(8, (int)ShaderStage.Function);
+        Assert.Equal(0, (int)ShaderKind.Compute);
+        Assert.Equal(1, (int)ShaderKind.Pixel);
+        Assert.Equal(2, (int)ShaderKind.Geometry);
+        Assert.Equal(8, (int)ShaderKind.Function);
     }
 }

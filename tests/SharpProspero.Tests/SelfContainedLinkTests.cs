@@ -30,11 +30,11 @@ public sealed class SelfContainedLinkTests
     }
 
     [Fact]
-    public void CrtEmitter_EmitsTwoCallRelocations()
+    public void CrtEmitter_CallsTheStartupSequenceInOrder()
     {
         ElfObject crt = ElfObjectReader.Read(CrtEmitter.BuildStartObject(), "crt");
 
-        // The two relocations sit on the executable section and patch the call displacements.
+        // The relocations sit on the executable section and patch the call displacements.
         int textIndex = -1;
         for (int i = 0; i < crt.Sections.Count; i++)
             if (crt.Sections[i] is { IsExecutable: true, Name: ".text" })
@@ -42,18 +42,20 @@ public sealed class SelfContainedLinkTests
         Assert.True(textIndex >= 0);
 
         IReadOnlyList<ElfRelocation> relocs = crt.Relocations[textIndex];
-        Assert.Equal(2, relocs.Count);
-        Assert.All(relocs, r => Assert.Equal(RelType.Plt32, r.Type));
         Assert.All(relocs, r => Assert.Equal(-4, r.Addend));
-        Assert.Contains(relocs, r => r.Offset == 16);
-        Assert.Contains(relocs, r => r.Offset == 23);
+        // Every reference is a call, except the teardown routine, whose address is taken to hand over.
+        Assert.All(relocs, r => Assert.True(r.Type is RelType.Plt32 or RelType.Pc32));
 
-        // Each relocation names either main or exit.
-        foreach (ElfRelocation r in relocs)
-        {
-            string name = crt.Symbols[(int)r.SymbolIndex].Name;
-            Assert.True(name is "main" or "exit");
-        }
+        // The order is what makes a module start: the C library is set up from the parameter block the
+        // loader passes, the teardown routine is registered, the constructors run, and only then does
+        // main get called. Anything the library provides - the allocator most of all - is unusable
+        // before the first of those, so a different order is a module that dies before its first line.
+        // Once main returns the status goes through the library's own return step before it reaches
+        // exit, which is why the entry keeps a second copy of it.
+        string[] called = [.. relocs.OrderBy(r => r.Offset).Select(r => crt.Symbols[(int)r.SymbolIndex].Name)];
+        Assert.Equal(
+            ["_init_env", "atexit", "_fini", "atexit", "_init", "main", "catchReturnFromMain", "exit"],
+            called);
     }
 
     [Fact]

@@ -1,14 +1,35 @@
 {
+  "addcont": {
+    "serviceIdForSharing": [
+      "                   ",
+      "                   ",
+      "                   ",
+      "                   ",
+      "                   ",
+      "                   ",
+      "                   "
+    ]
+  },
+  "ageLevel": {
+    "default": 0
+  },
   "applicationCategoryType": 0,
   "applicationDrmType": "free",
   "attribute": 0,
   "attribute2": 0,
   "attribute3": 0,
   "conceptId": "APP_CONCEPTID",
-  "contentBadgeType": 2,
+  "contentBadgeType": 1,
   "contentId": "APP_CONTENTID",
   "contentVersion": "01.000.000",
   "downloadDataSize": 0,
+  "gameIntent": {
+    "permittedIntents": [
+      {
+        "intentType": "launchActivity"
+      }
+    ]
+  },
   "localizedParameters": {
     "defaultLanguage": "en-US",
     "en-US": {

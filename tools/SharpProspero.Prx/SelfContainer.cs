@@ -516,7 +516,12 @@ public static class SelfContainer
         BinaryPrimitives.WriteUInt64LittleEndian(span[(extInfoStart + 0x08)..], 1); // program type
         BinaryPrimitives.WriteUInt64LittleEndian(span[(extInfoStart + 0x10)..], options.AppVersion);
         BinaryPrimitives.WriteUInt64LittleEndian(span[(extInfoStart + 0x18)..], options.FirmwareVersion);
-        SHA256.HashData(elf).CopyTo(span[(extInfoStart + 0x20)..]);
+        // The digest covers what the container carries. A module keeps some of its record-keeping past
+        // the last segment the container stores - the version record and the note in the tail - and a
+        // digest taken over the input rather than over what is stored would never match again once the
+        // container is read back. Zeroing what is not carried, then digesting, covers every stored byte
+        // and still changes the moment one of them does.
+        SHA256.HashData(CarriedImage(elf, phnum, selected)).CopyTo(span[(extInfoStart + 0x20)..]);
 
         BinaryPrimitives.WriteUInt64LittleEndian(span[(extInfoStart + ExtInfoSize)..], 3); // control block type
 
@@ -531,6 +536,33 @@ public static class SelfContainer
     }
 
     private readonly record struct SelectedSegment(int PhdrIndex, int FileOffset, int FileSize);
+
+    // The module as the container carries it: the header region and every stored segment, with
+    // anything not stored left zero. Reading a container back produces exactly this, so this is what
+    // the digest covers - a digest over the input instead would stop matching the moment a module kept
+    // any record-keeping past its last stored segment, which is what a module does.
+    private static byte[] CarriedImage(byte[] elf, int phnum, List<SelectedSegment> selected)
+    {
+        int headerLen = ElfHeaderSize + phnum * ElfPhdrSize;
+        // The image reaches the furthest extent any program header records, whether or not the
+        // container stores those bytes, which is how reading one back sizes it.
+        long end = headerLen;
+        for (int i = 0; i < phnum; i++)
+        {
+            int p = ElfHeaderSize + i * ElfPhdrSize;
+            ulong off = BinaryPrimitives.ReadUInt64LittleEndian(elf.AsSpan(p + 0x08));
+            ulong size = BinaryPrimitives.ReadUInt64LittleEndian(elf.AsSpan(p + 0x20));
+            if (off > int.MaxValue || size > (ulong)int.MaxValue - off)
+                continue;
+            end = Math.Max(end, (long)(off + size));
+        }
+
+        byte[] image = new byte[end];
+        elf.AsSpan(0, headerLen).CopyTo(image);
+        foreach (SelectedSegment s in selected)
+            elf.AsSpan(s.FileOffset, s.FileSize).CopyTo(image.AsSpan(s.FileOffset));
+        return image;
+    }
 
     private static List<SelectedSegment> SelectSegments(byte[] elf, int phoff, int phnum)
     {

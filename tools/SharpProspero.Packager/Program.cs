@@ -54,7 +54,7 @@ internal static class Program
             Console.WriteLine();
             Console.WriteLine($"Package: {result.OutputPath}");
             Console.WriteLine($"Module:  {result.ModulePath}");
-            // The result names the module; the copy to inspect is the one staged in the input folder.
+            // The result names the module; the copy to inspect is the one gathered in the input folder.
             PrintReadiness(result.LaunchReadiness,
                 Path.IsPathRooted(result.ModulePath)
                     ? result.ModulePath
@@ -104,7 +104,7 @@ internal static class Program
         }
     }
 
-    /// <summary>How a staged module is stored, read from its first bytes.</summary>
+    /// <summary>How a gathered module is stored, read from its first bytes.</summary>
     private enum ModuleForm { Unknown, PlainElf, Wrapped, WrappedSealed }
 
     // Container magic, then the ELF magic. Whether a wrapped module can be read is a per-segment

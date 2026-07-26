@@ -37,7 +37,11 @@ public sealed class StubCatalogCoverageTests
     [Fact]
     public void EveryImportedSymbolIsProvidedByAStubCatalogEntry()
     {
-        var provided = new HashSet<string>();
+        // A name resolves either because a module publishes it, in which case the catalog names it, or
+        // because the compat object defines it. The catalog may only name what a module really
+        // publishes: a name listed there that nothing publishes produces an import the loader cannot
+        // bind, and a module whose imports do not bind never reaches its first instruction.
+        var provided = new HashSet<string>(SharpProspero.Link.CompatEmitter.DefinedNames);
         foreach (StubCatalog.Entry entry in StubCatalog.Core)
             foreach (string name in entry.Exports)
                 provided.Add(name);
@@ -45,8 +49,8 @@ public sealed class StubCatalogCoverageTests
         string[] missing = ImportedSymbols().Where(s => !provided.Contains(s)).Distinct().Order().ToArray();
 
         Assert.True(missing.Length == 0,
-            "These imported symbols are not named by any stub catalog entry, so a module that reaches them " +
-            "would fail to link:\n  " + string.Join("\n  ", missing));
+            "These imported symbols are named by no stub catalog entry and defined by no compat entry, " +
+            "so a module that reaches them would fail to link:\n  " + string.Join("\n  ", missing));
     }
 
     [Fact]

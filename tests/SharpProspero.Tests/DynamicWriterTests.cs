@@ -53,6 +53,93 @@ public sealed class DynamicWriterTests
         };
     }
 
+    // An object importing from two libraries published by one module, which is what the kernel module
+    // does: it publishes both its own library and the portable-interface one. The produced module has
+    // to name the module once and each library separately, or an import resolves against the wrong
+    // library and never binds.
+    private static LinkResolution BuildTwoLibrariesOneModuleResolution()
+    {
+        var text = new ElfSection
+        {
+            Name = ".text",
+            Type = ShType.ProgBits,
+            Flags = ShFlags.Alloc | ShFlags.Execute,
+            Address = 0,
+            Size = 0x20,
+            Link = 0,
+            Info = 0,
+            AddrAlign = 16,
+            EntSize = 0,
+            Data = new byte[0x20],
+        };
+        var nullSec = new ElfSection { Name = "", Type = ShType.Null, Flags = 0, Address = 0, Size = 0, Link = 0, Info = 0, AddrAlign = 0, EntSize = 0, Data = [] };
+        var main = new ElfSymbol { Name = "main", Info = (SymBind.Global << 4) | SymType.Func, Other = 0, SectionIndex = 1, Value = 0, Size = 0 };
+        var fromKernel = new ElfSymbol { Name = "sceKernelFoo", Info = (SymBind.Global << 4) | SymType.Func, Other = 0, SectionIndex = 0, Value = 0, Size = 0 };
+        var fromPosix = new ElfSymbol { Name = "read", Info = (SymBind.Global << 4) | SymType.Func, Other = 0, SectionIndex = 0, Value = 0, Size = 0 };
+        var nullSym = new ElfSymbol { Name = "", Info = 0, Other = 0, SectionIndex = 0, Value = 0, Size = 0 };
+        var relocs = new List<ElfRelocation>
+        {
+            new(Offset: 4, SymbolIndex: 2, Type: RelType.Plt32, Addend: -4),
+            new(Offset: 12, SymbolIndex: 3, Type: RelType.Plt32, Addend: -4),
+        };
+        var obj = new ElfObject
+        {
+            Origin = "synthetic",
+            Sections = [nullSec, text],
+            Symbols = [nullSym, main, fromKernel, fromPosix],
+            Relocations = new Dictionary<int, IReadOnlyList<ElfRelocation>> { [1] = relocs },
+        };
+        return new LinkResolution
+        {
+            Included = [obj],
+            Defined = new Dictionary<string, ElfObject> { ["main"] = obj },
+            Imports =
+            [
+                new ImportSymbol("sceKernelFoo", "libkernel", "libkernel", "libkernel.prx"),
+                new ImportSymbol("read", "libkernel", "libScePosix", "libkernel.prx"),
+            ],
+            Unresolved = [],
+        };
+    }
+
+    [Fact]
+    public void Write_NamesOneModuleOncePerFileAndEveryLibrarySeparately()
+    {
+        byte[] file = DynamicWriter.Write(BuildTwoLibrariesOneModuleResolution(), "main");
+        (ulong dynOff, ulong dynSz) = FindDynamic(file);
+
+        const long DtNeeded = 1, DtSceNeededModule = 0x61000045, DtSceImportLib = 0x61000049;
+        var needed = new List<ulong>();
+        var modules = new List<ulong>();
+        var libraries = new List<ulong>();
+        for (ulong d = dynOff; d + 16 <= dynOff + dynSz; d += 16)
+        {
+            long tag = BinaryPrimitives.ReadInt64LittleEndian(file.AsSpan((int)d));
+            ulong value = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan((int)d + 8));
+            if (tag == DtNeeded) needed.Add(value);
+            else if (tag == DtSceNeededModule) modules.Add(value);
+            else if (tag == DtSceImportLib) libraries.Add(value);
+        }
+
+        // One file, named once, however many of its libraries are used.
+        Assert.Single(needed);
+        Assert.Single(modules);
+        // Both libraries, each with an id of its own, and both belonging to that one module.
+        Assert.Equal(2, libraries.Count);
+        Assert.Equal(2, libraries.Select(v => (int)(v >> 48)).Distinct().Count());
+        Assert.Equal(1, (int)(modules[0] >> 48));
+
+        // The encoded symbol names carry the two different library ids against the same module id.
+        var suffixes = ReadDynamicSymbolNames(file)
+            .Where(n => n.Contains('#', StringComparison.Ordinal))
+            .Select(n => n.Split('#'))
+            .Select(p => (Library: p[1], Module: p[2]))
+            .ToList();
+        Assert.Equal(2, suffixes.Count);
+        Assert.Equal(2, suffixes.Select(s => s.Library).Distinct().Count());
+        Assert.Single(suffixes.Select(s => s.Module).Distinct());
+    }
+
     // An object importing a function from a module whose file, module, and library names all differ,
     // the way the message dialog does. The produced module must carry all three, or it installs and
     // then fails to bind.
@@ -117,10 +204,11 @@ public sealed class DynamicWriterTests
         Assert.Equal(0x464C457Fu, BinaryPrimitives.ReadUInt32LittleEndian(file));
         Assert.Equal(0xFE10, BinaryPrimitives.ReadUInt16LittleEndian(file.AsSpan(0x10)));
         // The code, writable, parameter and linking loads, the relro header, dynamic, procparam, the
-        // comment, the version record, the build-id note and the reserved note. This object has no
-        // read-only content, no frame index and no thread-local template, so those three are left out.
+        // thread-local header, the comment, the version record, the build-id note and the reserved
+        // note. This object has no read-only content and no frame index, so those two are left out;
+        // the thread-local header is carried even with nothing in it, the way a module carries it.
         int phnum = BinaryPrimitives.ReadUInt16LittleEndian(file.AsSpan(0x38));
-        Assert.Equal(11, phnum);
+        Assert.Equal(12, phnum);
 
         // Find PT_DYNAMIC (type 2) among the program headers, and count the two PT_NOTE segments.
         bool hasDynamic = false, hasProcParam = false;
@@ -158,11 +246,16 @@ public sealed class DynamicWriterTests
                 ppSz = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 32));
             }
 
-        Assert.Equal(0x60u, (uint)ppSz);
+        // The segment is eight bytes longer than the length the block declares; the tail is padding,
+        // which is the shape a module built from the same objects carries.
+        Assert.Equal(0x68u, (uint)ppSz);
+        Assert.Equal(0x60ul, BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan((int)ppOff)));
         Assert.Equal("ORBI", Encoding.ASCII.GetString(file, (int)ppOff + 8, 4));
-        // The legacy compatibility word, then the meaningful Prospero SDK version the module targets.
+        // The compatibility word, then the version the module targets. Both match a module built by
+        // the toolchain the format comes from, which is what the system reports back as it starts the
+        // process; a revision no release carries describes a module that could not exist.
         Assert.Equal(0x08050001u, BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan((int)ppOff + 0x10)));
-        Assert.Equal(0x02000026u, BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan((int)ppOff + 0x14)));
+        Assert.Equal(0x02000009u, BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan((int)ppOff + 0x14)));
     }
 
     [Fact]
@@ -188,17 +281,118 @@ public sealed class DynamicWriterTests
                 for (int b = 0; b < 20; b++) anyNonZero |= file[(int)off + 16 + b] != 0;
                 Assert.True(anyNonZero, "Expected a non-zero build-id descriptor.");
             }
-            if (va == 0 && memsz == 0 && filesz == 0x48)
+            if (va == 0 && memsz == 0 && filesz == 0x18)
             {
-                reservedNote = true;                                         // the non-loaded reserved note
-                Assert.True(off + 0x48 <= (ulong)file.Length, "Reserved note must lie within the file.");
+                reservedNote = true;                                         // the non-loaded tail note
+                Assert.True(off + 0x18 <= (ulong)file.Length, "The tail note must lie within the file.");
+                // A whole note, not a length a reader walking notes cannot step through: a four-byte
+                // name and an eight-byte identifier account for the twenty-four bytes exactly.
+                Assert.Equal(4u, BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan((int)off)));
+                Assert.Equal(8u, BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan((int)off + 4)));
+                Assert.Equal("SIE", Encoding.ASCII.GetString(file, (int)off + 12, 3));
+                bool anyNonZero = false;
+                for (int b = 0; b < 8; b++) anyNonZero |= file[(int)off + 16 + b] != 0;
+                Assert.True(anyNonZero, "Expected a non-zero identifier in the tail note.");
             }
         }
         Assert.True(loadedNote, "Expected the loaded 0x24-byte GNU build-id note.");
-        Assert.True(reservedNote, "Expected the reserved 0x48-byte note in the file tail.");
+        Assert.True(reservedNote, "Expected the 0x18-byte note in the file tail.");
     }
 
     // An object whose .text reaches an imported data symbol through the global-offset table.
+    [Fact]
+    public void Write_FixesUpTableSlotsHoldingSectionBoundaries()
+    {
+        // The runtime reads the start and end of its own compiled code out of this table and registers
+        // the range with itself. The linker settles those two addresses rather than any object, so the
+        // check for "does this slot need a load-time fixup" missed them: the slots stayed zero, the
+        // range measured nothing, registration was refused, and the module left main with a failure
+        // before a line of application code - with nothing logged to say why.
+        byte[] file = DynamicWriter.Write(BuildSectionBoundaryResolution(), "main");
+        List<Phdr> phdrs = ReadProgramHeaders(file);
+        Phdr link = Assert.Single(phdrs, p => p.Type == 1 && p.Flags == 0);
+        Phdr dynamic = Assert.Single(phdrs, p => p.Type == 2);
+
+        ulong relaAddr = 0, relaSize = 0;
+        for (ulong at = dynamic.Offset; at < dynamic.Offset + dynamic.FileSize; at += 16)
+        {
+            long tag = BinaryPrimitives.ReadInt64LittleEndian(file.AsSpan((int)at));
+            ulong value = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan((int)at + 8));
+            if (tag == 7) relaAddr = value;
+            if (tag == 8) relaSize = value;
+        }
+        Assert.True(relaSize > 0, "no base-relative table at all");
+
+        var values = new List<ulong>();
+        ulong tableAt = link.Offset + (relaAddr - link.Addr);
+        for (ulong i = 0; i < relaSize / 24; i++)
+        {
+            ulong info = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan((int)(tableAt + i * 24) + 8));
+            if ((info & 0xFFFFFFFF) == 8)                                    // base-relative
+                values.Add(BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan((int)(tableAt + i * 24) + 16)));
+        }
+        // Both boundaries are fixed up, and they bracket a range the size of the section itself.
+        Assert.Contains(values, start => values.Contains(start + BoundarySectionSize));
+    }
+
+    private const ulong BoundarySectionSize = 0x40;
+
+    // An object that reads the start and end of a named section through the table, the way a compiled
+    // runtime reads the bounds of its own code.
+    private static LinkResolution BuildSectionBoundaryResolution()
+    {
+        var text = new ElfSection
+        {
+            Name = ".text",
+            Type = ShType.ProgBits,
+            Flags = ShFlags.Alloc | ShFlags.Execute,
+            Address = 0,
+            Size = 0x20,
+            Link = 0,
+            Info = 0,
+            AddrAlign = 16,
+            EntSize = 0,
+            Data = new byte[0x20],
+        };
+        var managed = new ElfSection
+        {
+            Name = "__managedcode",
+            Type = ShType.ProgBits,
+            Flags = ShFlags.Alloc | ShFlags.Execute,
+            Address = 0,
+            Size = BoundarySectionSize,
+            Link = 0,
+            Info = 0,
+            AddrAlign = 16,
+            EntSize = 0,
+            Data = new byte[BoundarySectionSize],
+        };
+        var nullSec = new ElfSection { Name = "", Type = ShType.Null, Flags = 0, Address = 0, Size = 0, Link = 0, Info = 0, AddrAlign = 0, EntSize = 0, Data = [] };
+        var nullSym = new ElfSymbol { Name = "", Info = 0, Other = 0, SectionIndex = 0, Value = 0, Size = 0 };
+        var main = new ElfSymbol { Name = "main", Info = (SymBind.Global << 4) | SymType.Func, Other = 0, SectionIndex = 1, Value = 0, Size = 0 };
+        var start = new ElfSymbol { Name = "__start___managedcode", Info = (SymBind.Global << 4) | SymType.NoType, Other = 0, SectionIndex = 0, Value = 0, Size = 0 };
+        var stop = new ElfSymbol { Name = "__stop___managedcode", Info = (SymBind.Global << 4) | SymType.NoType, Other = 0, SectionIndex = 0, Value = 0, Size = 0 };
+        var relocs = new List<ElfRelocation>
+        {
+            new(Offset: 4, SymbolIndex: 2, Type: RelType.GotPcRel, Addend: -4),
+            new(Offset: 12, SymbolIndex: 3, Type: RelType.GotPcRel, Addend: -4),
+        };
+        var obj = new ElfObject
+        {
+            Origin = "synthetic",
+            Sections = [nullSec, text, managed],
+            Symbols = [nullSym, main, start, stop],
+            Relocations = new Dictionary<int, IReadOnlyList<ElfRelocation>> { [1] = relocs },
+        };
+        return new LinkResolution
+        {
+            Included = [obj],
+            Defined = new Dictionary<string, ElfObject> { ["main"] = obj },
+            Imports = [],
+            Unresolved = [],
+        };
+    }
+
     private static LinkResolution BuildGotResolution()
     {
         var text = new ElfSection
@@ -367,7 +561,8 @@ public sealed class DynamicWriterTests
 
         // The TPOFF32 at .text[0] resolves to tlsVar's template offset (4) minus the aligned template
         // size (12) = -8 = 0xFFFFFFF8. The text segment is the first load segment.
-        ulong textOffset = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(0x40 + 8));
+        // The code group opens with the reserved head, so the section starts past it.
+        ulong textOffset = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(0x40 + 8)) + DynamicWriter.ImageHeadReserve;
         Assert.Equal(0xFFFFFFF8u, BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan((int)textOffset)));
     }
 
@@ -395,7 +590,8 @@ public sealed class DynamicWriterTests
         var resolution = new LinkResolution { Included = [obj], Defined = new Dictionary<string, ElfObject> { ["main"] = obj, ["tlsVar"] = obj }, Imports = [], Unresolved = [] };
         byte[] file = DynamicWriter.Write(resolution, "main");
 
-        ulong textOffset = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(0x40 + 8));
+        // The code group opens with the reserved head, so the section starts past it.
+        ulong textOffset = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(0x40 + 8)) + DynamicWriter.ImageHeadReserve;
         // mov %fs:0,%rax ; lea -8(%rax),%rax
         byte[] expected = [0x64, 0x48, 0x8B, 0x04, 0x25, 0x00, 0x00, 0x00, 0x00, 0x48, 0x8D, 0x80, 0xF8, 0xFF, 0xFF, 0xFF];
         Assert.Equal(expected, file[(int)textOffset..((int)textOffset + 16)]);
@@ -407,7 +603,8 @@ public sealed class DynamicWriterTests
         // A module-block offset (paired with a relaxed local-dynamic base) resolves to the same value as a
         // local-exec offset: tlsVar's template offset 4 minus the aligned template size 12, i.e. -8.
         byte[] file = DynamicWriter.Write(BuildTlsResolution(RelType.DtpOff32), "main");
-        ulong textOffset = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(0x40 + 8));
+        // The code group opens with the reserved head, so the section starts past it.
+        ulong textOffset = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(0x40 + 8)) + DynamicWriter.ImageHeadReserve;
         Assert.Equal(0xFFFFFFF8u, BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan((int)textOffset)));
     }
 
@@ -551,7 +748,8 @@ public sealed class DynamicWriterTests
         byte[] file = DynamicWriter.Write(BuildSingleReloc(target, RelType.Pc64, defineTarget: true), "main");
 
         // The reloc sits at .text+0, so the value is target(.text+0x10) - place(.text+0) = 0x10.
-        ulong textOffset = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(0x40 + 8));
+        // The code group opens with the reserved head, so the section starts past it.
+        ulong textOffset = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(0x40 + 8)) + DynamicWriter.ImageHeadReserve;
         Assert.Equal(0x10ul, BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan((int)textOffset)));
     }
 
@@ -600,7 +798,8 @@ public sealed class DynamicWriterTests
         var weak = new ElfSymbol { Name = "weak_opt", Info = (SymBind.Weak << 4) | SymType.Object, Other = 0, SectionIndex = 0, Value = 0, Size = 0 };
         byte[] file = DynamicWriter.Write(BuildSingleReloc(weak, RelType.R64, defineTarget: false), "main");
 
-        ulong textOffset = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(0x40 + 8));
+        // The code group opens with the reserved head, so the section starts past it.
+        ulong textOffset = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(0x40 + 8)) + DynamicWriter.ImageHeadReserve;
         Assert.Equal(0ul, BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan((int)textOffset)));
 
         int ph = 0x40; ulong dynOff = 0, dynSz = 0;
@@ -727,31 +926,124 @@ public sealed class DynamicWriterTests
         return false;
     }
 
-    [Fact]
-    public void Write_Executable_RunsTheInitArrayFromTheEntryStub()
+    // Every imported symbol name, read through the linking segment the tables live in. The tag values
+    // are addresses, which the segment carrying them turns back into file offsets.
+    private static List<string> ReadDynamicSymbolNames(byte[] file)
     {
-        // The loader does not run an executable's init array, so the linker must. The entry points at a
-        // small constructor-running stub (not straight at main), and the init-array tag is left off.
+        int ph = 0x40, phnum = BinaryPrimitives.ReadUInt16LittleEndian(file.AsSpan(0x38));
+        ulong segOff = 0, segAddr = 0;
+        for (int i = 0; i < phnum; i++, ph += 0x38)
+            if (BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan(ph)) == 1
+                && BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan(ph + 4)) == 0)
+            {
+                segOff = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 8));
+                segAddr = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 16));
+            }
+
+        ulong symtab = DynamicTagValue(file, 6), strtab = DynamicTagValue(file, 5);
+        ulong symtabSize = DynamicTagValue(file, 0x6100003F);
+        int symOff = (int)(segOff + (symtab - segAddr)), strOff = (int)(segOff + (strtab - segAddr));
+
+        var names = new List<string>();
+        for (int i = 1; i < (int)symtabSize / 24; i++)
+        {
+            int nameOff = (int)BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan(symOff + i * 24));
+            int start = strOff + nameOff, end = start;
+            while (end < file.Length && file[end] != 0)
+                end++;
+            names.Add(Encoding.ASCII.GetString(file, start, end - start));
+        }
+        return names;
+    }
+
+    // The value of the first record carrying <paramref name="wantedTag"/>.
+    private static ulong DynamicTagValue(byte[] file, long wantedTag)
+    {
+        (ulong dynOff, ulong dynSz) = FindDynamic(file);
+        for (ulong d = dynOff; d + 16 <= dynOff + dynSz; d += 16)
+            if (BinaryPrimitives.ReadInt64LittleEndian(file.AsSpan((int)d)) == wantedTag)
+                return BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan((int)d + 8));
+        throw new Xunit.Sdk.XunitException($"no dynamic record carries tag {wantedTag}.");
+    }
+
+    // Every launching module names a setup routine, a teardown routine and the loader's bookkeeping
+    // slot. A module that leaves them out is the shape that never reaches its first instruction.
+    [Theory]
+    [MemberData(nameof(EveryModuleShape))]
+    public void Write_NamesSetupTeardownAndTheLoaderSlot(string shape)
+    {
+        byte[] file = WriteShape(shape);
+
+        Assert.True(HasDynamicTag(file, 12), "a module names its setup routine (DT_INIT)");
+        Assert.True(HasDynamicTag(file, 13), "a module names its teardown routine (DT_FINI)");
+        Assert.True(HasDynamicTag(file, 21), "a module carries the loader's bookkeeping slot (DT_DEBUG)");
+        Assert.True(HasDynamicTag(file, 32), "a module names its pre-init array");
+        Assert.True(HasDynamicTag(file, 26), "a module names its fini array");
+
+        // Both routines have to be reachable, which means inside the executable segment.
+        ulong init = DynamicTagValue(file, 12), fini = DynamicTagValue(file, 13);
+        Assert.NotEqual(0ul, init);
+        Assert.NotEqual(0ul, fini);
+
+        int ph = 0x40, phnum = BinaryPrimitives.ReadUInt16LittleEndian(file.AsSpan(0x38));
+        ulong textOff = 0, textVaddr = 0, textLen = 0;
+        for (int i = 0; i < phnum; i++, ph += 0x38)
+            if (BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan(ph)) == 1
+                && (BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan(ph + 4)) & 1) != 0)
+            {
+                textOff = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 8));
+                textVaddr = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 16));
+                textLen = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 32));
+            }
+        Assert.InRange(init, textVaddr, textVaddr + textLen - 1);
+        Assert.InRange(fini, textVaddr, textVaddr + textLen - 1);
+
+        // The setup routine is the constructor walker the entry calls: it saves the two registers it
+        // walks with before anything else. The teardown routine returns at once, having nothing to undo.
+        Assert.Equal(0x53, file[(int)(textOff + (init - textVaddr))]);      // push rbx
+        Assert.Equal(0x55, file[(int)(textOff + (init - textVaddr)) + 1]);  // push rbp
+        Assert.Equal(0xC3, file[(int)(textOff + (fini - textVaddr))]);      // ret
+    }
+
+    [Fact]
+    public void Write_Executable_RunsItsOwnConstructorsFromTheEntry()
+    {
+        // The loader does not run an executable's constructors, so the start routine does - by calling
+        // the walker the linker writes, after the C library has been set up. The array is named with
+        // the address and size it actually has, the way a module built from the same objects names it;
+        // nothing runs it twice, because the only thing that runs it is the walker.
         byte[] file = DynamicWriter.Write(InitArrayResolution(), "main"); // Executable by default
 
-        Assert.False(HasDynamicTag(file, 25), "an executable must not advertise DT_INIT_ARRAY");
-        Assert.False(HasDynamicTag(file, 27), "an executable must not advertise DT_INIT_ARRAYSZ");
+        Assert.True(HasDynamicTag(file, 25), "a module names its init array");
+        Assert.True(HasDynamicTag(file, 27), "a module names its init-array size");
+        ulong arrayAddr = DynamicTagValue(file, 25), arraySize = DynamicTagValue(file, 27);
+        Assert.NotEqual(0ul, arrayAddr);
+        Assert.NotEqual(0ul, arraySize);
+        Assert.Equal(0ul, arraySize % 8);
 
-        // The entry is the stub, whose bytes begin push rbx; push rbp; lea rbx,[rip+..]. main sits at the
-        // module base (address 0), so a stub entry is provably not main.
-        ulong entry = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(0x18));
-        Assert.NotEqual(0ul, entry);
+        // The entry is main here, since this shape supplies no start routine of its own; what matters
+        // is that the walker exists and is what the setup tag points at.
+        ulong init = DynamicTagValue(file, 12);
+        Assert.NotEqual(0ul, init);
 
-        // Map the entry back to a file offset through the code segment, which carries the execute bit
-        // and never the read bit.
         int ph = 0x40, phnum = BinaryPrimitives.ReadUInt16LittleEndian(file.AsSpan(0x38));
         ulong textOff = 0, textVaddr = 0;
         for (int i = 0; i < phnum; i++, ph += 0x38)
-            if (BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan(ph)) == 1 && (BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan(ph + 4)) & 1) != 0)
+            if (BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan(ph)) == 1
+                && (BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan(ph + 4)) & 1) != 0)
             { textOff = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 8)); textVaddr = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 16)); }
 
-        int stub = (int)(textOff + (entry - textVaddr));
-        Assert.Equal(new byte[] { 0x53, 0x55, 0x48, 0x8D, 0x1D }, file[stub..(stub + 5)]);
+        // push rbx; push rbp; lea rbx,[rip+..] - the walker, then a return rather than a jump.
+        int w = (int)(textOff + (init - textVaddr));
+        Assert.Equal(new byte[] { 0x53, 0x55, 0x48, 0x8D, 0x1D }, file[w..(w + 5)]);
+        Assert.Equal(0xC3, file[w + 39]);
+
+        // The two instruction-relative loads have to bracket exactly the array the module names, or
+        // the walker runs over something else.
+        long start = (long)init + 9 + BinaryPrimitives.ReadInt32LittleEndian(file.AsSpan(w + 5));
+        long stop = (long)init + 16 + BinaryPrimitives.ReadInt32LittleEndian(file.AsSpan(w + 12));
+        Assert.Equal((long)arrayAddr, start);
+        Assert.Equal((long)(arrayAddr + arraySize), stop);
     }
 
     [Fact]
@@ -1006,16 +1298,137 @@ public sealed class DynamicWriterTests
 
     [Theory]
     [MemberData(nameof(EveryModuleShape))]
-    public void Write_OmitsRelroRatherThanEmittingOneWithoutItsLoadSegment(string shape)
+    public void Write_CoversAWritableLoadSegmentWithTheRelroHeader(string shape)
     {
-        // A relro header is only accepted when a writable load segment matches it on offset, address
-        // and both sizes; an unmatched one is rejected. The linker does not emit the header at all,
-        // which skips the check. If it ever starts emitting one, the match has to hold.
+        // The relro header matches the writable segment it covers on offset, address and stored size.
+        // Its memory size rounds up to the page, because the loader protects whole pages - a module
+        // built by the toolchain the format comes from carries that rounding, and matching the stored
+        // size while rounding the memory size is the shape a launching module has.
+        const ulong Page = 0x4000;
         List<Phdr> phdrs = ReadProgramHeaders(WriteShape(shape));
         foreach (Phdr relro in phdrs.Where(p => p.Type == 0x6474E552))
+        {
             Assert.Contains(phdrs, p => p.Type == 1 && p.Flags == 6
                 && p.Offset == relro.Offset && p.Addr == relro.Addr
-                && p.FileSize == relro.FileSize && p.MemSize == relro.MemSize);
+                && p.FileSize == relro.FileSize);
+            Assert.Equal((relro.FileSize + Page - 1) / Page * Page, relro.MemSize);
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(EveryModuleShape))]
+    public void Write_KeepsWritableDataOutOfTheRelroRange(string shape)
+    {
+        // Everything the relro header covers is turned read-only once the module is bound, so the data
+        // a module writes to cannot live there: the first write to a static would fault. The writable
+        // group that carries it is a segment of its own, past the end of the relro one.
+        List<Phdr> phdrs = ReadProgramHeaders(WriteShape(shape));
+        Phdr relro = Assert.Single(phdrs, p => p.Type == 0x6474E552);
+        List<Phdr> writable = [.. phdrs.Where(p => p.Type == 1 && p.Flags == 6)];
+
+        // Two writable segments: the one the relro header covers, and the one holding the data.
+        Assert.Equal(2, writable.Count);
+        Phdr data = Assert.Single(writable, p => p.Addr != relro.Addr);
+        Assert.True(data.Addr >= relro.Addr + relro.MemSize,
+            $"the writable segment at 0x{data.Addr:x} starts inside the relro range 0x{relro.Addr:x}..0x{relro.Addr + relro.MemSize:x}");
+    }
+
+    [Theory]
+    [MemberData(nameof(EveryModuleShape))]
+    public void Write_GivesEveryLoadSegmentItsOwnPlaceInTheFile(string shape)
+    {
+        // Two load segments sharing a file offset overlap, and a module with nothing to store in its
+        // writable group is where that is easiest to write by accident: rounding a zero length forward
+        // leaves the group after it starting exactly where it does.
+        List<Phdr> loads = [.. ReadProgramHeaders(WriteShape(shape)).Where(p => p.Type == 1)];
+        var offsets = new HashSet<ulong>();
+        foreach (Phdr load in loads)
+            Assert.True(offsets.Add(load.Offset),
+                $"two load segments share file offset 0x{load.Offset:x}");
+    }
+
+    [Theory]
+    [MemberData(nameof(EveryModuleShape))]
+    public void Write_PacksTheLinkingGroupAgainstTheWritableGroupRatherThanOntoItsOwnPage(string shape)
+    {
+        // Measured across seventy modules that start, without exception: the linking group's address is
+        // the end of the writable group's memory, so it falls inside the pages that group is mapped
+        // over, and its file offset carries the same page offset as its address. None of them puts the
+        // group on a page of its own, which is what rounding the address up to the next page produces.
+        const ulong Page = 0x4000;
+        List<Phdr> loads = [.. ReadProgramHeaders(WriteShape(shape)).Where(p => p.Type == 1)];
+        Phdr linking = Assert.Single(loads, p => p.Flags == 0);
+        Phdr writable = loads.Where(p => p.Flags == 6).OrderBy(p => p.Addr).Last();
+
+        ulong writableMemEnd = writable.Addr + writable.MemSize;
+        Assert.Equal((writableMemEnd + 15) / 16 * 16, linking.Addr);
+        Assert.Equal(linking.Addr % Page, linking.Offset % Page);
+        Assert.True(linking.Offset >= writable.Offset + writable.FileSize,
+            "the linking group starts before the writable group's stored bytes end");
+
+        // Packing that tightly is what puts the group inside the pages the writable group is mapped
+        // over, which is what every module measured shows. It only fails to when that group's memory
+        // happens to end flush on a page, leaving nothing of that page to pack into - which no module
+        // carrying writable data does.
+        ulong writableMapEnd = (writableMemEnd + Page - 1) / Page * Page;
+        if (writableMemEnd % Page != 0)
+            Assert.True(linking.Addr < writableMapEnd,
+                $"the linking group at 0x{linking.Addr:x} is past the writable mapping ending 0x{writableMapEnd:x}");
+    }
+
+    [Theory]
+    [MemberData(nameof(EveryModuleShape))]
+    public void Write_ReservesTheHeadOfTheImageSoNothingIsAtAddressZero(string shape)
+    {
+        // An address of zero reads back as "none" wherever a routine or a table is optional, so a real
+        // one placed there cannot be told apart from an absent one. The reserved bytes hold the one-byte
+        // trap rather than zeros, which would decode as instructions and run on into the code.
+        byte[] file = WriteShape(shape);
+        Phdr code = Assert.Single(ReadProgramHeaders(file), p => p.Type == 1 && (p.Flags & 1) != 0);
+        Assert.Equal(0ul, code.Addr);
+        for (int i = 0; i < (int)DynamicWriter.ImageHeadReserve; i++)
+            Assert.Equal(0xCC, file[(int)code.Offset + i]);
+    }
+
+    [Fact]
+    public void Write_ClosesTheFrameRecordsWithATerminator()
+    {
+        // The records are read one after another from the first to a length of zero. Without that zero a
+        // reader walks off the last record into whatever follows and keeps going, which is exactly what
+        // the platform's own image check does while the module is still being loaded.
+        byte[] file = DynamicWriter.Write(BuildEhFrameResolution(GoodFrames), "main");
+        List<Phdr> phdrs = ReadProgramHeaders(file);
+        Phdr index = Assert.Single(phdrs, p => p.Type == 0x6474E550);
+
+        // The index names where the records start, program-counter-relative from just past its own head.
+        int rel = BinaryPrimitives.ReadInt32LittleEndian(file.AsSpan((int)index.Offset + 4));
+        ulong frames = (ulong)((long)index.Addr + 4 + rel);
+        Phdr readOnly = Assert.Single(phdrs, p => p.Type == 1 && p.Flags == 4);
+        ulong at = readOnly.Offset + (frames - readOnly.Addr);
+
+        int walked = 0;
+        while (true)
+        {
+            uint length = BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan((int)at));
+            if (length == 0) break;
+            Assert.True(++walked < 1000, "the records never reach a terminator");
+            at += length + 4;
+            Assert.True(at + 4 <= (ulong)file.Length, "the records run past the end of the image");
+        }
+        Assert.True(walked > 0, "no records were walked");
+    }
+
+    [Theory]
+    [MemberData(nameof(EveryModuleShape))]
+    public void Write_ReservesUninitializedDataRatherThanStoringIt(string shape)
+    {
+        // A writable segment records what it stores separately from what it reserves, so uninitialized
+        // data costs no file bytes. Storing it would still work, but it makes the module larger than
+        // the memory it asks for describes.
+        List<Phdr> phdrs = ReadProgramHeaders(WriteShape(shape));
+        foreach (Phdr load in phdrs.Where(p => p.Type == 1))
+            Assert.True(load.MemSize >= load.FileSize,
+                $"a load segment at 0x{load.Addr:x} stores more than it reserves");
     }
 
     [Theory]
@@ -1033,5 +1446,201 @@ public sealed class DynamicWriterTests
         }
         foreach (Phdr p in phdrs)
             Assert.True(p.Offset + p.FileSize <= (ulong)file.Length, "A program header runs past the file.");
+    }
+
+    [Theory]
+    [MemberData(nameof(EveryModuleShape))]
+    public void Write_EndsTheLinkingGroupWhereTheDynamicTableEnds(string shape)
+    {
+        // The loader works out the layout of the linking group from the dynamic table it carries, so
+        // bytes past the end of that table are bytes the layout does not account for. Every module
+        // measured ends the group exactly where its table ends, and keeps its version record outside
+        // the group entirely.
+        byte[] file = WriteShape(shape);
+        List<Phdr> phdrs = ReadProgramHeaders(file);
+        Phdr link = Assert.Single(phdrs, p => p.Type == 1 && p.Flags == 0);
+        Phdr dynamic = Assert.Single(phdrs, p => p.Type == 2);
+
+        Assert.Equal(link.Addr + link.MemSize, dynamic.Addr + dynamic.MemSize);
+        Assert.Equal(link.Offset + link.FileSize, dynamic.Offset + dynamic.FileSize);
+
+        Phdr version = Assert.Single(phdrs, p => p.Type == 0x6FFFFF01);
+        Assert.False(link.Offset <= version.Offset && version.Offset < link.Offset + link.FileSize,
+            "the version record must sit past the linking group, not inside it");
+    }
+
+    [Theory]
+    [MemberData(nameof(EveryModuleShape))]
+    public void Write_WalksTheVersionRecordsExactlyOntoTheSegmentEnd(string shape)
+    {
+        // A reader takes each record's declared body length and steps to the next, so the segment has to
+        // end exactly where the last record does. Rounding its length up leaves bytes past the last
+        // record that read as a further record declaring no body - not a record at all. Both built
+        // modules measured land exactly on their end, over a hundred records each.
+        byte[] file = WriteShape(shape);
+        Phdr version = Assert.Single(ReadProgramHeaders(file), p => p.Type == 0x6FFFFF01);
+
+        ulong at = version.Offset, end = version.Offset + version.FileSize;
+        int records = 0;
+        while (at < end)
+        {
+            Assert.True(at + 4 <= end, "a record header runs past the segment");
+            Assert.Equal(0, BinaryPrimitives.ReadUInt16LittleEndian(file.AsSpan((int)at)));
+            ushort body = BinaryPrimitives.ReadUInt16LittleEndian(file.AsSpan((int)at + 2));
+            Assert.True(body > 0, $"record {records} declares no body");
+            at += 4u + body;
+            records++;
+        }
+        Assert.Equal(end, at);
+        Assert.True(records > 0, "the segment carries no records");
+    }
+
+    [Theory]
+    [MemberData(nameof(EveryModuleShape))]
+    public void Write_KeepsTheThreadLocalTemplateInTheRelroRange(string shape)
+    {
+        // Every module measured that carries a thread-local template keeps it inside the range the
+        // loader turns read-only after binding, alongside the process parameters - not in the plain
+        // writable group. The template is copied per thread; nothing writes through it afterwards.
+        List<Phdr> phdrs = ReadProgramHeaders(WriteShape(shape));
+        Phdr relro = Assert.Single(phdrs, p => p.Type == 0x6474E552);
+        Phdr param = Assert.Single(phdrs, p => p.Type == 0x61000001);
+
+        Assert.True(relro.Addr <= param.Addr && param.Addr + param.FileSize <= relro.Addr + relro.MemSize,
+            "the process parameters belong in the range that is made read-only");
+
+        Phdr? tls = phdrs.FirstOrDefault(p => p.Type == 7);
+        if (tls is { MemSize: > 0 })
+        {
+            Assert.True(relro.Addr <= tls.Value.Addr
+                && tls.Value.Addr + tls.Value.FileSize <= relro.Addr + relro.MemSize,
+                $"the thread-local template at 0x{tls.Value.Addr:x} lies outside the read-only range");
+            // Only the stored bytes live in the image; the rest is reserved per thread.
+            Assert.True(tls.Value.FileSize <= tls.Value.MemSize);
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(EveryModuleShape))]
+    public void Write_FindsEverySymbolThroughItsOwnHashTable(string shape)
+    {
+        // The loader looks a name up by hashing it, reducing by the bucket count, and walking that
+        // bucket's chain. Every symbol the module carries has to be reachable that way, and every walk
+        // has to end: a chain that misses a symbol leaves an import unresolvable, and one that loops
+        // never returns.
+        byte[] file = WriteShape(shape);
+        ulong hashAddr = DynamicTagValue(file, 0x04);
+        ulong symtab = DynamicTagValue(file, 0x06), strtab = DynamicTagValue(file, 0x05);
+        ulong hashSize = DynamicTagValue(file, 0x6100003F);
+
+        List<Phdr> phdrs = ReadProgramHeaders(file);
+        ulong FileOffset(ulong addr)
+        {
+            Phdr p = Assert.Single(phdrs, q => q.Type == 1 && q.Addr <= addr && addr < q.Addr + q.FileSize);
+            return p.Offset + (addr - p.Addr);
+        }
+
+        int h = (int)FileOffset(hashAddr), sym = (int)FileOffset(symtab), str = (int)FileOffset(strtab);
+        uint nbucket = BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan(h));
+        uint nchain = BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan(h + 4));
+        Assert.Equal(hashSize / 24, nchain);
+        Assert.Equal(nchain, nbucket); // one bucket per symbol, as a module carries it
+
+        for (uint i = 1; i < nchain; i++)
+        {
+            uint nameOff = BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan(sym + (int)i * 24));
+            int end = Array.IndexOf(file, (byte)0, str + (int)nameOff);
+            string name = Encoding.ASCII.GetString(file, str + (int)nameOff, end - (str + (int)nameOff));
+
+            uint j = BinaryPrimitives.ReadUInt32LittleEndian(
+                file.AsSpan(h + 8 + (int)(ElfHash(name) % nbucket) * 4));
+            for (int guard = 0; j != 0; guard++)
+            {
+                Assert.True(guard <= nchain, $"the chain for '{name}' does not end");
+                if (j == i) break;
+                j = BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan(h + 8 + (int)(nbucket + j) * 4));
+            }
+            Assert.Equal(i, j);
+        }
+    }
+
+    private static uint ElfHash(string name)
+    {
+        uint h = 0;
+        foreach (char c in name)
+        {
+            h = (h << 4) + (byte)c;
+            uint carry = h & 0xF0000000;
+            if (carry != 0) h ^= carry >> 24;
+            h &= ~carry;
+        }
+        return h;
+    }
+
+    [Theory]
+    [MemberData(nameof(EveryModuleShape))]
+    public void Write_PointsTheFirstLinkageWordAtTheDynamicTable(string shape)
+    {
+        // The head of the linkage table reserves three words. The first names the dynamic table, which
+        // is where a loader looks to find it; the other two belong to the loader and stay clear.
+        byte[] file = WriteShape(shape);
+        List<Phdr> phdrs = ReadProgramHeaders(file);
+        Phdr dynamic = Assert.Single(phdrs, p => p.Type == 2);
+
+        Assert.Contains(3L, ReadDynamicTags(file)); // the linkage table must be named
+        ulong gotAddr = DynamicTagValue(file, 3);
+
+        Phdr holder = Assert.Single(phdrs, p => p.Type == 1 && (p.Flags & 2) != 0
+            && p.Addr <= gotAddr && gotAddr + 24 <= p.Addr + p.FileSize);
+        ulong at = holder.Offset + (gotAddr - holder.Addr);
+        Assert.Equal(dynamic.Addr, BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan((int)at)));
+        Assert.Equal(0UL, BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan((int)at + 8)));
+        Assert.Equal(0UL, BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan((int)at + 16)));
+    }
+
+    [Theory]
+    [MemberData(nameof(EveryModuleShape))]
+    public void Write_SizesTheCommentByTheBytesItActuallyCarries(string shape)
+    {
+        // The comment is the last content the container stores, so a length that overstates the
+        // segment points a reader past the end of the image. Both lengths it declares - the one
+        // covering the record and the one covering the text - have to describe bytes that are there.
+        byte[] file = WriteShape(shape);
+        Phdr comment = Assert.Single(ReadProgramHeaders(file), p => p.Type == 0x6FFFFF00);
+        ReadOnlySpan<byte> blob = file.AsSpan((int)comment.Offset, (int)comment.FileSize);
+
+        Assert.Equal("PATH"u8.ToArray(), blob[..4].ToArray());
+        uint declared = BinaryPrimitives.ReadUInt32LittleEndian(blob[4..]);
+        uint textLen = BinaryPrimitives.ReadUInt32LittleEndian(blob[8..]);
+        Assert.Equal(comment.FileSize - 8, declared);
+        Assert.True(12 + textLen <= comment.FileSize,
+            $"the comment names {textLen} bytes of text in a {comment.FileSize}-byte segment");
+        Assert.Equal(0UL, comment.MemSize);
+    }
+
+    [Theory]
+    [MemberData(nameof(EveryModuleShape))]
+    public void Write_LaysTheVersionRecordsOutSoTheyWalkToTheEnd(string shape)
+    {
+        // Each record states its own length. Walking record by record has to reach the end of the
+        // segment exactly; a length that disagrees sends the walk into whatever follows.
+        byte[] file = WriteShape(shape);
+        Phdr version = Assert.Single(ReadProgramHeaders(file), p => p.Type == 0x6FFFFF01);
+        ReadOnlySpan<byte> blob = file.AsSpan((int)version.Offset, (int)version.FileSize);
+
+        int at = 0, records = 0;
+        while (at + 4 <= blob.Length)
+        {
+            Assert.Equal(0, BinaryPrimitives.ReadUInt16LittleEndian(blob[at..]));
+            int body = BinaryPrimitives.ReadUInt16LittleEndian(blob[(at + 2)..]);
+            if (body == 0) break; // the padding that rounds the segment out ends the walk
+            Assert.True(at + 4 + body <= blob.Length,
+                $"a version record at {at} claims {body} bytes past the end of the segment");
+            Assert.Equal(8, blob[at + 4]);
+            at += 4 + body;
+            records++;
+        }
+        Assert.True(records > 0, "the version segment must carry at least one record");
+        Assert.All(blob[at..].ToArray(), b => Assert.Equal(0, b));
     }
 }

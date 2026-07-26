@@ -86,9 +86,10 @@ public sealed class LinkWriterTests
     {
         byte[] file = LinkWriter.WriteExecutable(BuildResolution(), "main");
 
-        // The text segment is the first load segment; read its file offset from the phdr.
-        ulong segOffset = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(0x40 + 8));
-        ulong segVaddr = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(0x40 + 16));
+        // The text segment is the first load segment; read its file offset from the phdr. The group opens
+        // with the reserved head, so the section itself starts past it.
+        ulong segOffset = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(0x40 + 8)) + DynamicWriter.ImageHeadReserve;
+        ulong segVaddr = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(0x40 + 16)) + DynamicWriter.ImageHeadReserve;
 
         // Reloc at 0: R_X86_64_64 -> target address (segVaddr + 0x10).
         ulong r64 = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan((int)segOffset));

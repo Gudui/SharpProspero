@@ -206,6 +206,14 @@ if (-not $moduleSource) {
         -p:Configuration=$Configuration "-p:SharpProsperoRoot=$SdkRoot" --nologo | Out-String).Trim()
     if ($property) { $moduleSource = $property }
 }
+# The modules an application carries are supplied with the SDK, which is where they are taken from
+# unless a folder is named. A copy lifted out of an installed application is the wrong thing to ship:
+# it was built for whichever system that application shipped against, and the loader binds against it
+# before any of the application's own code runs, so a mismatch hangs the console with nothing logged.
+if (-not $moduleSource -and $env:SCE_PROSPERO_SDK_DIR) {
+    $fromSdk = Join-Path $env:SCE_PROSPERO_SDK_DIR "target/sce_module"
+    if (Test-Path $fromSdk) { $moduleSource = $fromSdk }
+}
 $linkedModule = @(Get-ChildItem -Path $moduleFolder -File |
     Where-Object { $_.Extension -in @(".bin", ".prx", ".elf", ".sprx", ".self") }) | Select-Object -First 1
 if ($linkedModule) {
@@ -214,6 +222,17 @@ if ($linkedModule) {
     & dotnet run --project (Join-Path $SdkRoot "tools/SharpProspero.Bindings.Generator/SharpProspero.Bindings.Generator.csproj") `
         -c $Configuration -- @modulesArgs
     if ($LASTEXITCODE -ne 0) { throw "The application is missing a module it has to carry. See the message above." }
+}
+
+# 4c. Check the metadata that describes the application to the system. A field carrying a value the
+# system does not recognise stops the build; a field a finished title always carries but this one does
+# not is filled in. Neither shows up as an error on the console - the home screen simply draws the
+# title wrongly, or a service it expected to reach is never offered to it.
+if (Test-Path (Join-Path $moduleFolder "sce_sys/param.json")) {
+    Write-Host "== Metadata =="
+    & dotnet run --project (Join-Path $SdkRoot "tools/SharpProspero.Bindings.Generator/SharpProspero.Bindings.Generator.csproj") `
+        -c $Configuration -- param --folder $moduleFolder --apply
+    if ($LASTEXITCODE -ne 0) { throw "The application metadata describes the title wrongly. See the message above." }
 }
 
 # 5. Settle the system version the application requires. This lives in the application metadata; a

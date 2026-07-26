@@ -276,7 +276,7 @@ alongside it for placing, picking, and culling. The `prospero-3d` template is a 
 
 ## Inspecting a shader binary
 
-The `shader` command reports a compiled shader binary: its stage, version, header and code sizes, and the
+The `shader` command reports a compiled shader binary: its kind, version, header and code sizes, and the
 register writes it carries. It reads the header, so it needs no graphics device.
 
 ```

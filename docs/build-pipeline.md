@@ -76,13 +76,14 @@ when the default folder scan is not the order you want.
 
 ### What the linker lays out
 
-The module the linker writes carries four load segments, in this order:
+The module the linker writes carries five load segments, in this order:
 
 | Segment | Protection asked for | Holds |
 |---|---|---|
 | Code | **execute only** | the compiled code and the procedure-linkage table |
-| Read-only | read | read-only data and the exception-frame index |
-| Writable | read + write | writable data, the global-offset table, and the process parameters |
+| Read-only | read | read-only data, the call-frame records, and the frame index |
+| Bound-then-constant | read + write | the global-offset table, the process parameters, the constructor array and the thread-local template |
+| Writable | read + write | the data the application writes to, and what it reserves past what it stores |
 | Linking | **none** | the symbol, string and hash tables, both relocation tables, the module note, and the dynamic table |
 
 Two of those protections look wrong at first glance and are not.
@@ -92,7 +93,7 @@ together is refused and the module does not start, so the read bit has to be lef
 grants the read access the processor needs when it maps the segment. The practical consequence is
 that read-only data must live in the read-only segment and never beside code.
 
-The fourth one is the part that is easy to get wrong. It is a load segment that requests no memory
+The last one is the part that is easy to get wrong. It is a load segment that requests no memory
 protection at all, and that is exactly what marks it as linking data rather than image content: the
 loader reads it to bind the module instead of mapping it into the running process. **A module that
 names a dynamic table without also carrying this segment does not start.** Its program headers are
@@ -112,9 +113,53 @@ The rest of what the loader insists on, in one list:
   address, file offset and alignment all on a `0x4000` boundary. The linking segment is exempt, since
   it is never mapped.
 - Physical address matches virtual address, and memory size is never smaller than file size.
-- A relro header is only accepted when a writable load segment matches it exactly on offset, address
-  and both sizes. The linker emits no relro header at all, which sidesteps the check; anything
-  producing one has to satisfy the match.
+- A relro header has to match a writable load segment on offset, address and stored size. Its memory
+  size rounds up to the page, because the loader protects whole pages — it does not match the load's
+  memory size, and a module built by the toolchain the format comes from carries that rounding.
+
+Where the linking segment goes is fixed too, and by measurement rather than by rule. Across seventy
+installed titles that start, without exception: its address is where the writable segment's memory
+ends, so it falls inside the pages that segment is mapped over, and its file offset is never
+page-aligned — it carries the same page offset as its address, at the first such offset past the
+writable segment's stored bytes. Rounding it up to its own page instead is a shape no module that
+starts has.
+
+Three more things the linker writes that are easy to leave out, and that only show up much later:
+
+- **Sixteen bytes are reserved in front of the code**, filled with the one-byte trap. An address of
+  zero reads back as "none" wherever a routine or a table is optional, so nothing the module publishes
+  may sit there.
+- **The call-frame records end with a terminating zero**, and the records from every input are laid end
+  to end. They are read one after another until that zero; a gap between two of them ends the chain
+  early, and no zero at all sends a reader off the last record into whatever follows.
+- **The module names its regions in a section table.** Every module measured carries one. The container
+  drops it along with everything else outside the segments, so it costs nothing at run time — and it
+  means a module can be read back by the same tools that read a built one.
+
+### What the relro header covers, and what it must not
+
+Everything the relro header covers is made read-only once the loader has finished binding the module.
+That is what the global-offset table is for — it is written during binding and never again — and the
+process parameters go with it.
+
+**The data an application writes to has to stay outside it.** The linker keeps two writable segments
+for exactly this reason: the first holds the table and the parameters and is covered by the header,
+the second holds `.data` and the uninitialized data and stays writable for the life of the process.
+A build that covers both with one header produces an application that maps, binds and then faults on
+its first write to a static — with the fault landing before anything the application could log.
+
+The second segment reserves more memory than it stores, so uninitialized data costs no file bytes:
+
+```
+LOAD       RW  va=0xec000  fsz=0xdf8   msz=0xdf8     table, parameters, constructors, thread template
+GNU_RELRO  R   va=0xec000  fsz=0xdf8   msz=0x4000    rounded to the page
+LOAD       RW  va=0xf0000  fsz=0x1240  msz=0x1c420   data, writable throughout
+LOAD       --  va=0x10c410 fsz=0x5408  msz=0x5408    linking data, packed against the memory above
+```
+
+The sections that store nothing are grouped after the ones that do, so an uninitialized section between
+two initialized ones costs no file bytes. Placing them in the order the objects carry them would force
+the segment to store the whole span and write out zeros it could have reserved.
 
 ### The dynamic table
 
@@ -175,6 +220,34 @@ sharpprospero-bindgen modules --module eboot.bin --folder sce_module
 
 A module the application carries also raises the system version the application requires, which the
 next step settles.
+
+## Step 3b: check the application's metadata
+
+`sce_sys/param.json` describes the title to the system — what kind of title it is, what it is called,
+and what it is allowed to do. The build reads it and fills in anything a finished title carries that
+yours does not:
+
+```
+== Metadata ==
+  kind                           Game (0)
+
+  contentBadgeType               incomplete 2 does not match the category. A Game title is badged 1.
+  gameIntent                     incomplete Absent. It names the ways the title may be started.
+
+Wrote out/module/sce_sys/param.json (contentBadgeType, gameIntent)
+```
+
+A field carrying a value the system does not recognise — a kind of title outside the ten it knows, a
+malformed content id, a rights model that is not one of the four — stops the build instead. None of it
+reports itself on the console: the home screen simply draws the title wrongly, or a service it expected
+to reach is never offered to it.
+
+The fields, the kinds of title, and what the checks are looking for are described in
+[the param.json fields](param-json.html). Check a folder yourself at any time:
+
+```
+sharpprospero-bindgen param --folder out/module
+```
 
 ## Step 4: wrap the module
 
@@ -238,7 +311,21 @@ accept. The upshot is that the runtime's operating-system surface is satisfied e
 modules and the toolchain, with no platform layer to build.
 
 The linker also defines the section-boundary symbols the runtime reads to walk its own managed-code and
-module tables (`__start_<section>` / `__stop_<section>`), the way the system linker does.
+module tables (`__start_<section>` / `__stop_<section>`), the way the system linker does. A table slot
+holding one of those addresses gets a load-time fixup like any other: the runtime registers that range
+with itself as it starts, and a slot left at zero measures a range of nothing, which registration
+refuses.
+
+Two of the forwarders in the compat object are worth knowing about, because they do more than forward:
+
+- **Memory** comes from the flexible pool, which has no equivalent of the ordinary anonymous mapping.
+  Asking for no access reserves address room without spending the pool; the first write arrives as a
+  protection change, and that is where memory is taken. Both round to whole pages, because the pool
+  refuses any length that is not a multiple of one, while the ordinary call answers a request for a
+  few hundred bytes with a page.
+- **The module's own address** is reported by reading the image start instruction-relative, which is
+  the only way a module can learn where it was placed. The runtime uses that as the handle identifying
+  the module, so answering "not found" would register it under a handle no address matches.
 
 A plain `dotnet build` of the solution and the tests need none of this; it applies only to the link
 step, which runs after the compile step has restored the runtime pack.

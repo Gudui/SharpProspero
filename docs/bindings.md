@@ -41,10 +41,35 @@ Each module an application uses is declared a direct import in `build/Prospero.A
 ```
 
 This turns the binding call into a direct symbol reference the linker resolves against the stub it
-generates for `libSceVideoOut`. The linker generates a stub for each module in its catalog, so a
-service already in the catalog needs only its `DirectPInvoke` entry. To add a module the catalog does
-not yet cover, list its export names under that module in the linker's catalog; a link then reports
-any name still missing so it can be added.
+generates for `libSceVideoOut`. The linker generates a stub for each entry in its catalog, so a
+service already covered needs only its `DirectPInvoke` entry. To add one the catalog does not yet
+cover, list its export names under a new entry; a link then reports any name still missing so it can
+be added.
+
+### A module is not a library
+
+A catalog entry is a **library**, not a module, and one module can publish several. `libkernel.prx`
+publishes both `libkernel` and the portable-interface library `libScePosix`, so the catalog carries
+two entries that name the same module file:
+
+```csharp
+new Entry("libkernel", Kernel),
+new Entry("libScePosix", Posix, ModuleName: "libkernel", Soname: "libkernel.prx"),
+```
+
+An import records the module it comes from *and* the library within it, and the two are numbered
+separately. A module publishing two libraries is named once in the needed list and carries an
+import-library record for each.
+
+Getting this wrong does not fail the link — it produces a module whose imports the loader cannot bind,
+which installs, starts, and never reaches its first instruction with nothing written to any log.
+
+**Only list a name a module really publishes.** A catalog entry asserts that it does, so a name listed
+there that nothing publishes becomes exactly that unbindable import. A name the platform does not offer
+belongs in the compat object instead, where it gets a definition — a forward, a fixed answer, or a
+refusal its caller handles. A link reports what it cannot resolve rather than writing a module that
+cannot load, and a test holds the line: every name the SDK imports is either named by the catalog or
+defined by the compat object.
 
 ## Generating bindings from a module
 

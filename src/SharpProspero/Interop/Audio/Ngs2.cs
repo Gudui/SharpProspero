@@ -39,7 +39,7 @@ public enum Ngs2RackId : uint
     Submixer = 0x2000,
     /// <summary>Adds reverberation.</summary>
     Reverb = 0x2001,
-    /// <summary>The final mastering stage.</summary>
+    /// <summary>The final mastering step.</summary>
     Mastering = 0x3000,
     /// <summary>A custom rack.</summary>
     Custom = 0x4000,

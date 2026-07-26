@@ -28,33 +28,97 @@ public static class CrtEmitter
     private const byte GlobalNoType = 1 << 4;       // STB_GLOBAL, STT_NOTYPE (undefined reference)
 
     private const uint RPlt32 = 4;                  // R_X86_64_PLT32
+    private const uint RPc32 = 2;                   // R_X86_64_PC32 (an address taken, not called)
 
     /// <summary>The symbol the loader jumps to; the default entry for an application module.</summary>
     public const string StartSymbol = "_start";
 
-    // _start: reads argc/argv from the stack, aligns it, calls main, then calls exit with the result.
-    //   xor  ebp, ebp
-    //   mov  rdi, [rsp]        ; argc
-    //   lea  rsi, [rsp+8]      ; argv
-    //   and  rsp, -16          ; keep the call boundary 16-byte aligned
+    /// <summary>
+    /// What the start object is called in the record of components a module was built from. A built
+    /// module names its own start file there, so this one names its equivalent.
+    /// </summary>
+    public const string StartComponentName = "crt1";
+
+    /// <summary>
+    /// The C library's own setup, which the entry hands the loader's parameter block. Nothing the
+    /// library provides works before it runs.
+    /// </summary>
+    public const string InitEnvSymbol = "_init_env";
+
+    /// <summary>
+    /// The module's constructors. The linker defines this, pointing it at the walker it builds over the
+    /// constructor array, so the entry can run them without knowing where the array ended up.
+    /// </summary>
+    public const string InitSymbol = "_init";
+
+    /// <summary>The module's teardown routine, which the entry registers to run when the process ends.</summary>
+    public const string FiniSymbol = "_fini";
+
+    /// <summary>
+    /// The step the C library runs once <c>main</c> has returned, before the status reaches
+    /// <c>exit</c>. It takes the status and returns; the entry keeps its own copy across the call.
+    /// </summary>
+    public const string CatchReturnSymbol = "catchReturnFromMain";
+
+    // _start: the entry the loader jumps to.
+    //
+    // The loader does not put the arguments on the stack. It calls the entry with a parameter block in
+    // the first argument register - the argument count at its start and the vector eight bytes in - and
+    // a routine to run at teardown in the second. That block is also what starts the C library: it is
+    // handed straight to the library's own setup, and until that runs nothing the library provides
+    // works, which includes the allocator every later call reaches. So the order here is fixed: set the
+    // library up, register the teardown routine, run the constructors, then call main.
+    //
+    //   push rbp / mov rbp,rsp / push r15,r14,rbx,rax   ; frame, and keep the call boundary aligned
+    //   mov  r14d, [rdi]       ; argument count
+    //   lea  r15, [rdi+8]      ; argument vector
+    //   mov  rbx, rsi          ; the teardown routine
+    //   call _init_env         ; rdi still holds the parameter block
+    //   mov  rdi, rbx
+    //   call atexit
+    //   call _init             ; the constructors, which the linker points at its own walker
+    //   mov  edi, r14d / mov rsi, r15 / xor edx, edx
     //   call main
-    //   mov  edi, eax          ; exit status
+    //   mov  edi, eax
     //   call exit
-    //   hlt
+    //   ud2                    ; exit does not return
     private static ReadOnlySpan<byte> StartCode =>
     [
-        0x31, 0xED,                         // xor ebp, ebp
-        0x48, 0x8B, 0x3C, 0x24,             // mov rdi, [rsp]
-        0x48, 0x8D, 0x74, 0x24, 0x08,       // lea rsi, [rsp+8]
-        0x48, 0x83, 0xE4, 0xF0,             // and rsp, -16
-        0xE8, 0x00, 0x00, 0x00, 0x00,       // call main       (rel32 at offset 16)
-        0x89, 0xC7,                         // mov edi, eax
-        0xE8, 0x00, 0x00, 0x00, 0x00,       // call exit        (rel32 at offset 23)
-        0xF4,                               // hlt
+        0x55,                               // 0x00 push rbp
+        0x48, 0x89, 0xE5,                   // 0x01 mov rbp, rsp
+        0x41, 0x57,                         // 0x04 push r15
+        0x41, 0x56,                         // 0x06 push r14
+        0x53,                               // 0x08 push rbx
+        0x50,                               // 0x09 push rax
+        0x44, 0x8B, 0x37,                   // 0x0A mov r14d, [rdi]
+        0x48, 0x89, 0xF3,                   // 0x0D mov rbx, rsi
+        0x4C, 0x8D, 0x7F, 0x08,             // 0x10 lea r15, [rdi+8]
+        0xE8, 0x00, 0x00, 0x00, 0x00,       // 0x14 call _init_env   (rel32 at 0x15)
+        0x48, 0x89, 0xDF,                   // 0x19 mov rdi, rbx
+        0xE8, 0x00, 0x00, 0x00, 0x00,       // 0x1C call atexit      (rel32 at 0x1D)
+        0x48, 0x8D, 0x3D, 0, 0, 0, 0,       // 0x21 lea rdi, [rip+_fini]  (rel32 at 0x24)
+        0xE8, 0x00, 0x00, 0x00, 0x00,       // 0x28 call atexit      (rel32 at 0x29)
+        0xE8, 0x00, 0x00, 0x00, 0x00,       // 0x2D call _init       (rel32 at 0x2E)
+        0x44, 0x89, 0xF7,                   // 0x32 mov edi, r14d
+        0x4C, 0x89, 0xFE,                   // 0x35 mov rsi, r15
+        0x31, 0xD2,                         // 0x38 xor edx, edx
+        0xE8, 0x00, 0x00, 0x00, 0x00,       // 0x3A call main        (rel32 at 0x3B)
+        0x89, 0xC7,                         // 0x3F mov edi, eax
+        0x89, 0xC3,                         // 0x41 mov ebx, eax     (keep the status across the call)
+        0xE8, 0x00, 0x00, 0x00, 0x00,       // 0x43 call catchReturnFromMain (rel32 at 0x44)
+        0x89, 0xDF,                         // 0x48 mov edi, ebx
+        0xE8, 0x00, 0x00, 0x00, 0x00,       // 0x4A call exit        (rel32 at 0x4B)
+        0x0F, 0x0B,                         // 0x4F ud2
     ];
 
-    private const int CallMainRel = 16;
-    private const int CallExitRel = 23;
+    private const int CallInitEnvRel = 0x15;
+    private const int CallAtexitRel = 0x1D;
+    private const int LoadFiniRel = 0x24;
+    private const int CallAtexitFiniRel = 0x29;
+    private const int CallInitRel = 0x2E;
+    private const int CallMainRel = 0x3B;
+    private const int CallCatchReturnRel = 0x44;
+    private const int CallExitRel = 0x4B;
 
     /// <summary>Builds the start object bytes.</summary>
     public static byte[] BuildStartObject()
@@ -64,23 +128,40 @@ public static class CrtEmitter
         // .strtab: symbol names.
         var strtab = new StringTable();
         int nStart = strtab.Add(StartSymbol);
+        int nInitEnv = strtab.Add(InitEnvSymbol);
+        int nAtexit = strtab.Add("atexit");
+        int nInit = strtab.Add(InitSymbol);
+        int nFini = strtab.Add(FiniSymbol);
         int nMain = strtab.Add("main");
         int nExit = strtab.Add("exit");
+        int nCatch = strtab.Add(CatchReturnSymbol);
         byte[] strtabBytes = strtab.ToBytes();
 
-        // .symtab: null, _start (defined in .text), main and exit (undefined references).
+        // .symtab: null, _start (defined in .text), then every name it calls as an undefined reference.
         // Locals come first; only the null entry is local, so sh_info is 1.
-        const int symStart = 1, symMain = 2, symExit = 3;
-        byte[] symtab = new byte[24 * 4];
+        const int symStart = 1, symInitEnv = 2, symAtexit = 3, symInit = 4, symFini = 5, symMain = 6,
+                  symExit = 7, symCatch = 8;
+        byte[] symtab = new byte[24 * 9];
         WriteSym(symtab, symStart, nStart, GlobalFunc, sectionIndex: 1, value: 0, size: (ulong)text.Length);
+        WriteSym(symtab, symInitEnv, nInitEnv, GlobalNoType, sectionIndex: 0, value: 0, size: 0);
+        WriteSym(symtab, symAtexit, nAtexit, GlobalNoType, sectionIndex: 0, value: 0, size: 0);
+        WriteSym(symtab, symInit, nInit, GlobalNoType, sectionIndex: 0, value: 0, size: 0);
+        WriteSym(symtab, symFini, nFini, GlobalNoType, sectionIndex: 0, value: 0, size: 0);
         WriteSym(symtab, symMain, nMain, GlobalNoType, sectionIndex: 0, value: 0, size: 0);
         WriteSym(symtab, symExit, nExit, GlobalNoType, sectionIndex: 0, value: 0, size: 0);
+        WriteSym(symtab, symCatch, nCatch, GlobalNoType, sectionIndex: 0, value: 0, size: 0);
 
-        // .rela.text: the two calls, each a PLT32 with addend -4 (the displacement is measured from the
-        // end of the four-byte field).
-        byte[] rela = new byte[24 * 2];
-        WriteRela(rela, 0, CallMainRel, symMain, RPlt32, -4);
-        WriteRela(rela, 1, CallExitRel, symExit, RPlt32, -4);
+        // .rela.text: each call, a PLT32 with addend -4 (the displacement is measured from the end of
+        // the four-byte field).
+        byte[] rela = new byte[24 * 8];
+        WriteRela(rela, 0, CallInitEnvRel, symInitEnv, RPlt32, -4);
+        WriteRela(rela, 1, CallAtexitRel, symAtexit, RPlt32, -4);
+        WriteRela(rela, 2, LoadFiniRel, symFini, RPc32, -4);
+        WriteRela(rela, 3, CallAtexitFiniRel, symAtexit, RPlt32, -4);
+        WriteRela(rela, 4, CallInitRel, symInit, RPlt32, -4);
+        WriteRela(rela, 5, CallMainRel, symMain, RPlt32, -4);
+        WriteRela(rela, 6, CallCatchReturnRel, symCatch, RPlt32, -4);
+        WriteRela(rela, 7, CallExitRel, symExit, RPlt32, -4);
 
         // .shstrtab: section names.
         var shstr = new StringTable();

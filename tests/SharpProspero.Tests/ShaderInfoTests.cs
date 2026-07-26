@@ -28,8 +28,8 @@ public class ShaderInfoTests
         Assert.True(info.IsValid);
         Assert.Equal(ShaderInfo.HeaderMagic, info.Magic);
         Assert.Equal(24u, info.Version);
-        // The stage and the register counts agree with the device reader, which reads the same header.
-        Assert.Equal(reference.ProgramType, info.Stage);
+        // The kind and the register counts agree with the device reader, which reads the same header.
+        Assert.Equal(reference.ProgramType, info.Kind);
         Assert.Equal(reference.ContextRegisterCount, info.ContextRegisters.Count);
         Assert.Equal(reference.ShaderRegisterCount, info.ShaderRegisters.Count);
         Assert.True(info.CodeSectionSize > 0, "the microcode section is present");
@@ -39,7 +39,7 @@ public class ShaderInfoTests
     public void Read_TheMeshPixelShaderIsAPixelStage()
     {
         ShaderInfo info = ShaderInfo.Read(LoadShaderResource("SharpProspero.Shaders.mesh_ps.sb"));
-        Assert.Equal("pixel", info.StageName);
+        Assert.Equal("pixel", info.KindName);
     }
 
     [Fact]

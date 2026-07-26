@@ -44,9 +44,13 @@ public sealed class SelfContainerTests
     public void CheckIntegrity_DetectsATamperedPayload()
     {
         byte[] signed = SelfContainer.Sign(BuildModule());
-        // Flip a byte in the trailing payload region, past the header; the recomputed digest no longer
-        // matches the one stored in the extended info.
-        signed[^1] ^= 0xFF;
+        // Flip a byte of the module the container carries - here the address it is entered at, which is
+        // both covered by the digest and the thing worth changing. The last byte of the container is not
+        // a safe choice: it can be alignment past the final stored segment, which no digest covers
+        // because nothing loads it.
+        int nseg = BinaryPrimitives.ReadUInt16LittleEndian(signed.AsSpan(0x18));
+        int entryField = 0x20 + nseg * 0x20 + 0x18;
+        signed[entryField] ^= 0xFF;
         SelfIntegrity integrity = SelfContainer.CheckIntegrity(signed);
         Assert.True(integrity.HasDigest);
         Assert.False(integrity.Matches);

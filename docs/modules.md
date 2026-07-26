@@ -58,6 +58,10 @@ dotnet run --project tools/SharpProspero.Bindings.Generator -- elf --file mylib.
 
 This reads the module directly and needs no external inspector.
 
+A module this toolchain writes also names its regions in a section table, so any tool that reads a
+built module can read one of these — listing sections, disassembling a range, or dumping a table —
+without the module having to be built any other way first.
+
 ## Generate a wrapper for a module
 
 Write the exports you use, one per line, with an optional call signature, then generate a wrapper:

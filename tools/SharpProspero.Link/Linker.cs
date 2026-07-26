@@ -190,6 +190,8 @@ public static class Linker
                     name, stub.ModuleName, stub.LibraryName, stub.Soname, stub.ModuleVersion, stub.LibraryVersion));
             else if (IsEncapsulationSymbol(name, sectionNames, out _, out _))
                 continue; // the linker synthesizes this at the section boundary
+            else if (LinkerProvided.Contains(name))
+                continue; // the linker writes this routine itself and places it with the linkage table
             else if (strongUndefined.Contains(name))
                 unresolved.Add(name);
             // A weak-only reference that nothing satisfies is left out; the writer binds it to zero.
@@ -212,6 +214,14 @@ public static class Linker
     /// naming a section that is present. These are defined by the linker at the section's start and end,
     /// the way the system linker does, so code can walk a named section without a table of its own.
     /// </summary>
+    /// <summary>
+    /// The routines the linker writes itself and places with the linkage table, rather than taking from
+    /// an object: the constructor walker the entry calls, and the teardown routine beside it. A
+    /// reference to either resolves at layout time, so neither counts as unresolved.
+    /// </summary>
+    internal static readonly IReadOnlySet<string> LinkerProvided =
+        new HashSet<string>(StringComparer.Ordinal) { "_init", "_fini", CompatEmitter.ModuleBaseSymbol };
+
     internal static bool IsEncapsulationSymbol(string name, ICollection<string> sectionNames, out string section, out bool isStop)
     {
         section = "";

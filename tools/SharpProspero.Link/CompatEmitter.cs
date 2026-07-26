@@ -4,6 +4,7 @@
 using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 
 namespace SharpProspero.Link;
@@ -36,8 +37,10 @@ public static class CompatEmitter
 
     private const uint RPlt32 = 4;     // R_X86_64_PLT32
     private const uint RTpOff32 = 23;  // R_X86_64_TPOFF32 (local-exec thread-local offset)
+    private const uint RAbs64 = 1;     // R_X86_64_64 (a variable holding an address)
 
     private const byte TypeFunc = 2;
+    private const byte TypeObject = 1;
     private const byte TypeTls = 6;
     private const byte BindLocal = 0;
     private const byte BindGlobal = 1;
@@ -55,6 +58,12 @@ public static class CompatEmitter
     private readonly record struct CompatFunc(
         string Name, bool Weak, byte[] Code, (int Offset, string Target)[] Relocs,
         (int Offset, string Symbol)? Tls = null);
+
+    /// <summary>
+    /// One defined pointer-sized variable: its name and the name whose address it holds, or null for a
+    /// variable that starts out empty.
+    /// </summary>
+    private readonly record struct CompatData(string Name, string? PointsAt);
 
     // Code fragments.
     private static byte[] RetZero() => [0x31, 0xC0, 0xC3];                       // xor eax,eax ; ret
@@ -83,6 +92,253 @@ public static class CompatEmitter
     private static CompatFunc Zero(string name) => new(name, false, RetZero(), []);
     private static CompatFunc WeakZero(string name) => new(name, true, RetZero(), []);
     private static CompatFunc Refuse(string name) => new(name, false, RetImm(-1), []);
+
+    // A refusal whose result is a full 64-bit -1 rather than a sign-extended word: a pointer-returning
+    // entry that reports failure has to set the whole register, since the caller compares all of it.
+    /// <summary>
+    /// The start of the image, at link-time address zero. Reached instruction-relative it reads back
+    /// as the address the module was loaded at. Every linker defines this name, so an object using it
+    /// links the same way whichever one builds the module.
+    /// </summary>
+    public const string ModuleBaseSymbol = "__executable_start";
+
+    // The name dladdr reports for the module. The one caller that reads it hands the pointer straight to
+    // a string length, so it cannot be null - a name that is merely approximate costs nothing, a null one
+    // faults. It lives among the variables rather than in the code, which is mapped execute-only and
+    // cannot be read.
+    private const string ModuleNameSymbol = "__sp_module_name";
+    private static readonly byte[] ModuleNameText = "/app0/eboot.bin\0"u8.ToArray();
+
+    // dladdr(address, info): fills in what the runtime reads out of it, which is the address the
+    // module holding that address was loaded at. Nothing published here reports that for an arbitrary
+    // address, but the one caller asks about a pointer inside this module, and this module's own base
+    // is reachable: the linker puts a symbol at link-time address zero, so reaching it
+    // instruction-relative gives the address the module was placed at.
+    //
+    // A stub reporting failure here is not a small thing. The runtime treats the answer as the handle
+    // that identifies the module, and a module registered under a null handle is one the runtime
+    // cannot match an address back to.
+    private static CompatFunc DlAddr()
+    {
+        byte[] code =
+        [
+            0x48, 0x8D, 0x05, 0, 0, 0, 0,       // 0x00 lea rax, [rip + the image start]  (rel32 at 3)
+            0x48, 0x89, 0x46, 0x08,             // 0x07 mov [rsi + 8], rax   (where it was loaded)
+            0x48, 0x8D, 0x05, 0, 0, 0, 0,       // 0x0B lea rax, [rip + the name]  (rel32 at 0x0E)
+            0x48, 0x89, 0x06,                   // 0x12 mov [rsi], rax      (the file it came from)
+            0x48, 0xC7, 0x46, 0x10, 0, 0, 0, 0, // 0x15 mov qword [rsi+16], 0 (no symbol name)
+            0x48, 0xC7, 0x46, 0x18, 0, 0, 0, 0, // 0x1D mov qword [rsi+24], 0 (no symbol address)
+            0xB8, 0x01, 0x00, 0x00, 0x00,       // 0x25 mov eax, 1           (found)
+            0xC3,                               // 0x2A ret
+        ];
+        return new("dladdr", false, code, [(3, ModuleBaseSymbol), (0x0E, ModuleNameSymbol)]);
+    }
+
+    // mmap(addr, len, prot, flags, fd, offset): the anonymous private mapping the runtime reserves its
+    // heap with. This platform has no mmap of its own - memory comes from the flexible pool, which is
+    // reached by handing an address slot in and reading back where the range was placed. The slot
+    // starts as the address the caller named, or zero to let the system choose; naming one asks for it
+    // to be held there.
+    //
+    // The protection bits agree with the ordinary ones except for write: here read-and-write is a
+    // single bit rather than read plus write, so a request for both is folded onto it. Everything else
+    // - none, read, read-execute, all - already lines up.
+    // Holding a range at a named address, and the protection bits. Read and write is a single bit
+    // here rather than read plus write, so a request for both folds onto it; none, read, read-execute
+    // and all already line up.
+    private const byte MapFixed = 0x10, ProtReadWrite = 0x02, PosixReadWrite = 0x03;
+
+    private static CompatFunc Mmap()
+    {
+        var a = new Asm();
+        a.Emit(0x55, 0x48, 0x89, 0xE5);                     // push rbp ; mov rbp, rsp
+        a.Emit(0x48, 0x83, 0xEC, 0x10);                     // sub rsp, 16   (the address slot)
+        // A length is rounded up to a whole page. Asking for memory hands back whole pages either way,
+        // and the platform's call refuses a length that is not a multiple of one - so a request for a
+        // few hundred bytes, which the ordinary call answers with a page, would be refused outright.
+        a.Emit(0x48, 0x81, 0xC6, 0xFF, 0x3F, 0x00, 0x00);   // add rsi, page - 1
+        a.Emit(0x48, 0x81, 0xE6, 0x00, 0xC0, 0xFF, 0xFF);   // and rsi, -page
+        a.Emit(0x48, 0x89, 0x3C, 0x24);                     // mov [rsp], rdi
+        a.Emit(0x31, 0xC9);                                 // xor ecx, ecx  (place it anywhere)
+        a.Emit(0x48, 0x85, 0xFF); a.JumpIfEqual("placed");   // test rdi, rdi
+        a.Emit(0xB9, MapFixed, 0x00, 0x00, 0x00);           // mov ecx, fixed
+        a.Mark("placed");
+        a.Emit(0x48, 0x89, 0xE7);                           // mov rdi, rsp  (the address slot)
+
+        // Asking for no access is asking for room, not for memory. Backing it would spend the pool on
+        // a range nothing has written to yet - and what is asked for here is a multiple of everything
+        // the module could ever hold, so backing it fails outright. Reserve the room; the first write
+        // to a page of it arrives as a protection change, which is where the memory is taken.
+        // Reserving takes the flags third and an alignment fourth, where mapping takes the protection
+        // third and the flags fourth, so the flags move across and the alignment is left open.
+        a.Emit(0x85, 0xD2); a.JumpIfNotEqual("access");      // test edx, edx
+        a.Emit(0x89, 0xCA);                                 // mov edx, ecx  (the flags)
+        a.Emit(0x31, 0xC9);                                 // xor ecx, ecx  (any alignment)
+        a.Call("sceKernelReserveVirtualRange");
+        a.JumpIfAlways("settle");
+
+        a.Mark("access");
+        a.Emit(0x83, 0xFA, PosixReadWrite);                 // cmp edx, read|write
+        a.JumpIfNotEqual("mapit");
+        a.Emit(0xBA, ProtReadWrite, 0x00, 0x00, 0x00);      // mov edx, read-write
+        a.Mark("mapit");
+        a.Call("sceKernelMapFlexibleMemory");
+
+        a.Mark("settle");
+        a.Emit(0x85, 0xC0); a.JumpIfNotEqual("refuse");     // test eax, eax
+        a.Emit(0x48, 0x8B, 0x04, 0x24);                     // mov rax, [rsp]  (where it landed)
+        a.Emit(0xC9, 0xC3);                                 // leave ; ret
+        a.Mark("refuse");
+        a.Emit(0x48, 0xC7, 0xC0, 0xFF, 0xFF, 0xFF, 0xFF, 0xC9, 0xC3); // mov rax,-1 ; leave ; ret
+
+        (byte[] code, (int, string)[] relocs) = a.Build();
+        return new("mmap", false, code, relocs);
+    }
+
+    // mprotect(addr, len, prot): a protection change on memory that is already there, or the moment a
+    // reserved range is first written to. The platform's own call handles the first; the second it
+    // refuses, because there is nothing mapped yet - so a refusal is answered by taking memory from the
+    // pool and placing it exactly there.
+    private static CompatFunc MProtect()
+    {
+        var a = new Asm();
+        a.Emit(0x55, 0x48, 0x89, 0xE5);                     // push rbp ; mov rbp, rsp
+        a.Emit(0x48, 0x83, 0xEC, 0x20);                     // sub rsp, 32
+        // A protection change covers whole pages: the address moves back to the start of its page and
+        // the length grows by as much, then rounds up. The platform's call refuses anything else, and
+        // the runtime changes protection on ranges it sized in objects rather than in pages.
+        a.Emit(0x48, 0x89, 0xF8);                           // mov rax, rdi
+        a.Emit(0x25, 0xFF, 0x3F, 0x00, 0x00);               // and eax, page - 1
+        a.Emit(0x48, 0x01, 0xC6);                           // add rsi, rax
+        a.Emit(0x48, 0x81, 0xE7, 0x00, 0xC0, 0xFF, 0xFF);   // and rdi, -page
+        a.Emit(0x48, 0x81, 0xC6, 0xFF, 0x3F, 0x00, 0x00);   // add rsi, page - 1
+        a.Emit(0x48, 0x81, 0xE6, 0x00, 0xC0, 0xFF, 0xFF);   // and rsi, -page
+        a.Emit(0x48, 0x89, 0x7D, 0xF8);                     // mov [rbp-8], rdi   (addr)
+        a.Emit(0x48, 0x89, 0x75, 0xF0);                     // mov [rbp-16], rsi  (len)
+        a.Emit(0x83, 0xFA, PosixReadWrite);                 // cmp edx, read|write
+        a.JumpIfNotEqual("kept");
+        a.Emit(0xBA, ProtReadWrite, 0x00, 0x00, 0x00);      // mov edx, read-write
+        a.Mark("kept");
+        a.Emit(0x89, 0x55, 0xE8);                           // mov [rbp-24], edx  (prot)
+        a.Call("sceKernelMprotect");
+        a.Emit(0x85, 0xC0); a.JumpIfEqual("done");          // test eax, eax
+
+        // Nothing mapped there yet: take it from the pool, held at that address.
+        a.Emit(0x48, 0x8B, 0x45, 0xF8);                     // mov rax, [rbp-8]
+        a.Emit(0x48, 0x89, 0x04, 0x24);                     // mov [rsp], rax
+        a.Emit(0x48, 0x89, 0xE7);                           // mov rdi, rsp
+        a.Emit(0x48, 0x8B, 0x75, 0xF0);                     // mov rsi, [rbp-16]
+        a.Emit(0x8B, 0x55, 0xE8);                           // mov edx, [rbp-24]
+        a.Emit(0xB9, MapFixed, 0x00, 0x00, 0x00);           // mov ecx, fixed
+        a.Call("sceKernelMapFlexibleMemory");
+        a.Emit(0x85, 0xC0); a.JumpIfNotEqual("refuse");     // test eax, eax
+        a.Mark("done");
+        a.Emit(0x31, 0xC0, 0xC9, 0xC3);                     // xor eax, eax ; leave ; ret
+        a.Mark("refuse");
+        a.Emit(0xB8, 0xFF, 0xFF, 0xFF, 0xFF, 0xC9, 0xC3);   // mov eax, -1 ; leave ; ret
+
+        (byte[] code, (int, string)[] relocs) = a.Build();
+        return new("mprotect", false, code, relocs);
+    }
+
+    // sysconf(name): the two answers the runtime acts on. The page size decides how the collector
+    // reserves memory and the processor count how many threads it starts, so both are answered
+    // properly; anything else reports that the value is not available, which every caller handles.
+    // Branch displacements are worked out from where the labels land rather than written by hand. A
+    // displacement counted by hand once sent the memory-size question to the processor-count answer,
+    // which reported 128 KB of memory and was invisible until the module was on a console.
+    private sealed class Asm
+    {
+        private readonly List<byte> _code = [];
+        private readonly List<(int At, string Label)> _fixups = [];
+        private readonly Dictionary<string, int> _labels = new(StringComparer.Ordinal);
+        private readonly List<(int Offset, string Target)> _calls = [];
+
+        public int Length => _code.Count;
+        public void Emit(params byte[] bytes) => _code.AddRange(bytes);
+        public void Mark(string label) => _labels[label] = _code.Count;
+
+        /// <summary>A short conditional jump to a label placed later.</summary>
+        public void JumpIfEqual(string label)
+        {
+            _code.Add(0x74);
+            _fixups.Add((_code.Count, label));
+            _code.Add(0);
+        }
+
+        public void JumpIfAlways(string label)
+        {
+            _code.Add(0xEB);
+            _fixups.Add((_code.Count, label));
+            _code.Add(0);
+        }
+
+        public void JumpIfNotEqual(string label)
+        {
+            _code.Add(0x75);
+            _fixups.Add((_code.Count, label));
+            _code.Add(0);
+        }
+
+        /// <summary>A call to a name the linker binds, recording where its displacement sits.</summary>
+        public void Call(string target)
+        {
+            _code.Add(0xE8);
+            _calls.Add((_code.Count, target));
+            _code.AddRange([0, 0, 0, 0]);
+        }
+
+        public (byte[] Code, (int Offset, string Target)[] Relocs) Build()
+        {
+            byte[] code = [.. _code];
+            foreach ((int at, string label) in _fixups)
+            {
+                int delta = _labels[label] - (at + 1);
+                if (delta is < sbyte.MinValue or > sbyte.MaxValue)
+                    throw new ElfLinkException($"A branch to '{label}' does not reach.");
+                code[at] = unchecked((byte)(sbyte)delta);
+            }
+            return (code, [.. _calls]);
+        }
+    }
+
+    private static CompatFunc SysConf()
+    {
+        const byte ScPageSize = 30, ScProcessorsConf = 83, ScProcessorsOnline = 84, ScPhysPages = 85;
+        var a = new Asm();
+        a.Emit(0x83, 0xFF, ScPageSize); a.JumpIfEqual("page");              // cmp edi, _SC_PAGESIZE
+        a.Emit(0x83, 0xFF, ScProcessorsConf); a.JumpIfEqual("cpus");
+        a.Emit(0x83, 0xFF, ScProcessorsOnline); a.JumpIfEqual("cpus");
+        a.Emit(0x83, 0xFF, ScPhysPages); a.JumpIfEqual("pages");
+        a.Emit(0x48, 0xC7, 0xC0, 0xFF, 0xFF, 0xFF, 0xFF, 0xC3);             // mov rax, -1 ; ret
+
+        a.Mark("page");
+        a.Emit(0xB8, 0x00, 0x40, 0x00, 0x00, 0xC3);                         // mov eax, 16384 ; ret
+
+        a.Mark("cpus");
+        a.Emit(0xB8, 0x08, 0x00, 0x00, 0x00, 0xC3);                         // mov eax, 8 ; ret
+
+        // How much memory this module can have, in pages. What it can get is what it has: the pool it
+        // maps from. Reporting more has the collector size itself against memory that is not there;
+        // reporting less starves it. A refusal is not an option - the caller's own result is this
+        // answer not refusing.
+        a.Mark("pages");
+        a.Emit(0x55, 0x48, 0x89, 0xE5);                                     // push rbp ; mov rbp, rsp
+        a.Emit(0x48, 0x83, 0xEC, 0x10);                                     // sub rsp, 16
+        a.Emit(0x48, 0xC7, 0x04, 0x24, 0, 0, 0, 0);                         // mov qword [rsp], 0
+        a.Emit(0x48, 0x89, 0xE7);                                           // mov rdi, rsp
+        a.Call("sceKernelConfiguredFlexibleMemorySize");
+        a.Emit(0x85, 0xC0); a.JumpIfNotEqual("refuse");                     // test eax, eax
+        a.Emit(0x48, 0x8B, 0x04, 0x24);                                     // mov rax, [rsp]
+        a.Emit(0x48, 0xC1, 0xE8, 0x0E);                                     // shr rax, 14 (16 KB pages)
+        a.Emit(0xC9, 0xC3);                                                 // leave ; ret
+
+        a.Mark("refuse");
+        a.Emit(0x48, 0xC7, 0xC0, 0xFF, 0xFF, 0xFF, 0xFF, 0xC9, 0xC3);       // mov rax, -1 ; leave ; ret
+
+        (byte[] code, (int, string)[] relocs) = a.Build();
+        return new("sysconf", false, code, relocs);
+    }
 
     // ---------------------------------------------------------------------------
     // struct stat translation.
@@ -275,7 +531,7 @@ public static class CompatEmitter
         Zero("isatty"),                             // not a terminal
         Value("getpwuid_r", 2),                     // no such user
         Zero("dl_iterate_phdr"),                    // no callback is made
-        Zero("dladdr"),                             // address not resolved
+        DlAddr(),
         Zero("gai_strerror"),                       // no message
         Refuse("sysinfo"),
         Zero("prctl"),                              // process controls are no-ops
@@ -321,7 +577,76 @@ public static class CompatEmitter
         Refuse("uname"),
         Refuse("vfork"),                            // a module does not fork
         Refuse("waitid"),
+
+        // System queries the platform does not offer an application module. The bindings for these
+        // exist because the query is a reasonable thing to want, but nothing publishes an entry point
+        // for them, so each reports failure rather than binding to nothing.
+        Refuse("sceKernelGetAllowedSdkVersionOnSystem"),
+        Refuse("sceKernelGetOpenPsId"),
+        Refuse("sceKernelGetProsperoSystemSwVersion"),
+        Refuse("sysctlbyname"),
+
+        // Entry points no module publishes. The runtime archives reach them from paths an application
+        // module does not take - starting other processes, reading a terminal, handling signals the
+        // platform owns - so each reports the failure its caller already handles rather than being left
+        // as an import nothing can bind.
+        SysConf(),
+        Refuse("access"),
+        Refuse("chdir"),
+        Refuse("dup2"),
+        Refuse("execv"),                            // a module does not start another program
+        Refuse("getrlimit"),                        // no limit to report; the caller uses its default
+        Refuse("getrusage"),
+        Refuse("ioctl"),
+        Refuse("lstat"),
+        Refuse("pipe"),
+        Refuse("poll"),
+        Refuse("setrlimit"),
+        Refuse("shm_open"),
+        Refuse("shm_unlink"),
+        Refuse("waitpid"),
+        Mmap(),
+        MProtect(),
+        // Signals are the platform's to deliver; installing a handler succeeds and changes nothing.
+        Zero("sigaction"),
+        Zero("sigaddset"),
+        Zero("sigemptyset"),
+        Zero("signal"),                             // the previous handler, which is the default one
+        Zero("pthread_kill"),
+        // Nothing found, reported the way each caller expects: a null result.
+        Zero("closedir"),
+        Zero("dlopen"),
+        Zero("dlsym"),
+        Zero("getenv"),
+        Zero("opendir"),
+        Zero("readdir"),
+        Zero("realpath"),
     ];
+
+    /// <summary>
+    /// The data objects this object defines: a pointer each, either left null or pointing at a name the
+    /// C module publishes. The runtime reads these as variables rather than calling them.
+    /// </summary>
+    private static IReadOnlyList<CompatData> DataObjects =>
+    [
+        // The standard streams are published under their own names; the variables hold their addresses.
+        new("stdout", "_Stdout"),
+        new("stderr", "_Stderr"),
+        // A module is started with no environment, so the list is empty.
+        new("environ", null),
+        // The marker the C module publishes to record that a module was linked against it. It carries
+        // no behaviour; holding its address is what puts the name in the import table, which is what a
+        // module built against the same library carries.
+        new("__sce_libc_marker", "Need_sceLibc"),
+    ];
+
+    /// <summary>
+    /// The names this object defines. A link resolves an imported name through the stub catalog first
+    /// and falls back to these, so between them they have to cover everything the compiled image
+    /// reaches.
+    /// </summary>
+    public static IReadOnlyList<string> DefinedNames =>
+        [.. Functions.Select(f => f.Name), .. DataObjects.Select(d => d.Name)];
 
     /// <summary>Builds the compat object bytes.</summary>
     public static byte[] BuildObject()
@@ -340,20 +665,30 @@ public static class CompatEmitter
         }
         byte[] textBytes = [.. text];
 
-        // Section header indices: [0]null [1].text [2].tbss [3].rela.text [4].symtab [5].strtab [6].shstrtab.
-        const int shText = 1, shTbss = 2, shRela = 3, shSym = 4, shStr = 5, shShStr = 6;
+        // The variables: one pointer each, in declaration order, then the module name dladdr reports.
+        IReadOnlyList<CompatData> data = DataObjects;
+        int moduleNameOffset = data.Count * 8;
+        byte[] dataBytes = new byte[moduleNameOffset + ModuleNameText.Length];
+        ModuleNameText.CopyTo(dataBytes, moduleNameOffset);
 
-        // Symbols: the local symbols come first (ELF requires it) — [0] null and [1] the thread-local
-        // buffer readdir64 translates into — then every defined function, then every external target.
-        // sh_info is the count of leading locals, so it is 2.
+        // Section header indices.
+        const int shText = 1, shTbss = 2, shRela = 3, shData = 4, shRelaData = 5, shSym = 6, shStr = 7, shShStr = 8;
+        const int sectionCount = 9;
+
+        // Symbols: the local symbols come first (ELF requires it) — [0] null, [1] the thread-local buffer
+        // readdir64 translates into, and [2] the module name — then every defined function, then every
+        // external target. sh_info is the count of leading locals.
         var strtab = new StringTable();
         var symIndex = new Dictionary<string, int>(StringComparer.Ordinal);
         var symbols = new List<(int NameOff, byte Info, int Shndx, ulong Value, ulong Size)>
         {
             (0, 0, 0, 0, 0),                                                                       // [0] null
             (strtab.Add(ReaddirBufSymbol), (BindLocal << 4) | TypeTls, shTbss, 0, ReaddirBufSize), // [1] tls buffer
+            (strtab.Add(ModuleNameSymbol), (BindLocal << 4) | TypeObject, shData,                 // [2] module name
+                (ulong)moduleNameOffset, (ulong)ModuleNameText.Length),
         };
-        const int tlsSymbol = 1;
+        const int tlsSymbol = 1, LocalSymbolCount = 3;
+        symIndex[ModuleNameSymbol] = 2;
 
         for (int i = 0; i < funcs.Count; i++)
         {
@@ -363,15 +698,29 @@ public static class CompatEmitter
             symbols.Add((strtab.Add(f.Name), (byte)((bind << 4) | TypeFunc), shText, (ulong)textOffsets[i], (ulong)f.Code.Length));
         }
 
+        for (int i = 0; i < data.Count; i++)
+        {
+            symIndex[data[i].Name] = symbols.Count;
+            symbols.Add((strtab.Add(data[i].Name), (BindGlobal << 4) | TypeObject, shData, (ulong)(i * 8), 8));
+        }
+
         var externals = new List<string>();
+        void AddExternal(string target, byte type)
+        {
+            if (symIndex.ContainsKey(target))
+                return;
+            symIndex[target] = symbols.Count;
+            externals.Add(target);
+            symbols.Add((strtab.Add(target), (byte)((BindGlobal << 4) | type), 0, 0, 0));
+        }
         foreach (CompatFunc f in funcs)
             foreach ((int _, string target) in f.Relocs)
-                if (!symIndex.ContainsKey(target))
-                {
-                    symIndex[target] = symbols.Count;
-                    externals.Add(target);
-                    symbols.Add((strtab.Add(target), (BindGlobal << 4) | 0, 0, 0, 0));
-                }
+                AddExternal(target, TypeFunc);
+        // A name whose address a variable holds is data, and has to say so: a module that calls it a
+        // function invites the loader to bind it the way a function is bound.
+        foreach (CompatData d in data)
+            if (d.PointsAt is not null)
+                AddExternal(d.PointsAt, TypeObject);
 
         // Relocations: a PLT32 per tail call, plus a TPOFF32 for the one function that names a thread-local.
         var relocs = new List<(int Offset, int Symbol, uint Type, long Addend)>();
@@ -383,6 +732,13 @@ public static class CompatEmitter
                 relocs.Add((textOffsets[i] + tlsOff, tlsSymbol, RTpOff32, 0));
         }
 
+        // A variable holding an address needs a load-time fixup, the same as any other absolute
+        // reference; one left empty needs none.
+        var dataRelocs = new List<(int Offset, int Symbol, uint Type, long Addend)>();
+        for (int i = 0; i < data.Count; i++)
+            if (data[i].PointsAt is string target)
+                dataRelocs.Add((i * 8, symIndex[target], RAbs64, 0));
+
         byte[] strtabBytes = strtab.ToBytes();
 
         byte[] symtab = new byte[24 * symbols.Count];
@@ -393,10 +749,16 @@ public static class CompatEmitter
         for (int i = 0; i < relocs.Count; i++)
             WriteRela(rela, i, relocs[i].Offset, relocs[i].Symbol, relocs[i].Type, relocs[i].Addend);
 
+        byte[] relaData = new byte[24 * dataRelocs.Count];
+        for (int i = 0; i < dataRelocs.Count; i++)
+            WriteRela(relaData, i, dataRelocs[i].Offset, dataRelocs[i].Symbol, dataRelocs[i].Type, dataRelocs[i].Addend);
+
         var shstr = new StringTable();
         int nText = shstr.Add(".text");
         int nTbss = shstr.Add(".tbss");
         int nRela = shstr.Add(".rela.text");
+        int nData = shstr.Add(".data");
+        int nRelaData = shstr.Add(".rela.data");
         int nSym = shstr.Add(".symtab");
         int nStr = shstr.Add(".strtab");
         int nShStr = shstr.Add(".shstrtab");
@@ -405,6 +767,8 @@ public static class CompatEmitter
         var body = new List<byte>();
         long textOff = Place(body, textBytes);
         long relaOff = Place(body, rela);
+        long dataOff = Place(body, dataBytes);
+        long relaDataOff = Place(body, relaData);
         long symOff = Place(body, symtab);
         long strOff = Place(body, strtabBytes);
         long shstrOff = Place(body, shstrBytes);
@@ -413,16 +777,18 @@ public static class CompatEmitter
         long tbssOff = 64 + body.Count;
         long shdrOff = 64 + body.Count;
 
-        byte[] shdr = new byte[64 * 7];
+        byte[] shdr = new byte[64 * sectionCount];
         WriteShdr(shdr, shText, nText, ShtProgBits, ShfAlloc | ShfExec, textOff, textBytes.Length, 0, 0, 16, 0);
         WriteShdr(shdr, shTbss, nTbss, ShtNoBits, ShfWrite | ShfAlloc | ShfTls, tbssOff, ReaddirBufSize, 0, 0, 8, 0);
         WriteShdr(shdr, shRela, nRela, ShtRela, 0, relaOff, rela.Length, shSym, shText, 8, 24);
-        WriteShdr(shdr, shSym, nSym, ShtSymTab, 0, symOff, symtab.Length, shStr, 2, 8, 24);
+        WriteShdr(shdr, shData, nData, ShtProgBits, ShfAlloc | ShfWrite, dataOff, dataBytes.Length, 0, 0, 8, 0);
+        WriteShdr(shdr, shRelaData, nRelaData, ShtRela, 0, relaDataOff, relaData.Length, shSym, shData, 8, 24);
+        WriteShdr(shdr, shSym, nSym, ShtSymTab, 0, symOff, symtab.Length, shStr, LocalSymbolCount, 8, 24);
         WriteShdr(shdr, shStr, nStr, ShtStrTab, 0, strOff, strtabBytes.Length, 0, 0, 1, 0);
         WriteShdr(shdr, shShStr, nShStr, ShtStrTab, 0, shstrOff, shstrBytes.Length, 0, 0, 1, 0);
 
         var output = new List<byte>(64 + body.Count + shdr.Length);
-        output.AddRange(BuildHeader(shdrOff, shShStr, sectionCount: 7));
+        output.AddRange(BuildHeader(shdrOff, shShStr, sectionCount));
         output.AddRange(body);
         output.AddRange(shdr);
         return [.. output];

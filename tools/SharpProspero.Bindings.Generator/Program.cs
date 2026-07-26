@@ -56,6 +56,7 @@ internal static class Program
     private static readonly HashSet<string> KnownVerbs = new(StringComparer.Ordinal)
     {
         "prx", "stub", "crt", "compat", "nid", "elf", "self", "offsets", "retarget", "sysver", "link", "diff", "gnf", "payload", "shader", "vag",
+        "modules", "param",
     };
 
     private static int Main(string[] args)
@@ -123,6 +124,11 @@ internal static class Program
         // module built for one system can be retargeted to another.
         if (args.Length > 0 && string.Equals(args[0], "retarget", StringComparison.Ordinal))
             return RunRetarget(args);
+
+        // Checks the metadata that describes the application to the system, and completes what a
+        // finished title always carries.
+        if (args.Length > 0 && string.Equals(args[0], "param", StringComparison.Ordinal))
+            return RunParam(args);
 
         // Settles the system version an application requires against the modules it ships.
         if (args.Length > 0 && string.Equals(args[0], "sysver", StringComparison.Ordinal))
@@ -595,7 +601,7 @@ internal static class Program
         }
     }
 
-    // Reports a compiled shader binary: its stage, version, sizes and the register writes it carries,
+    // Reports a compiled shader binary: its kind, version, sizes and the register writes it carries,
     // and with --registers the full register lists.
     private static int RunShader(string[] args)
     {
@@ -610,7 +616,7 @@ internal static class Program
             ShaderInfo info = ShaderInfo.Read(File.ReadAllBytes(file));
             Console.WriteLine($"File:     {Path.GetFileName(file)}");
             Console.WriteLine($"Valid:    {(info.IsValid ? "yes" : "no (unexpected header magic)")}");
-            Console.WriteLine($"Stage:    {info.StageName} (0x{info.Stage:X2})");
+            Console.WriteLine($"Kind:     {info.KindName} (0x{info.Kind:X2})");
             Console.WriteLine($"Version:  {info.Version}");
             Console.WriteLine($"Header:   {info.DeclaredHeaderSize} bytes");
             Console.WriteLine($"Code:     {info.CodeSectionSize} bytes ({info.DeclaredCodeSize} declared)");
@@ -1550,6 +1556,93 @@ internal static class Program
         return 0;
     }
 
+    // Checks the metadata that describes the application to the system. A field carrying a value the
+    // system does not recognise is reported as a fault and fails the command; a field a finished title
+    // always carries but this one does not is reported as missing, and --apply fills it in.
+    private static int RunParam(string[] args)
+    {
+        if (HasFlag(args, "--list"))
+        {
+            Console.WriteLine("Kinds of title:");
+            foreach (ApplicationCategory known in ApplicationCategories.All)
+                Console.WriteLine($"  {(int)known,-10} {known}");
+            Console.WriteLine();
+            Console.WriteLine($"An application that ships its own module uses {(int)ApplicationCategories.Default} ({ApplicationCategories.Default}).");
+            return 0;
+        }
+
+        string? folder = GetOption(args, "--folder");
+        if (string.IsNullOrWhiteSpace(folder) || !Directory.Exists(folder))
+        {
+            Console.Error.WriteLine("Usage: param --folder <module-folder> [--category <kind>] [--apply]");
+            Console.Error.WriteLine("       param --list");
+            return 1;
+        }
+
+        string paramPath = Path.Combine(folder, "sce_sys", "param.json");
+        JsonObject? document = ReadParamJson(paramPath);
+        if (document is null)
+        {
+            Console.Error.WriteLine(File.Exists(paramPath)
+                ? $"{paramPath} is not readable as application metadata."
+                : $"No application metadata found at {paramPath}.");
+            return 1;
+        }
+
+        // A category given on the command line is applied before the check, so what is reported is the
+        // metadata as it will be written rather than as it was found.
+        string? categoryText = GetOption(args, "--category");
+        if (categoryText is not null)
+        {
+            if (!ApplicationCategories.TryParse(categoryText, out ApplicationCategory chosen))
+            {
+                Console.Error.WriteLine($"'{categoryText}' is not a kind of title. Run 'param --list' for the kinds.");
+                return 1;
+            }
+            document["applicationCategoryType"] = (int)chosen;
+        }
+
+        bool apply = HasFlag(args, "--apply");
+        IReadOnlyList<string> completed = apply ? ParamJson.Complete(document) : [];
+
+        ParamReport report = ParamJson.Check(document);
+        Console.WriteLine($"  {"kind",-30} {(report.Category is null ? "unrecognised" : ApplicationCategories.Describe((int)report.Category))}");
+        Console.WriteLine();
+
+        bool anyFillable = false;
+        foreach (ParamIssue issue in report.Issues)
+        {
+            string mark = issue.Level == ParamIssueLevel.Fault ? "wrong" : "incomplete";
+            Console.WriteLine($"  {issue.Field,-30} {mark,-10} {issue.Message}");
+            anyFillable |= issue.CanComplete;
+        }
+        if (report.Issues.Count == 0)
+            Console.WriteLine("  Nothing missing.");
+
+        if (!apply)
+        {
+            if (anyFillable)
+            {
+                Console.WriteLine();
+                Console.WriteLine("Run again with --apply to fill in what is missing.");
+            }
+            return report.IsValid ? 0 : 1;
+        }
+
+        if (completed.Count == 0 && categoryText is null)
+        {
+            Console.WriteLine();
+            Console.WriteLine("Nothing to write.");
+            return report.IsValid ? 0 : 1;
+        }
+
+        WriteParamJson(paramPath, document);
+        Console.WriteLine();
+        Console.WriteLine($"Wrote {paramPath}" +
+            (completed.Count > 0 ? $" ({string.Join(", ", completed)})" : string.Empty));
+        return report.IsValid ? 0 : 1;
+    }
+
     // Settles the system version an application requires. A module records the system it was built
     // against, and an application that ships it has to require at least as much: the system installs
     // an application whose requirement is too low and then fails to load the module.
@@ -1619,13 +1712,25 @@ internal static class Program
             Console.Error.WriteLine($"No application metadata to write: {paramPath} was not found.");
             return 1;
         }
-        if (!plan.Changed)
+        // The version a title states it was built against is the one its modules settle on. It is a
+        // separate field from the requirement and is not covered by the plan's own change check, so a
+        // title whose requirement was already right would otherwise keep stating it was built against
+        // nothing.
+        string? built = plan.Result.HasValue ? plan.Result.ToPackageValue() : null;
+        bool statesBuild = built is null
+            || (document["sdkVersion"] is JsonValue stated
+                && stated.TryGetValue(out string? statedText) && statedText == built);
+
+        if (!plan.Changed && statesBuild)
         {
             Console.WriteLine("Nothing to write.");
             return plan.Unloadable.Count > 0 ? 4 : 0;
         }
 
-        document["requiredSystemSoftwareVersion"] = plan.Result.ToPackageValue();
+        if (plan.Changed)
+            document["requiredSystemSoftwareVersion"] = plan.Result.ToPackageValue();
+        if (built is not null)
+            document["sdkVersion"] = built;
         WriteParamJson(paramPath, document);
         Console.WriteLine($"Wrote {paramPath}");
         return plan.Unloadable.Count > 0 ? 4 : 0;
@@ -1761,7 +1866,7 @@ internal static class Program
                 break;
             case "shader":
                 Console.WriteLine("Usage: shader --file <shader.sb> [--registers]");
-                Console.WriteLine("  Reports a compiled shader's stage, version, sizes, and register writes.");
+                Console.WriteLine("  Reports a compiled shader's kind, version, sizes, and register writes.");
                 break;
             case "vag":
                 Console.WriteLine("Usage: vag --input <clip.wav|clip.vag> --output <clip.vag|clip.wav> [--name <name>]");
@@ -1789,6 +1894,12 @@ internal static class Program
                 break;
             case "retarget":
                 Console.WriteLine("Usage: retarget --file <module.prx|.sprx> [--to NN.NN] [--set-lib-version <name>=0xNNNN ...] [--out <file>]");
+                break;
+            case "param":
+                Console.WriteLine("Usage: param --folder <module-folder> [--category <kind>] [--apply]");
+                Console.WriteLine("       param --list    Lists the kinds of title and their numbers.");
+                Console.WriteLine("  Reports what the application's metadata gets wrong and what a finished title carries that");
+                Console.WriteLine("  it does not. --apply fills in the missing fields; --category sets the kind of title.");
                 break;
             case "sysver":
                 Console.WriteLine("Usage: sysver --folder <module-folder> [--policy match|upgrade|downgrade|keep] [--version NN.NN] [--apply]");
@@ -1824,6 +1935,7 @@ internal static class Program
         Console.WriteLine("       sharpprospero-bindgen retarget --file <module> [--to NN.NN] [--set-lib-version <name>=0xNNNN] [--out <file>]");
         Console.WriteLine("       sharpprospero-bindgen nid --name <symbol>");
         Console.WriteLine("       sharpprospero-bindgen sysver --folder <module-folder> [--policy P --version NN.NN --apply]");
+        Console.WriteLine("       sharpprospero-bindgen param --folder <module-folder> [--category <kind>] [--apply] | param --list");
         Console.WriteLine();
         Console.WriteLine("Run '<command> --help' for a command's full options, or --version for the tool version.");
         Console.WriteLine();
