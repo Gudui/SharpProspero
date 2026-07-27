@@ -103,6 +103,139 @@ public sealed class DynamicWriterTests
         };
     }
 
+    // A module carrying the guard value the runtime stamps into itself at start-up. Its own object marks
+    // it read-only, exactly as the runtime's does.
+    private static LinkResolution GuardResolution()
+    {
+        var text = new ElfSection { Name = ".text", Type = ShType.ProgBits, Flags = ShFlags.Alloc | ShFlags.Execute, Address = 0, Size = 0x10, Link = 0, Info = 0, AddrAlign = 16, EntSize = 0, Data = new byte[0x10] };
+        var rodata = new ElfSection { Name = ".rodata", Type = ShType.ProgBits, Flags = ShFlags.Alloc, Address = 0, Size = 8, Link = 0, Info = 0, AddrAlign = 8, EntSize = 0, Data = new byte[8] };
+        var other = new ElfSection { Name = ".rodata.str", Type = ShType.ProgBits, Flags = ShFlags.Alloc, Address = 0, Size = 0x40, Link = 0, Info = 0, AddrAlign = 8, EntSize = 0, Data = new byte[0x40] };
+        var data = new ElfSection { Name = ".data", Type = ShType.ProgBits, Flags = ShFlags.Alloc | ShFlags.Write, Address = 0, Size = 0x20, Link = 0, Info = 0, AddrAlign = 8, EntSize = 0, Data = new byte[0x20] };
+        var nullSec = new ElfSection { Name = "", Type = ShType.Null, Flags = 0, Address = 0, Size = 0, Link = 0, Info = 0, AddrAlign = 0, EntSize = 0, Data = [] };
+        var main = new ElfSymbol { Name = "main", Info = (SymBind.Global << 4) | SymType.Func, Other = 0, SectionIndex = 1, Value = 0, Size = 0 };
+        var guard = new ElfSymbol { Name = "__security_cookie", Info = (SymBind.Global << 4) | SymType.Object, Other = 0, SectionIndex = 2, Value = 0, Size = 8 };
+        var nullSym = new ElfSymbol { Name = "", Info = 0, Other = 0, SectionIndex = 0, Value = 0, Size = 0 };
+        var obj = new ElfObject
+        {
+            Origin = "synthetic",
+            Sections = [nullSec, text, rodata, other, data],
+            Symbols = [nullSym, main, guard],
+            Relocations = new Dictionary<int, IReadOnlyList<ElfRelocation>>(),
+        };
+        return new LinkResolution
+        {
+            Included = [obj],
+            Defined = new Dictionary<string, ElfObject> { ["main"] = obj, ["__security_cookie"] = obj },
+            Imports = [],
+            Unresolved = [],
+        };
+    }
+
+    // Two objects that both carry the same shared thing, the way every object needing an inline
+    // function, a template body or a virtual table carries its own copy of it.
+    private static ElfObject ObjectCarryingSharedData(string origin, byte mark, bool withMain)
+    {
+        var nullSec = new ElfSection { Name = "", Type = ShType.Null, Flags = 0, Address = 0, Size = 0, Link = 0, Info = 0, AddrAlign = 0, EntSize = 0, Data = [] };
+        var text = new ElfSection { Name = ".text", Type = ShType.ProgBits, Flags = ShFlags.Alloc | ShFlags.Execute, Address = 0, Size = 0x10, Link = 0, Info = 0, AddrAlign = 16, EntSize = 0, Data = new byte[0x10] };
+        // The shared thing itself: eight bytes of state, which is exactly what must not be duplicated.
+        var shared = new ElfSection { Name = ".data.shared", Type = ShType.ProgBits, Flags = ShFlags.Alloc | ShFlags.Write, Address = 0, Size = 8, Link = 0, Info = 0, AddrAlign = 8, EntSize = 0, Data = [mark, 0, 0, 0, 0, 0, 0, 0] };
+        var nullSym = new ElfSymbol { Name = "", Info = 0, Other = 0, SectionIndex = 0, Value = 0, Size = 0 };
+        var sharedSym = new ElfSymbol { Name = "theSharedLock", Info = (SymBind.Weak << 4) | SymType.Object, Other = 0, SectionIndex = 2, Value = 0, Size = 8 };
+        var syms = new List<ElfSymbol> { nullSym, sharedSym };
+        if (withMain)
+            syms.Add(new ElfSymbol { Name = "main", Info = (SymBind.Global << 4) | SymType.Func, Other = 0, SectionIndex = 1, Value = 0, Size = 0 });
+        return new ElfObject
+        {
+            Origin = origin,
+            Sections = [nullSec, text, shared],
+            Symbols = syms,
+            Relocations = new Dictionary<int, IReadOnlyList<ElfRelocation>>(),
+            Groups = [new ElfSectionGroup("theSharedLock", [2], KeepOnlyOne: true)],
+        };
+    }
+
+    [Fact]
+    public void Write_KeepsOneCopyOfSomethingEveryObjectCarries()
+    {
+        // A compiler puts an inline function, a template body or a virtual table into every object that
+        // needs it, and names each copy under one signature so a link keeps exactly one. Keeping them
+        // all is worse than wasteful for anything holding state: two copies of a lock are two locks, and
+        // whichever half of the program holds one is not excluded by the other.
+        ElfObject first = ObjectCarryingSharedData("first", 0x11, withMain: true);
+        ElfObject second = ObjectCarryingSharedData("second", 0x22, withMain: false);
+        var options = new LinkOptions();
+        options.ExtraObjects.Add(first);
+        options.ExtraObjects.Add(second);
+
+        LinkResolution result = Linker.Resolve(options);
+
+        // The second copy is left out, and the name resolves to the object whose copy was kept.
+        Assert.Contains((second, 2), result.DroppedSections.Select(d => (d.Object, d.Section)));
+        Assert.DoesNotContain((first, 2), result.DroppedSections.Select(d => (d.Object, d.Section)));
+        Assert.Same(first, result.Defined["theSharedLock"]);
+
+        byte[] module = DynamicWriter.Write(result, "main");
+        (ulong addr, ulong size) = SectionAddressAndSize(module, ".data");
+        Assert.Equal(8ul, size);          // one copy, not two
+
+        // And it is the first object's, not the second's.
+        int phnum = BinaryPrimitives.ReadUInt16LittleEndian(module.AsSpan(0x38));
+        for (int i = 0, ph = 0x40; i < phnum; i++, ph += 0x38)
+        {
+            if (BinaryPrimitives.ReadUInt32LittleEndian(module.AsSpan(ph)) != 1) continue;
+            ulong va = BinaryPrimitives.ReadUInt64LittleEndian(module.AsSpan(ph + 16));
+            ulong filesz = BinaryPrimitives.ReadUInt64LittleEndian(module.AsSpan(ph + 32));
+            ulong off = BinaryPrimitives.ReadUInt64LittleEndian(module.AsSpan(ph + 8));
+            if (addr < va || addr >= va + filesz) continue;
+            Assert.Equal(0x11, module[(int)(off + (addr - va))]);
+        }
+    }
+
+    [Fact]
+    public void Write_PutsTheGuardValueWhereTheRuntimeCanStillWriteToIt()
+    {
+        // The runtime stamps a guard value into an object its own compiler marked read-only: it widens
+        // the page to writable, writes, and narrows it again, and refuses to start at all if either
+        // protection change is turned down. This platform settles a range's greatest allowed protection
+        // when the loader maps the segment, from what that segment asks for, and a segment asking for
+        // read alone can never be widened afterwards - so the object has to be placed in a group whose
+        // ceiling admits write, or the runtime stops before it has done anything and says only that its
+        // entry returned a non-zero result.
+        byte[] file = DynamicWriter.Write(GuardResolution(), "main");
+
+        (ulong guardAddr, ulong guardSize) = SectionAddressAndSize(file, ".sce_guard");
+        Assert.NotEqual(0ul, guardAddr);
+        Assert.Equal(8ul, guardSize);
+
+        int phnum = BinaryPrimitives.ReadUInt16LittleEndian(file.AsSpan(0x38));
+        uint flagsOfSegmentHoldingIt = 0;
+        bool found = false;
+        for (int i = 0, ph = 0x40; i < phnum; i++, ph += 0x38)
+        {
+            if (BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan(ph)) != 1) continue;   // PT_LOAD
+            ulong va = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 16));
+            ulong memsz = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 40));
+            if (memsz == 0 || guardAddr < va || guardAddr >= va + memsz) continue;
+            flagsOfSegmentHoldingIt = BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan(ph + 4));
+            found = true;
+        }
+        Assert.True(found, "the guard value is in no loadable group");
+        Assert.True((flagsOfSegmentHoldingIt & 2) != 0,
+            "the guard value is in a group that asks for no write, so its ceiling can never admit one");
+
+        // And it keeps its page to itself: the runtime narrows the whole page back to read-only once it
+        // has written the value, and anything sharing that page would be frozen with it.
+        Assert.Equal(0ul, guardAddr % 0x4000);
+        (ulong dataAddr, _) = SectionAddressAndSize(file, ".data");
+        Assert.True(dataAddr >= guardAddr + 0x4000,
+            $"another section shares the guard's page: .data at 0x{dataAddr:x}, guard at 0x{guardAddr:x}");
+
+        // The read-only group keeps everything else that asked to be read-only.
+        (ulong roAddr, _) = SectionAddressAndSize(file, ".rodata");
+        Assert.NotEqual(0ul, roAddr);
+        Assert.True(roAddr < guardAddr, "the rest of the read-only content moved with it");
+    }
+
     [Fact]
     public void Write_DeclaresARelocationTableWithNoEmptyRecordInIt()
     {
@@ -726,6 +859,107 @@ public sealed class DynamicWriterTests
     }
 
     [Fact]
+    public void Write_RefusesALibraryThatAddsAThreadPointerDistance()
+    {
+        // The distance from the thread pointer to a thread-local variable is only knowable in advance
+        // for the application: its block is placed first. A library's block goes after whatever is
+        // already loaded, at a position settled as it loads, so a distance written at link time points
+        // into another module's storage and nothing reports a fault. The two forms that ask for that
+        // distance have no indirection to hide behind, so they are refused; the form the test below
+        // covers goes through a pair of table slots instead and is written.
+        var resolution = ThreadLocalLibraryResolution(RelType.TpOff32);
+
+        ElfLinkException ex = Assert.Throws<ElfLinkException>(() =>
+            DynamicWriter.Write(resolution, entrySymbol: null, ModuleKind.Library,
+                exportSymbols: ["game_frame"], moduleFileName: "test.prx"));
+        Assert.Contains("thread-local", ex.Message);
+    }
+
+    [Fact]
+    public void Write_LibraryReachesAThreadLocalThroughADescriptorPair()
+    {
+        // A library leaves the sequence alone and points it at two table slots: which module owns the
+        // block, filled by a load-time record naming no symbol, and where in that block the variable
+        // sits, a distance settled here. Every library on the device that carries thread-local data
+        // does exactly this and carries one such record per pair.
+        byte[] file = DynamicWriter.Write(ThreadLocalLibraryResolution(RelType.TlsGd),
+            entrySymbol: null, ModuleKind.Library, exportSymbols: ["game_frame"], moduleFileName: "test.prx");
+
+        const ulong DtpMod64 = 16;
+        List<(ulong Where, ulong Type, ulong Symbol, long Addend)> records = ReadDynamicRelocations(file);
+        var pairs = records.FindAll(r => r.Type == DtpMod64);
+        Assert.Single(pairs);
+        // The record answers with the module carrying it, so it names no symbol and adds nothing.
+        Assert.Equal(0ul, pairs[0].Symbol);
+        Assert.Equal(0L, pairs[0].Addend);
+
+        // The second slot of the pair holds the variable's place in the block - four, where the symbol
+        // sits in the template - written into the image rather than left to the loader.
+        Assert.Equal(4ul, ReadImageWord(file, pairs[0].Where + 8));
+    }
+
+    // One object holding a thread-local and one reference to it of the given form, as a library links it.
+    private static LinkResolution ThreadLocalLibraryResolution(uint relocationType)
+    {
+        var text = new ElfSection { Name = ".text", Type = ShType.ProgBits, Flags = ShFlags.Alloc | ShFlags.Execute, Address = 0, Size = 0x10, Link = 0, Info = 0, AddrAlign = 16, EntSize = 0, Data = new byte[0x10] };
+        var tdata = new ElfSection { Name = ".tdata", Type = ShType.ProgBits, Flags = ShFlags.Alloc | ShFlags.Write | ShFlags.Tls, Address = 0, Size = 8, Link = 0, Info = 0, AddrAlign = 4, EntSize = 0, Data = new byte[8] };
+        var nullSec = new ElfSection { Name = "", Type = ShType.Null, Flags = 0, Address = 0, Size = 0, Link = 0, Info = 0, AddrAlign = 0, EntSize = 0, Data = [] };
+        var frame = new ElfSymbol { Name = "game_frame", Info = (SymBind.Global << 4) | SymType.Func, Other = 0, SectionIndex = 1, Value = 0, Size = 0 };
+        var tlsVar = new ElfSymbol { Name = "tlsVar", Info = (SymBind.Global << 4) | SymType.Tls, Other = 0, SectionIndex = 2, Value = 4, Size = 0 };
+        var nullSym = new ElfSymbol { Name = "", Info = 0, Other = 0, SectionIndex = 0, Value = 0, Size = 0 };
+        var relocs = new List<ElfRelocation> { new(Offset: 4, SymbolIndex: 2, Type: relocationType, Addend: -4) };
+        var obj = new ElfObject
+        {
+            Origin = "synthetic",
+            Sections = [nullSec, text, tdata],
+            Symbols = [nullSym, frame, tlsVar],
+            Relocations = new Dictionary<int, IReadOnlyList<ElfRelocation>> { [1] = relocs },
+        };
+        return new LinkResolution
+        {
+            Included = [obj],
+            Defined = new Dictionary<string, ElfObject> { ["game_frame"] = obj, ["tlsVar"] = obj },
+            Imports = [],
+            Unresolved = [],
+        };
+    }
+
+    // The load-time relocation table, as where/type/symbol/addend.
+    private static List<(ulong Where, ulong Type, ulong Symbol, long Addend)> ReadDynamicRelocations(byte[] file)
+    {
+        Dictionary<ulong, ulong> map = ReadDynamicMap(file);
+        ulong addr = map[7], size = map[8];
+        int at = (int)ImageOffsetOf(file, addr);
+        var records = new List<(ulong, ulong, ulong, long)>();
+        for (ulong r = 0; r + 24 <= size; r += 24)
+        {
+            ulong where = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(at + (int)r));
+            ulong info = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(at + (int)r + 8));
+            long addend = BinaryPrimitives.ReadInt64LittleEndian(file.AsSpan(at + (int)r + 16));
+            records.Add((where, info & 0xFFFFFFFF, info >> 32, addend));
+        }
+        return records;
+    }
+
+    private static ulong ReadImageWord(byte[] file, ulong address) =>
+        BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan((int)ImageOffsetOf(file, address)));
+
+    // Where in the file an address lands, by walking the groups the module carries.
+    private static ulong ImageOffsetOf(byte[] file, ulong address)
+    {
+        int ph = 0x40, phnum = BinaryPrimitives.ReadUInt16LittleEndian(file.AsSpan(0x38));
+        for (int i = 0; i < phnum; i++, ph += 0x38)
+        {
+            if (BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan(ph)) != 1) continue;
+            ulong va = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 16));
+            ulong len = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 32));
+            if (address < va || address >= va + len) continue;
+            return BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 8)) + (address - va);
+        }
+        throw new Xunit.Sdk.XunitException($"0x{address:X} is in no group the module carries.");
+    }
+
+    [Fact]
     public void Write_DtpOffThreadLocal_ResolvesToTheLocalExecOffset()
     {
         // A module-block offset (paired with a relaxed local-dynamic base) resolves to the same value as a
@@ -983,46 +1217,27 @@ public sealed class DynamicWriterTests
             if (tag == 0x6ffffff9) relaCount = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan((int)d + 8));
             if (tag == 0x08) relaSize = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan((int)d + 8));
         }
-        // Six base-relative records name the parameter blocks; the table also holds the one bound
-        // by name for the library marker, so its size counts one more than the relative count.
-        Assert.Equal(6ul, relaCount);
-        Assert.True(relaSize <= 7ul * 24, $"the table holds {relaSize / 24} records, more than the blocks need");
+        // Eight base-relative records name the parameter blocks: the three the parameters point at, the
+        // three replacement tables, and the two heap figures the C library reads its limit from. The
+        // table also holds the one bound by name for the library marker, so its size counts one more
+        // than the relative count.
+        Assert.Equal(8ul, relaCount);
+        Assert.True(relaSize <= 9ul * 24, $"the table holds {relaSize / 24} records, more than the blocks need");
     }
 
     [Fact]
-    public void Write_ReferenceToAnIndirectFunction_EmitsAnIrelativeRecord()
+    public void Write_ReferenceToAnIndirectFunction_IsRefused()
     {
-        // An absolute reference to a resolver-backed indirect function (STT_GNU_IFUNC) must produce an
-        // R_X86_64_IRELATIVE (37) dynamic relocation, so the loader calls the resolver and stores the
-        // result, rather than a plain relative record that would leave the resolver address in place.
+        // A function whose address is settled by calling a routine that chooses one cannot be expressed
+        // for this platform: the record that would say so is of a kind the loader refuses outright, and
+        // it refuses the whole module rather than that one record. Writing a base-relative record
+        // instead would leave the address of the chooser in the slot and call it as the function. So it
+        // is refused at the link, where it can still be read, rather than at load on the machine.
         var ifunc = new ElfSymbol { Name = "memcpy_impl", Info = (SymBind.Global << 4) | SymType.GnuIfunc, Other = 0, SectionIndex = 1, Value = 0x10, Size = 0 };
-        byte[] file = DynamicWriter.Write(BuildSingleReloc(ifunc, RelType.R64, defineTarget: true), "main");
 
-        int phnum = BinaryPrimitives.ReadUInt16LittleEndian(file.AsSpan(0x38));
-        ulong dynOff = 0, dynSz = 0, relaVaddr = 0, relaSz = 0;
-        int ph = 0x40;
-        var loads = new List<(ulong Vaddr, ulong Off, ulong Filesz)>();
-        for (int i = 0; i < phnum; i++, ph += 0x38)
-        {
-            uint t = BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan(ph));
-            if (t == 2) { dynOff = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 8)); dynSz = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 40)); }
-            if (t == 1) loads.Add((BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 16)), BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 8)), BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan(ph + 32))));
-        }
-        for (ulong d = dynOff; d + 16 <= dynOff + dynSz; d += 16)
-        {
-            long tag = BinaryPrimitives.ReadInt64LittleEndian(file.AsSpan((int)d));
-            if (tag == 7) relaVaddr = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan((int)d + 8));  // DT_RELA
-            if (tag == 8) relaSz = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan((int)d + 8));     // DT_RELASZ
-        }
-        (ulong Vaddr, ulong Off, ulong Filesz) seg = loads.Find(l => relaVaddr >= l.Vaddr && relaVaddr < l.Vaddr + l.Filesz);
-        ulong relaFile = seg.Off + (relaVaddr - seg.Vaddr);
-        bool foundIrelative = false;
-        for (ulong r = 0; r + 24 <= relaSz; r += 24)
-        {
-            ulong info = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan((int)(relaFile + r) + 8));
-            if ((uint)(info & 0xffffffff) == 37) foundIrelative = true;
-        }
-        Assert.True(foundIrelative, "Expected an R_X86_64_IRELATIVE record for the indirect function.");
+        ElfLinkException ex = Assert.Throws<ElfLinkException>(
+            () => DynamicWriter.Write(BuildSingleReloc(ifunc, RelType.R64, defineTarget: true), "main"));
+        Assert.Contains("memcpy_impl", ex.Message);
     }
 
     [Fact]

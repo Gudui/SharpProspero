@@ -11,10 +11,11 @@ namespace SharpProspero.Interop.AvCapture;
 /// interpreted here, so build one with <see cref="Create"/> and set what you need.
 /// </summary>
 /// <remarks>
-/// This is an advanced surface. The full field set is service-internal; the two fields named below are
-/// the ones the open path reads to select the channel shape.
+/// This is an advanced surface. The full field set is service-internal, and the whole of it is sent to
+/// the service as configuration - all 0x2B8 bytes - so a block declared shorter than that ships
+/// whatever happens to follow it. Only the fields named below are read on this side of the call.
 /// </remarks>
-[StructLayout(LayoutKind.Explicit, Size = 0x190)]
+[StructLayout(LayoutKind.Explicit, Size = 0x2B8)]
 public struct Avcap2VideoConfig
 {
     /// <summary>The channel kind the open path selects on (a non-zero value opens the primary channel).</summary>
@@ -24,6 +25,33 @@ public struct Avcap2VideoConfig
     /// <summary>A sub-mode the open path branches on; zero for the default.</summary>
     [FieldOffset(0x188)]
     public int Mode;
+
+    /// <summary>
+    /// The first area's length. Required together with <see cref="AreaAddress"/> when <see cref="Mode"/>
+    /// is one, and required to be either both set or both clear when it is two; the open path refuses
+    /// the call otherwise. Not read for the default mode.
+    /// </summary>
+    [FieldOffset(0x1A0)]
+    public ulong AreaLength;
+
+    /// <summary>The first area's address. See <see cref="AreaLength"/>.</summary>
+    [FieldOffset(0x1A8)]
+    public ulong AreaAddress;
+
+    /// <summary>
+    /// How many bytes of the frame area below are wanted. The open path measures the mapping at
+    /// <see cref="FrameAreaAddress"/> and refuses the call when it holds less than this. Required
+    /// whenever <see cref="Mode"/> is one or two.
+    /// </summary>
+    [FieldOffset(0x1C0)]
+    public ulong FrameAreaLength;
+
+    /// <summary>
+    /// The address of the memory the frames are written into. It has to be mapped, and mapped as
+    /// direct memory, before the call. See <see cref="FrameAreaLength"/>.
+    /// </summary>
+    [FieldOffset(0x1C8)]
+    public ulong FrameAreaAddress;
 
     /// <summary>A configuration with the reserved space zeroed.</summary>
     public static Avcap2VideoConfig Create() => default;

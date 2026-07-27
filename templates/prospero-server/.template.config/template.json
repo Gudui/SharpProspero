@@ -33,12 +33,31 @@
       "replaces": "APP_CONCEPTID",
       "description": "The concept id."
     },
-    "contentId": {
+    "contentIdOverride": {
       "type": "parameter",
       "datatype": "text",
-      "defaultValue": "UP9000-PPSA99099_00-PROSPERO00000000",
-      "replaces": "APP_CONTENTID",
-      "description": "The 36-character content id."
+      "defaultValue": "",
+      "description": "A whole 36-character content id, when the derived one is not what is wanted."
+    },
+    "contentIdDerived": {
+      "type": "generated",
+      "generator": "join",
+      "parameters": {
+        "symbols": [
+          { "type": "const", "value": "UP9000-" },
+          { "type": "ref", "value": "titleId" },
+          { "type": "const", "value": "_00-PROSPERO00000000" }
+        ]
+      }
+    },
+    "contentId": {
+      "type": "generated",
+      "generator": "coalesce",
+      "parameters": {
+        "sourceVariableName": "contentIdOverride",
+        "fallbackVariableName": "contentIdDerived"
+      },
+      "replaces": "APP_CONTENTID"
     }
   },
   "primaryOutputs": [

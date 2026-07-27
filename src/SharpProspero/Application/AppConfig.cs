@@ -18,7 +18,10 @@ public sealed class AppConfig
     /// <summary>Number of framebuffers in the swap chain.</summary>
     public int BufferCount { get; set; } = 2;
 
-    /// <summary>The user the display and input open for.</summary>
+    /// <summary>
+    /// The user the controller opens for. The display is not opened for a user: an application of this
+    /// kind owns the whole output, and the call that opens it takes only the system.
+    /// </summary>
     public int UserId { get; set; } = SceUser.System;
 
     /// <summary>Flip timing used each frame.</summary>

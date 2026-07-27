@@ -25,7 +25,24 @@ public sealed class ZipBuilder
     private readonly List<Record> _records = [];
 
     private readonly record struct Record(
-        byte[] Name, uint Crc, uint CompressedSize, uint UncompressedSize, ushort Method, uint Offset, bool IsDirectory);
+        byte[] Name, uint Crc, uint CompressedSize, uint UncompressedSize, ushort Method, uint Offset,
+        bool IsDirectory, ushort Flags);
+
+    /// <summary>
+    /// Says the entry's name is UTF-8. Names are always written as UTF-8, but a reader is entitled to
+    /// read one as the archive format's own old encoding unless this says otherwise, so a name outside
+    /// plain text came back as different characters. It is set only where it changes anything, which
+    /// keeps a plain-text name byte for byte what it was.
+    /// </summary>
+    private const ushort NameIsUtf8 = 0x0800;
+
+    private static ushort FlagsFor(byte[] name)
+    {
+        foreach (byte b in name)
+            if (b >= 0x80)
+                return NameIsUtf8;
+        return 0;
+    }
 
     /// <summary>Adds a file. When <paramref name="compress"/> is true it stores whichever of DEFLATE or raw is smaller.</summary>
     public ZipBuilder Add(string name, ReadOnlySpan<byte> content, bool compress = true)
@@ -49,9 +66,10 @@ public sealed class ZipBuilder
         }
 
         uint offset = (uint)_output.Count;
-        WriteLocalHeader(nameBytes, crc, (uint)payload.Length, uncompressed, method);
+        ushort flags = FlagsFor(nameBytes);
+        WriteLocalHeader(nameBytes, crc, (uint)payload.Length, uncompressed, method, flags);
         _output.AddRange(payload);
-        _records.Add(new Record(nameBytes, crc, (uint)payload.Length, uncompressed, method, offset, false));
+        _records.Add(new Record(nameBytes, crc, (uint)payload.Length, uncompressed, method, offset, false, flags));
         return this;
     }
 
@@ -69,8 +87,9 @@ public sealed class ZipBuilder
         byte[] nameBytes = Encoding.UTF8.GetBytes(normalized);
 
         uint offset = (uint)_output.Count;
-        WriteLocalHeader(nameBytes, 0, 0, 0, 0);
-        _records.Add(new Record(nameBytes, 0, 0, 0, 0, offset, true));
+        ushort flags = FlagsFor(nameBytes);
+        WriteLocalHeader(nameBytes, 0, 0, 0, 0, flags);
+        _records.Add(new Record(nameBytes, 0, 0, 0, 0, offset, true, flags));
         return this;
     }
 
@@ -93,11 +112,11 @@ public sealed class ZipBuilder
         return [.. _output];
     }
 
-    private void WriteLocalHeader(byte[] name, uint crc, uint compressed, uint uncompressed, ushort method)
+    private void WriteLocalHeader(byte[] name, uint crc, uint compressed, uint uncompressed, ushort method, ushort flags)
     {
         WriteUInt32(LocalHeaderSignature);
         WriteUInt16(20);          // version needed
-        WriteUInt16(0);           // flags
+        WriteUInt16(flags);
         WriteUInt16(method);
         WriteUInt16(DosTime);
         WriteUInt16(DosDate);
@@ -114,7 +133,7 @@ public sealed class ZipBuilder
         WriteUInt32(CentralDirectorySignature);
         WriteUInt16(20);          // version made by
         WriteUInt16(20);          // version needed
-        WriteUInt16(0);           // flags
+        WriteUInt16(record.Flags);
         WriteUInt16(record.Method);
         WriteUInt16(DosTime);
         WriteUInt16(DosDate);

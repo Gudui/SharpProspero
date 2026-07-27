@@ -87,8 +87,9 @@ public sealed unsafe class SaveDataManager : IDisposable
     }
 
     /// <summary>
-    /// Lists the saves. With a <paramref name="titleId"/> it lists that title's saves; without one it
-    /// lists every save the user has.
+    /// Lists the saves. Without a <paramref name="titleId"/> it lists the running application's own,
+    /// not every save the user has: leaving it out does not widen the search, it is filled in with the
+    /// calling title. Another title's saves cannot be listed through here at all.
     /// </summary>
     /// <exception cref="ProsperoException">The search failed.</exception>
     public IReadOnlyList<SaveDataInfo> Enumerate(string? titleId = null)

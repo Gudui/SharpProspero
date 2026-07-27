@@ -9,10 +9,10 @@ namespace SharpProspero.Interop.Content;
 [StructLayout(LayoutKind.Sequential)]
 public struct SceContentExportInitParam2
 {
-    /// <summary>An allocator the service calls, or null for the default.</summary>
+    /// <summary>The allocator the service calls. Required; there is no default to fall back on.</summary>
     public nint MallocFunc;
 
-    /// <summary>The matching free function, or null for the default.</summary>
+    /// <summary>The matching release routine. Required, the same way.</summary>
     public nint FreeFunc;
 
     /// <summary>A pointer passed back to the allocator, or null.</summary>

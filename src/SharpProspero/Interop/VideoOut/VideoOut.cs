@@ -57,4 +57,49 @@ public static unsafe partial class VideoOut
     /// <summary>Returns a positive value while a submitted flip is still pending.</summary>
     [LibraryImport(Lib)]
     public static partial int sceVideoOutIsFlipPending(int handle);
+
+    /// <summary>Reads how far the output has got through the flips submitted to it.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceVideoOutGetFlipStatus(int handle, SceVideoOutFlipStatus* status);
+}
+
+/// <summary>
+/// How far the output has got through the flips submitted to it. The field that says which flip is on
+/// screen is <see cref="FlipArg"/>: it carries back the number handed to
+/// <see cref="VideoOut.sceVideoOutSubmitFlip"/>, so a caller that numbers its frames can tell which one
+/// is showing. Waiting a vertical blank tells nothing about this - a blank happens whether or not a
+/// flip retired.
+/// </summary>
+[StructLayout(LayoutKind.Sequential, Size = 128)]
+public struct SceVideoOutFlipStatus
+{
+    /// <summary>How many flips have happened since the output was opened. Offset 0.</summary>
+    public ulong Count;
+
+    /// <summary>When the last flip happened. Offset 8.</summary>
+    public ulong ProcessTime;
+
+    private ulong _reserved0;
+
+    /// <summary>The number submitted with the flip now on screen. Offset 24.</summary>
+    public long FlipArg;
+
+    private ulong _reserved1;
+
+    /// <summary>The counter reading when the last flip happened. Offset 40.</summary>
+    public ulong ProcessTimeCounter;
+
+    /// <summary>How many submitted flips are still waiting on the graphics processor. Offset 48.</summary>
+    public int GraphicsQueueCount;
+
+    /// <summary>How many submitted flips have not finished at all. Offset 52.</summary>
+    public int PendingCount;
+
+    /// <summary>Which buffer is on screen. Offset 56.</summary>
+    public int CurrentBuffer;
+
+    private uint _reserved2;
+
+    /// <summary>The counter reading when the last flip was asked for. Offset 64.</summary>
+    public ulong SubmitProcessTimeCounter;
 }

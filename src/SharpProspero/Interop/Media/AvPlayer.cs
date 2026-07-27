@@ -155,6 +155,38 @@ public struct AvPlayerStreamDetails
     [FieldOffset(0)] public AvPlayerVideoDetails Video;
 }
 
+/// <summary>What one of a source's streams carries.</summary>
+public enum AvPlayerStreamType
+{
+    /// <summary>Nothing the player recognises.</summary>
+    Unknown = 0,
+
+    /// <summary>Pictures.</summary>
+    Video = 1,
+
+    /// <summary>Sound.</summary>
+    Audio = 2,
+
+    /// <summary>Subtitles.</summary>
+    TimedText = 3,
+}
+
+/// <summary>One of a source's streams: what it carries, its details, and how long it runs.</summary>
+[StructLayout(LayoutKind.Sequential, Size = 32)]
+public struct AvPlayerStreamInfo
+{
+    /// <summary>What the stream carries. Offset 0.</summary>
+    public AvPlayerStreamType Type;
+
+    private uint _reserved;
+
+    /// <summary>The details, read according to <see cref="Type"/>. Offset 8.</summary>
+    public AvPlayerStreamDetails Details;
+
+    /// <summary>How long the stream runs, in milliseconds. Offset 24.</summary>
+    public ulong Duration;
+}
+
 /// <summary>One decoded frame: where the payload is, when it plays, and what it holds.</summary>
 [StructLayout(LayoutKind.Sequential, Size = 40)]
 public unsafe struct AvPlayerFrameInfo
@@ -191,6 +223,24 @@ public unsafe struct AvPlayerFrameInfoEx
 
     /// <summary>Video height in pixels. Offset 28 (details.video.height).</summary>
     [FieldOffset(28)] public uint VideoHeight;
+
+    /// <summary>
+    /// How many columns at the left of the framebuffer are not part of the picture. Offset 44
+    /// (details.video.cropLeftOffset).
+    /// </summary>
+    [FieldOffset(44)] public uint CropLeft;
+
+    /// <summary>
+    /// How many columns at the right of the framebuffer are not part of the picture, measured from the
+    /// pitch rather than the width - the padding that makes up the pitch is counted here too. Offset 48.
+    /// </summary>
+    [FieldOffset(48)] public uint CropRight;
+
+    /// <summary>How many rows at the top are not part of the picture. Offset 52.</summary>
+    [FieldOffset(52)] public uint CropTop;
+
+    /// <summary>How many rows at the bottom are not part of the picture. Offset 56.</summary>
+    [FieldOffset(56)] public uint CropBottom;
 
     /// <summary>Row pitch of the luma and chroma planes in bytes. Offset 60 (details.video.pitch).</summary>
     [FieldOffset(60)] public uint VideoPitch;
@@ -268,11 +318,21 @@ public static unsafe partial class AvPlayer
     [LibraryImport(Lib)]
     public static partial int sceAvPlayerJumpToTime(void* handle, ulong milliseconds);
 
-    /// <summary>How many streams the source carries.</summary>
+    /// <summary>
+    /// How many streams the source carries. A source is read on the player's own thread, so this
+    /// answers zero until that finishes, and again once playback has been stopped.
+    /// </summary>
     [LibraryImport(Lib)]
     public static partial int sceAvPlayerStreamCount(void* handle);
 
-    /// <summary>Turns a stream on.</summary>
+    /// <summary>Describes one of the source's streams.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceAvPlayerGetStreamInfo(void* handle, uint streamId, AvPlayerStreamInfo* info);
+
+    /// <summary>
+    /// Turns a stream on. Playback carries the streams that were turned on and no others, so a player
+    /// whose streams were all left off refuses to start rather than playing everything.
+    /// </summary>
     [LibraryImport(Lib)]
     public static partial int sceAvPlayerEnableStream(void* handle, uint streamId);
 

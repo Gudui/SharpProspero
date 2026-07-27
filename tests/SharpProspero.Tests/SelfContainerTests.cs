@@ -7,6 +7,7 @@ using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Text;
 using Xunit;
 
@@ -32,15 +33,21 @@ public sealed class SelfContainerTests
     [Fact]
     public void CheckIntegrity_MatchesAFreshlySignedContainer()
     {
-        // The digest covers the module in full, so the module is what it is checked against. A module
-        // that keeps records past its last stored segment cannot be rebuilt from the container alone.
+        // The digest covers the image the container carries, so a reader holding nothing but the
+        // container can arrive at it again.
         byte[] module = BuildModule();
         byte[] signed = SelfContainer.Sign(module);
-        SelfIntegrity integrity = SelfContainer.CheckIntegrity(signed, module);
+
+        SelfIntegrity integrity = SelfContainer.CheckIntegrity(signed);
         Assert.True(integrity.HasDigest);
         Assert.True(integrity.Matches);
         Assert.Equal(32, integrity.Stored.Length);
         Assert.Equal(integrity.Stored, integrity.Computed);
+
+        // And it is not a digest over the module the container was made from. A module holds its
+        // section table past the last stored segment and the container does not carry it, so the two
+        // differ for every real module - which is exactly what made the wrong one look right.
+        Assert.NotEqual(integrity.Stored, SHA256.HashData(module));
     }
 
     [Fact]

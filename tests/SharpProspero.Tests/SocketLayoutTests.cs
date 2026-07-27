@@ -32,10 +32,14 @@ public sealed class SocketLayoutTests
     [Fact]
     public void EpollEvent_MatchesTheHeader()
     {
-        // events at 0, then the union data at 8 after four bytes of padding.
-        Assert.Equal(16, Marshal.SizeOf<SceNetEpollEvent>());
+        // The events at 0, four bytes of padding, what the event is about at 8, and the cookie at 16 -
+        // twenty-four bytes in all. The identifier between the padding and the cookie is easy to miss:
+        // without it the cookie is read eight bytes early, so every cookie comes back as the wrong half
+        // of the record, and the poller filling a caller's array writes past the end of the last entry.
+        Assert.Equal(24, Marshal.SizeOf<SceNetEpollEvent>());
         Assert.Equal(0, (int)Marshal.OffsetOf<SceNetEpollEvent>(nameof(SceNetEpollEvent.Events)));
-        Assert.Equal(8, (int)Marshal.OffsetOf<SceNetEpollEvent>(nameof(SceNetEpollEvent.Data)));
+        Assert.Equal(8, (int)Marshal.OffsetOf<SceNetEpollEvent>(nameof(SceNetEpollEvent.Ident)));
+        Assert.Equal(16, (int)Marshal.OffsetOf<SceNetEpollEvent>(nameof(SceNetEpollEvent.Data)));
     }
 }
 

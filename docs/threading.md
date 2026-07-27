@@ -16,6 +16,16 @@ Anything the frame loop calls must return fast, because the display only advance
 - `WorkQueue` runs a stream of jobs on a small pool of shared threads, and `WorkItem<T>` is the result handle a pooled job hands back.
 - `Dispatcher` carries a result from a worker thread back to the frame thread, where it is safe to apply.
 
+Every thread `BackgroundOperation` and `WorkQueue` create takes the stack size the build sets in `ProsperoThreadStackBytes`, 1 MiB by default:
+
+```xml
+<PropertyGroup>
+  <ProsperoThreadStackBytes>1048576</ProsperoThreadStackBytes>
+</PropertyGroup>
+```
+
+Raise it for a job that recurses deeply or stack-allocates a large buffer. The value is a decimal count of bytes; anything else reads as zero and is dropped without a message.
+
 {: .warning }
 > A worker thread must not touch a drawing surface or most application state. Reading a byte array or decoding pixels off-thread is fine; assigning the decoded surface into your app is not — do that back on the frame thread through a `Dispatcher`.
 
@@ -62,7 +72,9 @@ queue.Enqueue(() => WriteCache(entry));
 queue.Enqueue(() => WriteCache(other));
 ```
 
-`WorkerCount` and `PendingCount` report the pool size and how many jobs are still waiting to start. `Dispose` stops taking new jobs, waits for the queued and running ones to finish, and joins the threads — so a `using` block drains the queue on the way out.
+`name` labels the worker threads: with two workers and `name: "io"` a thread list shows `io #0` and `io #1`. It defaults to null, which leaves the threads unnamed. `BackgroundOperation` and `BackgroundOperation<T>` take the same optional `name` and apply it verbatim to their single thread.
+
+`WorkerCount` and `PendingCount` report the pool size and how many jobs are still waiting to start. `Dispose` stops taking new jobs, waits for the queued and running ones to finish, and joins the threads — so a `using` block drains the queue on the way out. `Enqueue` after that throws `ObjectDisposedException`, so a shutdown path that still hands out work must post it before the queue goes down.
 
 A job that throws is caught so one bad job never takes a worker thread down. By default the exception is swallowed; set `ErrorHandler` to see it. The handler is called on a worker thread, so treat what it touches as shared state.
 

@@ -5,10 +5,11 @@ nav_order: 8
 
 # Audio
 
-Everything that makes or captures sound lives in `SharpProspero.Audio`: a stereo output device, a
-microphone, a mixer, a decoder for compressed files, and a tone generator for effects with no file at
-all. Open a device once, then push or pull one block of 16-bit samples per call. Each call blocks until
-its block plays or is captured, which paces the caller to the audio clock.
+`SharpProspero.Audio` holds what makes and captures sound: a stereo output device, a microphone, a mixer,
+a decoder for compressed files, and a tone generator for effects with no file at all. Two pieces live
+outside it: the AAC encoder in `SharpProspero.Platform` and the synthesis engine in
+`SharpProspero.Interop.Audio`. Open a device once, then push or pull one block of 16-bit samples per
+call. Each call blocks until its block plays or is captured, which paces the caller to the audio clock.
 
 The pieces compose into one path from a sound source to the speakers, with the mixer in the middle when
 more than one sound plays at once.
@@ -56,8 +57,12 @@ while (running)
 }
 ```
 
-`OpenStereo` takes a grain (samples per block, 256 to 2048) and a sample rate. `SetVolume` sets both
-channels from 0 to `AudioOut.Volume0Db`. Disposing closes the output.
+`OpenStereo` takes a grain, a sample rate and a user id. The grain is the frames per channel in one
+block, a whole multiple of 256 from 256 to 2048, so `SamplesPerBlock` is twice it for stereo and `Grain`
+reports the frame count. The main output takes 48000 or 192000 hertz and nothing else. Both arguments are
+checked at the call and raise `ArgumentOutOfRangeException`, so resample a clip recorded at any other
+rate before playing it. `SetVolume` sets both channels from 0 to `AudioOut.Volume0Db`. Disposing closes
+the output.
 
 {: .warning }
 > `Output` blocks until the block has played, so a full audio loop paces itself to the hardware. Run it
@@ -84,6 +89,11 @@ The `Waveform` values are `Sine`, `Square`, `Triangle`, `Sawtooth` and `Noise`. 
 returns a whole short effect as one buffer instead of filling block by block, and `RenderClip(seconds)`
 returns it as a `PcmAudio` ready for the mixer below. `Reset()` restarts the wave from the beginning of
 its cycle.
+
+`new ToneGenerator(sampleRate)` sets the rate every frequency is computed against, and `SampleRate`
+reports it back. It defaults to 48000, so pass 192000 when the output was opened at that rate —
+otherwise every tone plays two octaves high. `Render` and `RenderClip` size their buffers from the same
+rate.
 
 ## Clips and WAV files
 
@@ -122,8 +132,12 @@ mixer.Play(hit);
 VagAudio.Save("/data/effect.vag", clip);                 // encode a clip to VAG
 ```
 
-`VagAudio.Decode` and `VagAudio.Encode` work over an in-memory buffer. Convert assets ahead of time on
-your machine with the toolchain's `vag` command (`vag --input hit.wav --output hit.vag`, and back again),
+`VagAudio.Decode` and `VagAudio.Encode` work over an in-memory buffer, and `Encode` and `Save` take an
+optional name of up to 15 ASCII characters written into the clip header. Encoding closes a clip with the
+block per channel that marks where its sound stops, and decoding stops at that mark, so a decoded clip
+runs to its original length rounded up to a whole 28-sample block and no further: no full-scale step at
+the end, and nothing that plays on into whatever follows it. Convert assets ahead of time on your machine
+with the toolchain's `vag` command (`vag --input hit.wav --output hit.vag [--name hit]`, and back again),
 so an application ships small VAG effects and loads them straight to the mixer.
 
 ## Preparing a clip
@@ -142,17 +156,23 @@ clip = AudioClip.Normalize(AudioClip.Resample(clip, 48000)); // match the output
 `BiquadFilter` is a two-pole filter for tone shaping — soften a harsh effect, isolate a band, or remove a
 hum. Pick a shape (`LowPass`, `HighPass`, `BandPass`, `Notch`), a sample rate and a frequency; a higher
 `q` narrows the band. It keeps its state between calls, so a stream filters continuously. `Process` takes
-one sample; `ProcessBlock` filters a block of 16-bit samples in place (run one filter per channel for
-stereo). `Reset` clears the memory, and `Configure` re-tunes without building a new filter.
+one sample; `ProcessBlock` filters a block of 16-bit samples in place, all of them from one channel.
+`Reset` clears the memory, and `Configure` re-tunes without building a new filter. A mixer block
+interleaves left and right, so it needs one filter per channel, driven sample by sample with `Process`.
 
 ```csharp
-var lowpass = new BiquadFilter(BiquadType.LowPass, 48000, frequency: 1200);
+var left = new BiquadFilter(BiquadType.LowPass, 48000, frequency: 1200);
+var right = new BiquadFilter(BiquadType.LowPass, 48000, frequency: 1200);
 short[] block = new short[audio.SamplesPerBlock];
 while (running)
 {
     mixer.Mix(block);
-    lowpass.ProcessBlock(block); // muffle everything above 1.2 kHz
-    audio.Output(block);
+    for (int i = 0; i < block.Length; i += 2)   // left, right, left, right
+    {
+        block[i] = (short)Math.Clamp(MathF.Round(left.Process(block[i])), short.MinValue, short.MaxValue);
+        block[i + 1] = (short)Math.Clamp(MathF.Round(right.Process(block[i + 1])), short.MinValue, short.MaxValue);
+    }
+    audio.Output(block);                        // everything above 1.2 kHz is muffled
 }
 ```
 
@@ -163,6 +183,8 @@ the decay, holds while the note is down, then fades to silence over the release.
 `Level` each frame so it swells in and fades out instead of clicking on and off. Times are in seconds and
 `Sustain` is a level from 0 to 1. Call `NoteOn` when the key goes down and `NoteOff` when it lifts;
 `Process(deltaSeconds)` advances it and returns the new level, and `IsActive` is false once it goes idle.
+`Phase` reports which `EnvelopePhase` it is in — idle, attack, decay, sustain or release — and `Reset`
+silences it at once with no release, to steal a voice.
 
 ```csharp
 var env = new AdsrEnvelope { Attack = 0.02f, Decay = 0.1f, Sustain = 0.6f, Release = 0.3f };
@@ -207,8 +229,9 @@ call, each call blocking until a block is captured.
 
 ```csharp
 using SharpProspero.Audio;
+using SharpProspero.Platform;
 
-using var mic = AudioInDevice.OpenMicrophone(userId);
+using var mic = AudioInDevice.OpenMicrophone(Users.InitialUserId);
 short[] block = new short[mic.SamplesPerBlock];
 while (recording)
 {
@@ -217,9 +240,17 @@ while (recording)
 }
 ```
 
-`OpenMicrophone` defaults to a mono 16 kHz capture; pass `stereo: true` or a different grain and sample
-rate to change it. `IsSilent` reports when the input is muted at the hardware or by the system. Pair it
-with `WavAudio.Save` to write the captured blocks to a file.
+`Users.InitialUserId` is the user who started the application; pass an entry of `Users.LoggedInUserIds`
+to capture for another profile — see [System information](system.md).
+
+`OpenMicrophone` defaults to a mono 16 kHz capture with a 256-sample grain. The grain is
+`AudioIn.Grain128` or `AudioIn.Grain256`, the sample rate `AudioIn.Freq16k` or `AudioIn.Freq48k`, and
+`stereo: true` selects two channels. `type` picks the purpose: `AudioInType.General` for recording and
+analysis, `AudioInType.VoiceChat` for chat, with the system's voice processing applied. The open checks
+none of them, so a value the system refuses arrives as a `ProsperoException`. `Grain` and `Channels` give
+back what the capture opened with, and `SamplesPerBlock` is their product. `IsSilent` reports when the
+input is muted at the hardware or by the system. Pair it with `WavAudio.Save` to write the captured
+blocks to a file.
 
 ## Decode compressed audio
 
@@ -237,22 +268,41 @@ using SharpProspero.Modules;
 using SharpProspero.Interop.Sysmodule;
 using System.Runtime.InteropServices;
 
-SystemModule.Load(SystemModuleId.AudioDec);
+using var audioDec = SystemModule.Load(SystemModuleId.AudioDec);
 
 using var decoder = AudioDecoder.CreateMp3();
 using var device = AudioOutDevice.OpenStereo();
 
 byte[] pcm = new byte[decoder.SuggestedOutputSize];
+short[] block = new short[device.SamplesPerBlock];
+int pending = 0;                                     // samples held over from the last frame
 int read = 0;
 while (read < file.Length)
 {
     AudioDecodeResult step = decoder.Decode(file.AsSpan(read), pcm);
     if (step.BytesConsumed == 0)
-        break;                                   // needs more input than is left
+        break;                                       // needs more input than is left
     read += step.BytesConsumed;
-    device.Output(MemoryMarshal.Cast<byte, short>(pcm.AsSpan(0, step.BytesProduced)));
+
+    ReadOnlySpan<short> decoded = MemoryMarshal.Cast<byte, short>(pcm.AsSpan(0, step.BytesProduced));
+    while (pending + decoded.Length >= block.Length)  // push whole blocks
+    {
+        int take = block.Length - pending;
+        decoded[..take].CopyTo(block.AsSpan(pending));
+        device.Output(block);
+        decoded = decoded[take..];
+        pending = 0;
+    }
+    decoded.CopyTo(block.AsSpan(pending));            // the tail waits for the next frame
+    pending += decoded.Length;
 }
 ```
+
+One decode call produces several output blocks: a Layer III frame carries up to 1152 samples a channel,
+so 2304 interleaved samples against the 512 a 256-sample grain plays. `Output` plays exactly
+`SamplesPerBlock` samples and ignores anything past them, so hold what comes out and push whole blocks.
+The decoder writes at the rate the file carries, which the output takes only at 48000 or 192000;
+resample anything else first, as `AudioClip.Resample` does for a clip.
 
 | Member | What it does |
 |---|---|
@@ -261,7 +311,7 @@ while (read < file.Length)
 | `Decode(input, output)` | Decode one frame; returns the bytes consumed and produced. |
 | `Reset()` | Drop what the decoder carried between frames, after seeking. |
 | `SuggestedOutputSize` | A comfortable output buffer size for one call. |
-| `SampleRate`, `ChannelCount` | What the decoder reported, once a frame has been read. |
+| `SampleRate`, `ChannelCount` | What an Advanced Audio Coding decoder reported, once a frame has been read. A Layer III decoder leaves both at zero. |
 
 {: .important }
 > Load the codec's system module before creating a decoder, as the snippet does with
@@ -291,15 +341,36 @@ foreach (ReadOnlyMemory<byte> frame in frames)            // 1024 samples per ch
 output.Write(block, 0, encoder.Flush(block));             // any trailing block
 ```
 
-The bit rate runs from `M4aacEnc.MinBitRate` to `M4aacEnc.MaxBitRate` at a 48 kHz sample rate.
-`ClearContext` drops the encoder's inter-frame state to restart a stream, and disposing releases the
-encoder.
+The bit rate runs from `M4aacEnc.MinBitRate` (28000) to `M4aacEnc.MaxBitRate` (320000) bits per second,
+the channel count is 1 or 2, and the sample rate is 48 kHz; any other value raises
+`ArgumentOutOfRangeException`. `Create` also takes an input format, `M4aacEncInputFormat.Signed16` or
+`.Float`, and an output format defaulting to `M4aacEncOutputFormat.AacLcAdts`, so every frame carries its
+own header; `M4aacEncOutputFormat.AacLcRaw` omits it. `Channels` reports what the encoder was created
+for, `ClearContext` drops the inter-frame state to restart a stream, and disposing releases the encoder.
+`Create`, `Encode` and `Flush` throw `AudioEncodeException`, which carries the `ResultCode` and
+`InternalError` the encoder returned.
 
 ## Advanced synthesis and mixing
 
-For a custom multi-voice graph with effects, `SharpProspero.Interop.Audio.Ngs2` binds the synthesis and
-mixing engine directly: a system owns racks (sampler, submixer, reverb, mastering), a rack owns voices
-that play waveforms, and a render pass mixes them into an output buffer. It works in a buffer the caller
-sizes with the query-buffer-size calls; handles are opaque, and the option and command structures are
-built against the reset-option and query-info calls. Reach for it only when the `AudioMixer` above is not
-enough; the encoders' lower-level bindings (`M4aacEnc` and `At9Enc`) sit alongside it for finer control.
+For a custom voice-and-effects graph, `SharpProspero.Interop.Audio.Ngs2` binds the synthesis and mixing
+engine directly. A system owns racks, a rack owns voices that play waveforms, and a render pass mixes
+them into an output buffer. Build it in this order:
+
+| Call | What it does |
+|---|---|
+| `sceNgs2SystemResetOption` | Fills an option block with its defaults; change the fields you need, then pass it to the next two calls. |
+| `sceNgs2SystemQueryBufferSize` | Reports the memory a system with those options needs. |
+| `sceNgs2SystemCreate` | Creates the system in that buffer and returns its handle. |
+| `sceNgs2RackQueryBufferSize`, `sceNgs2RackCreate` | Add a rack of one kind from `Ngs2RackId` - `Sampler`, `Submixer`, `Reverb` or `Mastering`. |
+| `sceNgs2RackGetVoiceHandle` | Returns the handle of one voice in a rack, by index. |
+| `sceNgs2VoiceControl`, `sceNgs2VoiceRunCommands` | Apply a parameter list or a batch of commands to a voice, which is what starts it playing. |
+| `sceNgs2SystemRender` | Mixes every voice into the buffers a `SceNgs2RenderBufferInfo` describes. |
+
+Handles are opaque integers. The sized option and command structures are pointers the caller builds: the
+matching reset-option call gives each one its defaults, and the query-info calls report the fields and
+sizes. Set `SceNgs2RenderBufferInfo.WaveformType` to `Ngs2WaveformType.PcmI16L` and `NumChannels` to 2 so
+the rendered block goes straight to `AudioOutDevice.Output`.
+
+Reach for this only when the `AudioMixer` above is not enough. The encoders' lower-level bindings,
+`M4aacEnc` and `At9Enc`, sit alongside it for finer control, and the spatial-audio and audio-job bindings
+are listed on the [Bindings](bindings.md) page.

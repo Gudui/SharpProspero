@@ -48,7 +48,10 @@ public abstract class ProsperoApp(AppConfig? config = null) : IDisposable
     {
         InitializeServices();
 
-        _display = DisplayDevice.Open(Config.Width, Config.Height, Config.BufferCount, Config.UserId);
+        // The display is opened for the system rather than for a user. An application of this kind
+        // owns the whole output and the call takes only that, so passing a user here would refuse the
+        // open for anyone who set one; the user matters to the controller, which is where it is used.
+        _display = DisplayDevice.Open(Config.Width, Config.Height, Config.BufferCount, SceUser.System);
         if (Config.OpenGamePad)
         {
             try { _gamePad = GamePad.Open(Config.UserId); }

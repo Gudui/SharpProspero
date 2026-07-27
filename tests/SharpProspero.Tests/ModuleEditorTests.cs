@@ -34,13 +34,21 @@ public sealed class ModuleEditorTests
     }
 
     [Fact]
-    public void SetSdkVersion_ReturnsFalseWhenTheModuleRecordsNoVersion()
+    public void SetSdkVersion_RewritesTheVersionALibraryRecords()
     {
-        // A module produced by the linker records no version block, so there is nothing to gate the
-        // load and nothing to rewrite.
+        // A library records the version it was built at in the block it carries for the purpose, which
+        // is the block these tools read and rewrite. It used to carry an executable's block under an
+        // executable's header instead, which is not where anything looks, so the version read back as
+        // absent and there was nothing to rewrite.
         byte[] module = BuildModuleImportingVideoOut();
-        Assert.Equal(0u, ModuleEditor.Read(module).SdkVersion);
-        Assert.False(ModuleEditor.SetSdkVersion(module, 0x0900));
+        uint before = ModuleEditor.Read(module).SdkVersion;
+        Assert.NotEqual(0u, before);
+
+        // Only the major and minor gate the load, so those are rewritten and the patch is kept.
+        Assert.True(ModuleEditor.SetSdkVersion(module, 0x0900));
+        uint after = ModuleEditor.Read(module).SdkVersion;
+        Assert.Equal(0x0900u, after >> 16);
+        Assert.Equal(before & 0xFFFFu, after & 0xFFFFu);
     }
 
     [Fact]

@@ -27,8 +27,10 @@ foreach (ContentItem item in library.List(SceContentSearchContentType.Photo))
 ```
 
 A `ContentItem` carries the `ContentId`, `Type`, `MimeType`, `Title`, `Path`, `IconPath`, `Size`, and an
-`Available` flag. `Count` returns how many items of a type exist; `List` returns them. `Open` takes an
-optional working-heap size for larger libraries.
+`Available` flag. `Count` returns how many items of a type exist. `List` reads one page of them, sorted
+by title: it returns at most `ContentSearch.MaxLimit` rows (92) per call, so walk a larger library by
+raising its `offset` argument until a call returns fewer rows than it asked for. `Open` takes an optional
+working-heap size; the default, `ContentLibrary.DefaultMemorySize`, is 3 MB and suits ordinary listing.
 
 {: .note }
 > Listing needs the content-search permission. Without it, the first query raises a `ProsperoException`
@@ -41,12 +43,16 @@ library. Each field is typed.
 
 ```csharp
 using ContentMetadata meta = library.OpenMetadata(item.Path);
-string title = meta.GetText("title");
-long width = meta.GetInt("width");
-double duration = meta.GetFloat("duration");
+string title = meta.GetText(ContentSearch.FieldTitle);
+long width = meta.GetInt(ContentSearch.FieldWidth);
+double duration = meta.GetFloat(ContentSearch.FieldDuration);
 ```
 
-`GetText`, `GetInt`, `GetFloat`, and `GetTick` read a named field in the type it stores.
+`GetText`, `GetInt`, `GetFloat`, and `GetTick` read a named field in the type it stores, and
+`GetFieldInfo` reports that type and the field's byte size when you need to choose. `GetText` returns an
+empty string for a field that is not text. The names are constants on
+`SharpProspero.Interop.Content.ContentSearch`: `FieldTitle`, `FieldMimeType`, `FieldCreatedTime`,
+`FieldSize`, `FieldWidth`, `FieldHeight`, and `FieldDuration`.
 
 ## Exporting a file into the library
 
@@ -55,11 +61,12 @@ content library so it shows up alongside the user's own captures.
 
 ```csharp
 using var exporter = ContentExporter.Open();
-string entryId = exporter.Export("/data/render.png", "My Render", "image/png");
+string savedPath = exporter.Export("/data/render.png", "My Render", ContentExport.FormatImagePng);
 ```
 
-`Export` takes the source path, a display title, and the content type, and returns the identifier of the
-new library entry.
+`Export` takes the source path, a display title, and the media type, and returns the path the file
+was written to inside the library. `ContentExport` names the media types: `FormatImageJpeg`,
+`FormatImagePng`, `FormatImageGif`, `FormatVideoMp4`, and `FormatVideoWebm`.
 
 ## Deleting content
 
@@ -83,19 +90,26 @@ screenshot, or the last several seconds of output as a clip. This differs from e
 surface, which captures only what the application itself drew (see [Graphics](graphics.md)).
 
 ```csharp
+using SharpProspero.Platform;
+using SharpProspero.Interop.Share;
+
 using var share = ShareCapture.Start();
 share.CaptureScreenshot(ScreenshotFormat.Png4K);   // saved to the gallery in the background
 share.CaptureRecentClip(secondsBack: 30);          // save the last 30 seconds as a clip
 ```
 
 Captures are asynchronous: each call returns a request id and the image or clip is written in the
-background. `Block(ShareFeature.Screenshot)` prevents capture while a sensitive screen is shown, and
-`Allow` re-enables it; `SetScreenshotOverlay` adds a watermark to captured screenshots.
+background. `RecordingStatus` reports whether the 2K and 4K clip recorders are stopped, paused or
+running. `Block(ShareFeature.Screenshot)` prevents capture while a sensitive screen is shown, and
+`Allow` re-enables it. `SetScreenshotOverlay(filePath, marginX, marginY, origin)` lays an image over
+captured screenshots, anchored by a `ScreenshotOrigin` corner, edge or center point with the given
+margins. `Start` takes the service's heap size and helper-thread priority when the defaults do not suit.
 
 ## Live capture of the composited screen
 
-`SystemAvCapture` reads the live system-composited audio and video — the finished screen the whole
-system draws, together with its audio — for a recorder or a stream, rather than saving a gallery clip.
+`SystemAvCapture` reads the live system-composited video — the finished screen the whole system draws —
+for a recorder or a stream, rather than saving a gallery clip. It opens a video channel only; no audio
+reaches the caller through this type.
 
 {: .important }
 > This is an advanced, privileged surface. The capture service runs behind a system channel, and the
@@ -116,6 +130,17 @@ while (recording)
 }
 capture.Stop();
 ```
+
+`Avcap2VideoConfig.Create()` returns a cleared configuration. `Kind` selects the channel — a non-zero
+value opens the primary one — and `Mode` selects a sub-mode. The default mode reads no further fields.
+Modes one and two need `FrameAreaAddress` and `FrameAreaLength` to name direct memory that is already
+mapped and at least that large. Mode one also needs `AreaAddress` and `AreaLength`; mode two accepts that
+pair only when both are set or both are clear. The open call is refused when any of these is missing or
+short.
+
+`GetFramePitch` reports the row pitch of the captured frames, `IsVideoOpen` and `IsStarted` report state,
+and `CloseVideo` closes the channel while leaving the service running. The frame descriptor's leading
+words are a service-internal layout; `IsValid` is what a caller checks.
 
 For a recording path that needs no elevated privilege, save a gallery clip with `ShareCapture`, or
 encode the application's own frames with the image encoders on the [Graphics](graphics.md) page.

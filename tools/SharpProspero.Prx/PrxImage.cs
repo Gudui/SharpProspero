@@ -20,7 +20,7 @@ public sealed class PrxFormatException(string message) : Exception(message)
 /// </summary>
 public sealed class PrxImage
 {
-    // ELF and SCE constants.
+    // ELF and module-format constants.
     private const uint ElfMagic = 0x464C457FU; // 0x7F 'E' 'L' 'F'
     private const int EiClass64 = 2;
     private const int MachineX8664 = 0x3E;
@@ -29,15 +29,24 @@ public sealed class PrxImage
     private const uint PtDynamic = 0x00000002;
     private const uint PtSceDynlibData = 0x61000000;
     private const uint PtSceModuleParam = 0x61000002;
+    private const uint PtSceProcParam = 0x61000001;
 
-    /// <summary>The value that marks a module's parameter block as one this reader understands.</summary>
+    /// <summary>The value that marks a library's parameter block as one this reader understands.</summary>
     private const uint ModuleParamMagic = 0x3C13F4BF;
+
+    /// <summary>The same, for an application's block, which carries the version in the same place.</summary>
+    private const uint ProcParamMagic = 0x4942524F;
 
     private const long DtNeeded = 1;
     private const long DtStrTab = 5;
     private const long DtSymTab = 6;
     private const long DtStrSz = 10;
-    private const long DtSceExportLib = 0x61000013;
+    // What a module publishes: the library its exports belong to, and the module's own record. The
+    // reader also accepts the older tag for a library, because a module built for the earlier console
+    // uses it and is otherwise readable.
+    private const long DtSceExportLib = 0x61000047;
+    private const long DtSceExportLibLegacy = 0x61000013;
+    private const long DtSceModuleInfo = 0x61000043;
     private const long DtSceStrTab = 0x61000035;
     private const long DtSceStrSz = 0x61000037;
     private const long DtSceSymTab = 0x61000039;
@@ -50,7 +59,7 @@ public sealed class PrxImage
     private const string Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+-";
 
     private PrxImage(ushort type, string name, IReadOnlyList<PrxExport> exports, IReadOnlyList<string> needed,
-        ushort libraryVersion, uint sdkVersion)
+        ushort libraryVersion, uint sdkVersion, ushort moduleVersion, string exportLibraryName)
     {
         Type = type;
         ModuleName = name;
@@ -58,6 +67,8 @@ public sealed class PrxImage
         NeededModules = needed;
         LibraryVersion = libraryVersion;
         SdkVersion = sdkVersion;
+        ModuleVersion = moduleVersion;
+        ExportLibraryName = exportLibraryName;
     }
 
     /// <summary>The ELF <c>e_type</c> value of the module.</summary>
@@ -65,6 +76,18 @@ public sealed class PrxImage
 
     /// <summary>The module's own name from its info record, or empty when absent.</summary>
     public string ModuleName { get; }
+
+    /// <summary>
+    /// The version the module publishes itself at. An import of one of its names records the same
+    /// version, so a stub built for this module carries it rather than a default.
+    /// </summary>
+    public ushort ModuleVersion { get; }
+
+    /// <summary>
+    /// The library the module publishes its exports under, which is not always its own name. Empty
+    /// when the module publishes nothing.
+    /// </summary>
+    public string ExportLibraryName { get; }
 
     /// <summary>Every exported symbol.</summary>
     public IReadOnlyList<PrxExport> Exports { get; }
@@ -148,10 +171,12 @@ public sealed class PrxImage
 
         // Symbol and string tables are located one of two ways. Newer modules point standard
         // DT_SYMTAB/DT_STRTAB at a virtual address mapped through a load segment; others place a
-        // metadata blob and give offsets into it through the SCE tags. Resolve both to a file offset.
+        // metadata blob and give offsets into it through the module-format tags. Resolve both to a
+        // file offset.
         long stdSymVa = -1, stdStrVa = -1, sceSymOff = -1, sceStrOff = -1;
         long symTabSz = 0, strSz = 0;
         var exportLibRaw = new List<ulong>();
+        ulong? moduleInfoRaw = null;
         var neededRaw = new List<ulong>();
 
         for (long d = dynOffset; d + 16 <= dynOffset + dynSize && d + 16 <= data.Length; d += 16)
@@ -169,7 +194,9 @@ public sealed class PrxImage
                 case DtSceStrTab: sceStrOff = (long)val; break;
                 case DtSceStrSz: strSz = (long)val; break;
                 case DtSceSymTabSz: symTabSz = (long)val; break;
-                case DtSceExportLib: exportLibRaw.Add(val); break;
+                case DtSceExportLib:
+                case DtSceExportLibLegacy: exportLibRaw.Add(val); break;
+                case DtSceModuleInfo: moduleInfoRaw = val; break;
             }
         }
 
@@ -180,16 +207,31 @@ public sealed class PrxImage
         if (symTabSz <= 0)
             symTabSz = strBase > symBase ? strBase - symBase : data.Length - symBase;
 
+        // One entry per library the module publishes, keyed by the id its exports name, so a module
+        // publishing more than one resolves each export to the library it actually belongs to. The
+        // record packs nameOffset | (version << 32) | (id << 48).
         var exportLibs = new Dictionary<int, string>();
+        var exportLibVersions = new Dictionary<int, ushort>();
         ushort libraryVersion = 0x0001;
         foreach (ulong raw in exportLibRaw)
         {
             uint nameOff = (uint)(raw & 0xFFFFFFFF);
             int id = (int)((raw >> 48) & 0xFFFF);
-            // The record packs nameOffset | (version << 32) | (id << 48).
             libraryVersion = (ushort)((raw >> 32) & 0xFFFF);
             string name = ReadCString(data, strBase + nameOff, strSz);
             exportLibs[id] = name;
+            exportLibVersions[id] = libraryVersion;
+        }
+
+        // The module's own record, which is what a module is named by. It is not the same thing as the
+        // library its exports belong to: a module publishing several libraries names none of them
+        // after itself, and reading one where the other was meant fabricates the name.
+        string publishedModuleName = "";
+        ushort publishedModuleVersion = 0;
+        if (moduleInfoRaw is ulong info)
+        {
+            publishedModuleName = ReadCString(data, strBase + (uint)(info & 0xFFFFFFFF), strSz);
+            publishedModuleVersion = (ushort)((info >> 32) & 0xFFFF);
         }
 
         var exports = new List<PrxExport>();
@@ -225,8 +267,13 @@ public sealed class PrxImage
                 needed.Add(name);
         }
 
-        string moduleName = exportLibs.Count > 0 ? FirstValue(exportLibs) : "";
-        return new PrxImage(eType, moduleName, exports, needed, libraryVersion, sdkVersion);
+        // The module's own name when it records one, and the library its exports belong to otherwise,
+        // which is all an older module offers.
+        string moduleName = publishedModuleName.Length > 0
+            ? publishedModuleName
+            : exportLibs.Count > 0 ? FirstValue(exportLibs) : "";
+        return new PrxImage(eType, moduleName, exports, needed, libraryVersion, sdkVersion,
+            publishedModuleVersion, exportLibs.Count > 0 ? FirstValue(exportLibs) : "");
     }
 
     /// <summary>Finds the export whose identifier matches the identifier of <paramref name="symbolName"/>.</summary>
@@ -278,7 +325,7 @@ public sealed class PrxImage
             ulong pFilesz = BinaryPrimitives.ReadUInt64LittleEndian(data.AsSpan((int)ph + 0x20));
             if (pType == PtDynamic) { dynOffset = (long)pOffset; dynSize = (long)pFilesz; }
             else if (pType == PtSceDynlibData) { dynlibOffset = (long)pOffset; }
-            else if (pType == PtSceModuleParam) { paramOffset = (long)pOffset; paramSize = (long)pFilesz; }
+            else if (pType is PtSceModuleParam or PtSceProcParam) { paramOffset = (long)pOffset; paramSize = (long)pFilesz; }
             else if (pType == PtLoad) { loads.Add(new LoadSegment(pVaddr, pOffset, pFilesz)); }
         }
     }
@@ -313,7 +360,11 @@ public sealed class PrxImage
         // both sides in range.
         if (offset < 0 || size < 0x18 || offset > data.Length - 0x18)
             return 0;
-        if (BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan((int)offset + 8)) != ModuleParamMagic)
+        uint magic = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan((int)offset + 8));
+        // A library's block and an application's carry a different mark and the same shape; reading
+        // only the library's meant an application was reported as recording no version at all, which
+        // is what a check for a minimum version and an edit of it both then acted on.
+        if (magic != ModuleParamMagic && magic != ProcParamMagic)
             return 0;
         if (BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan((int)offset + 12)) < 2)
             return 0;

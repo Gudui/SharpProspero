@@ -36,7 +36,7 @@ public sealed class DecodedImage
     }
 
     /// <summary>
-    /// Decodes an image file, choosing the decoder from the file's signature (PNG, TGA, or BMP).
+    /// Decodes an image file, choosing the decoder from the file's signature (PNG, QOI, TGA, or BMP).
     /// </summary>
     /// <exception cref="ImageFormatException">The file is not a supported image, or is malformed.</exception>
     public static DecodedImage Load(string path)
@@ -47,7 +47,7 @@ public sealed class DecodedImage
     }
 
     /// <summary>
-    /// Decodes image bytes, choosing the decoder from the signature. Supports PNG, TGA, and BMP.
+    /// Decodes image bytes, choosing the decoder from the signature. Supports PNG, QOI, TGA, and BMP.
     /// </summary>
     /// <exception cref="ImageFormatException">The bytes are not a supported image, or are malformed.</exception>
     public static DecodedImage Decode(ReadOnlySpan<byte> bytes)

@@ -21,6 +21,23 @@ public enum KeyModifier : uint
     RightGui = 1u << 7,
 }
 
+/// <summary>The lock keys that are on.</summary>
+[Flags]
+public enum KeyboardLed : uint
+{
+    /// <summary>None of them.</summary>
+    None = 0,
+
+    /// <summary>The number pad types digits.</summary>
+    NumLock = 1u << 0,
+
+    /// <summary>Letters come out capital.</summary>
+    CapsLock = 1u << 1,
+
+    /// <summary>Scroll lock is on.</summary>
+    ScrollLock = 1u << 2,
+}
+
 /// <summary>
 /// One read of the keyboard. The C bool fields are one byte each, so they are held as bytes here and
 /// read through the accessor properties; a four-byte managed bool would shift every field after it.
@@ -38,8 +55,8 @@ public unsafe struct SceKeyboardData
     /// <summary>The number of valid entries in <see cref="KeyCode"/>.</summary>
     public int Length;
 
-    /// <summary>The state of the lock LEDs.</summary>
-    public uint Led;
+    /// <summary>The lock keys that are on.</summary>
+    public KeyboardLed Led;
 
     /// <summary>The modifier keys held, as a bitmask.</summary>
     public KeyModifier ModifierKey;

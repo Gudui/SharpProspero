@@ -35,13 +35,20 @@ public sealed unsafe class AudioOutDevice : IDisposable
 
     /// <summary>
     /// Opens the main output as a stereo 16-bit port. <paramref name="grain"/> is the samples per
-    /// block (256 to 2048), <paramref name="sampleRate"/> the sample rate in hertz.
+    /// block, in whole multiples of 256 from 256 to 2048; <paramref name="sampleRate"/> is the rate in
+    /// hertz, which the main output takes at 48000 or 192000 and at nothing else.
     /// </summary>
     /// <exception cref="ProsperoException">Opening the port failed.</exception>
     public static AudioOutDevice OpenStereo(uint grain = AudioOut.MinGrain, uint sampleRate = 48000, int userId = SceUser.System)
     {
-        if (grain < AudioOut.MinGrain || grain > AudioOut.MaxGrain)
-            throw new ArgumentOutOfRangeException(nameof(grain), "Grain must be between 256 and 2048 samples.");
+        // Both of these are refused by the output rather than adjusted, and the refusal arrives as a
+        // number from a call several layers down. Checking them here says which argument was wrong.
+        if (grain < AudioOut.MinGrain || grain > AudioOut.MaxGrain || grain % AudioOut.MinGrain != 0)
+            throw new ArgumentOutOfRangeException(nameof(grain),
+                "Grain must be a whole multiple of 256 samples, from 256 to 2048.");
+        if (sampleRate is not (48000 or 192000))
+            throw new ArgumentOutOfRangeException(nameof(sampleRate),
+                "The main output takes 48000 or 192000 hertz. Resample before playing anything else.");
 
         // Initialization is tolerant: a module may find the subsystem already started, which the
         // return code reports without preventing a port from opening.

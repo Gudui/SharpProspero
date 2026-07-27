@@ -32,6 +32,8 @@ public sealed unsafe class Mouse : IDisposable
 {
     private readonly int _handle;
     private bool _disposed;
+    // The last reading the device actually produced, so a still mouse keeps reporting what it holds.
+    private MouseState _last = new(false, MouseButton.None, 0, 0, 0, 0);
 
     private Mouse(int handle) => _handle = handle;
 
@@ -50,15 +52,28 @@ public sealed unsafe class Mouse : IDisposable
         return new Mouse(handle);
     }
 
-    /// <summary>Reads the latest movement and buttons.</summary>
+    /// <summary>
+    /// Reads the latest movement and buttons. A mouse that has not moved since the last read reports
+    /// its buttons unchanged and no movement, rather than reporting itself absent.
+    /// </summary>
     public MouseState Read()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         SceMouseData data;
         int read = Native.sceMouseRead(_handle, &data, 1);
-        if (read <= 0)
-            return new MouseState(false, MouseButton.None, 0, 0, 0, 0);
-        return new MouseState(data.Connected, data.Buttons, data.XAxis, data.YAxis, data.Wheel, data.Tilt);
+
+        // How many readings were available, not whether the mouse is there. None available means the
+        // mouse has not moved and no button has changed since the last read, which is what a still
+        // mouse does for as long as it is still - and it leaves the buffer untouched, so there is
+        // nothing to read out of it. Treating that as absent made the pointer vanish whenever it
+        // stopped, and made a held button read as released.
+        if (read == 0)
+            return _last with { DeltaX = 0, DeltaY = 0, Wheel = 0, Tilt = 0 };
+        if (read < 0)
+            return _last = new MouseState(false, MouseButton.None, 0, 0, 0, 0);
+
+        return _last = new MouseState(
+            data.Connected, data.Buttons, data.XAxis, data.YAxis, data.Wheel, data.Tilt);
     }
 
     /// <summary>Closes the mouse.</summary>

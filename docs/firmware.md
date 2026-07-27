@@ -66,6 +66,11 @@ if (library.TryGetFunction("sceExampleNewInThisVersion", out void* fn))
 }
 ```
 
+`HasExport` answers the same question as `TryGetFunction` without handing back a pointer.
+`FindMissingExports` reports which of a list of names the running system does not export — the check
+`FirmwareSupport.Validate` runs — and `RequireExports` is its throwing form, naming every missing symbol
+in one message. None of the three needs a registry entry; they check whatever library is open.
+
 The linked bindings are compatible for the same reason at build time: they are generated against the
 lowest supported version's export surface, and later systems keep that surface (an export is added
 across versions, not removed), so a module linked once loads across the whole range.
@@ -76,8 +81,11 @@ across versions, not removed), so a module linked once loads across the whole ra
 
 - **`SupportedRange`** — the versions the SDK supports (open-ended above the minimum).
 - **`LastValidatedOn`** — the most recent version the run-time surfaces were confirmed against.
-- **`DynamicLibraries`** — one entry per service resolved by name, carrying the library path, the
-  exports it needs, the version those were confirmed on, and a note on what it is for.
+- **`DynamicLibraries`** — the services whose export set is pinned here, each carrying the library path,
+  the exports it needs, the version those were confirmed on, and a note on what it is for. Today that is
+  the package installer and USB mass storage. The other services resolved by name — the transfer service,
+  the keycode converter, the capture service and the stored-settings service — carry no entry, so
+  `Validate` cannot check them ahead of time; each reports a missing export from its own `Open` instead.
 
 Because the entry lists exactly which exports a service needs, the running system can be checked
 against it before the service is used.
@@ -90,8 +98,10 @@ missing, so a feature can be refused with a specific reason rather than failing 
 into it.
 
 ```csharp
-FirmwareValidation result = FirmwareSupport.Validate(
-    FirmwareRegistry.FindLibrary("Package installer"));
+FirmwareValidation? result = FirmwareSupport.Validate("Package installer");
+
+if (result is null)
+    return;   // no service is registered under that name
 
 if (!result.IsValid)
 {
@@ -138,9 +148,6 @@ edited, and re-signed; an encrypted one is refused.
 
 ## Why there are no offsets here
 
-Everything above resolves by name. The registry deliberately holds no absolute addresses, because a
-userland application module reaches the system through exported functions and loadable modules — there
-is nothing to pin to a version-specific offset, and none is invented. Preferring the exported interface
-and resolving it dynamically is what makes one build run across the range. If a future feature ever
-needed a version-specific value, it would be added to the registry with the same provenance the library
-entries carry and validated the same way; until one does, the registry stays name-only.
+The `offsets` dump above prints an address for every export, but the registry records only names. A name
+is what the loader binds and what `Validate` checks; an address read from one system's module holds for
+that build alone.

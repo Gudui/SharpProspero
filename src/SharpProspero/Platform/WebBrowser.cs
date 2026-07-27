@@ -4,6 +4,7 @@
 using SharpProspero.Interop;
 using SharpProspero.Interop.Dialog;
 using SharpProspero.Interop.Sysmodule;
+using SharpProspero.Interop.UserService;
 using System;
 using System.Text;
 
@@ -29,12 +30,25 @@ public sealed unsafe class WebBrowser : IDisposable
     private WebBrowser() { }
 
     /// <summary>
-    /// Starts the browser subsystem and opens <paramref name="url"/> for <paramref name="userId"/>.
+    /// Starts the browser subsystem and opens <paramref name="url"/> for <paramref name="userId"/>,
+    /// or for the user the machine started with when none is named.
     /// </summary>
     /// <exception cref="ProsperoException">The subsystem or the dialog refused to start.</exception>
-    public static WebBrowser Open(string url, int userId = SceUser.System)
+    public static WebBrowser Open(string url, int userId = int.MinValue)
     {
         ArgumentException.ThrowIfNullOrEmpty(url);
+
+        // The browser wants a signed-in user and checks the id against the list of them. Neither the
+        // system's own id nor the one meaning everyone is in that list, so defaulting to either was a
+        // dialog that always refused to open. Left unnamed, the user the machine started with is asked
+        // for, the way the text-entry dialog beside this already does.
+        if (userId == int.MinValue)
+        {
+            int initial;
+            SceResult.ThrowIfFailed(UserService.sceUserServiceGetInitialUser(&initial),
+                nameof(UserService.sceUserServiceGetInitialUser));
+            userId = initial;
+        }
 
         // The browser sits on the shared dialog subsystem and its own loadable module. Both come up
         // before its own initialize, in this order, or that initialize fails.

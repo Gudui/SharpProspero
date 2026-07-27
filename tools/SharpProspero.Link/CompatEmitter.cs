@@ -37,6 +37,7 @@ public static class CompatEmitter
 
     private const uint RPlt32 = 4;     // R_X86_64_PLT32
     private const uint RTpOff32 = 23;  // R_X86_64_TPOFF32 (local-exec thread-local offset)
+    private const uint RTlsGd = 19;    // R_X86_64_TLSGD (a pair of table slots, resolved as the module loads)
     private const uint RAbs64 = 1;     // R_X86_64_64 (a variable holding an address)
 
     private const byte TypeFunc = 2;
@@ -56,11 +57,44 @@ public static class CompatEmitter
 
     /// <summary>
     /// One defined function: its name, binding, code bytes, tail-call relocations, and an optional
-    /// thread-local reference (the offset of a local-exec address load and the thread-local it names).
+    /// thread-local reference (where its address load starts, which register the address lands in, and
+    /// the thread-local it names).
     /// </summary>
     private readonly record struct CompatFunc(
         string Name, bool Weak, byte[] Code, (int Offset, string Target)[] Relocs,
-        (int Offset, string Symbol)? Tls = null);
+        (int Offset, int Register, string Symbol)? Tls = null);
+
+    // Register numbers, for the address loads below.
+    private const int RegRax = 0, RegRdx = 2, RegRbx = 3, RegRdi = 7;
+
+    /// <summary>The helper a library asks where one of its thread-locals ended up.</summary>
+    public const string TlsGetAddrSymbol = "__tls_get_addr";
+
+    // How many bytes an address load takes, and where in it the distance sits. The two forms below are
+    // the same length on purpose: which one is written is settled after the code around it is laid out,
+    // so a difference in length would move everything after it.
+    private const int TlsLoadSize = 19;
+    private const int TlsLoadDisp = 15;
+
+    // Loading the address of a thread-local, the way an application does it: read the thread pointer,
+    // then add a distance settled when the module was linked. The three leading bytes do nothing and
+    // are there to make this the same length as the other form.
+    private static byte[] TlsLoad(int register) =>
+    [
+        0x0F, 0x1F, 0x00,                                 // nop
+        0x64, 0x48, 0x8B, 0x04, 0x25, 0, 0, 0, 0,         // mov rax, fs:[0]        (this thread)
+        0x48, 0x8D, (byte)(0x80 | (register << 3)), 0, 0, 0, 0,  // lea reg, [rax + this thread's word]
+    ];
+
+    // The same, the way a library does it: hand the helper a pair of table slots saying which module
+    // owns the block and where in it the variable sits, and take the answer. Where the block ends up is
+    // only settled once the module is loaded, so a library cannot write a distance in advance.
+    private static byte[] TlsLoadThroughHelper(int register) =>
+    [
+        0x66, 0x48, 0x8D, 0x3D, 0, 0, 0, 0,               // lea rdi, [rip + the pair]
+        0x66, 0x66, 0x48, 0xE8, 0, 0, 0, 0,               // call the helper
+        0x48, 0x89, (byte)(0xC0 | register),              // mov reg, rax
+    ];
 
     /// <summary>
     /// One defined pointer-sized variable: its name and the name whose address it holds, or null for a
@@ -94,14 +128,48 @@ public static class CompatEmitter
     private static CompatFunc Value(string name, int value) => new(name, false, RetImm(value), []);
     private static CompatFunc Zero(string name) => new(name, false, RetZero(), []);
     private static CompatFunc WeakZero(string name) => new(name, true, RetZero(), []);
-    private static CompatFunc Refuse(string name) => new(name, false, RetImm(-1), []);
+
+    /// <summary>
+    /// The number a routine with no counterpart here answers with, as the runtime counts them.
+    /// </summary>
+    private const byte NoSuchRoutine = 38;              // "not implemented", in the runtime's numbering
+
+    /// <summary>
+    /// A refusal says why it refused. Callers do not merely test the result: many wrap the call in a
+    /// loop that retries for as long as the number says the call was interrupted, and a refusal that
+    /// leaves that number alone inherits whatever the last call to anything left there. If that
+    /// happened to be the interrupted one, the loop retries a call whose answer can never change, and
+    /// does so without a system call to slow it down - a module that started, stopped responding, and
+    /// burns a processor doing it. Saying "there is no such routine" ends every one of those loops.
+    /// </summary>
+    private static CompatFunc Refuse(string name) => Refusal(name, [0xB8, 0xFF, 0xFF, 0xFF, 0xFF]);
 
     // A refusal that fills the whole register rather than its lower half. An entry declared to return a
     // pointer or a 64-bit count is compared over all 64 bits by its caller, and writing only the lower
     // half leaves the upper half as it was - zero, on the path that reaches these - so the result reads
     // as 0x00000000FFFFFFFF, a large positive number, and the caller takes the refusal for a success.
     private static CompatFunc RefuseWide(string name) =>
-        new(name, false, [0x48, 0xC7, 0xC0, 0xFF, 0xFF, 0xFF, 0xFF, 0xC3], []);   // mov rax,-1 ; ret
+        Refusal(name, [0x48, 0xC7, 0xC0, 0xFF, 0xFF, 0xFF, 0xFF]);   // mov rax, -1
+
+    /// <summary>
+    /// A refusal that answers nothing rather than -1, and still says why. An entry declared to return
+    /// a pointer reports failure by answering none, so it needs the same reason behind it: a caller
+    /// that tells "there is nothing" from "something went wrong" tells them apart by that number, and
+    /// one of these sits inside a retry loop like the rest.
+    /// </summary>
+    private static CompatFunc RefuseNull(string name) => Refusal(name, [0x31, 0xC0]);   // xor eax, eax
+
+    private static CompatFunc Refusal(string name, byte[] answer)
+    {
+        var a = new Asm();
+        a.Emit(0x55, 0x48, 0x89, 0xE5);                     // push rbp ; mov rbp, rsp
+        a.Emit(0xBF, NoSuchRoutine, 0x00, 0x00, 0x00);      // mov edi, there is no such routine
+        a.Call(SetErrnoSymbol);
+        a.Emit(answer);
+        a.Emit(0x5D, 0xC3);                                 // pop rbp ; ret
+        (byte[] code, (int, string)[] relocs) = a.Build();
+        return new(name, false, code, relocs);
+    }
 
     /// <summary>
     /// The start of the image, at link-time address zero. Reached instruction-relative it reads back
@@ -121,6 +189,13 @@ public static class CompatEmitter
     /// none. The unwinder finds it through the header this name stands for.
     /// </summary>
     public const string FrameIndexSymbol = "__GNU_EH_FRAME_HDR";
+
+    /// <summary>
+    /// The end of that index. The unwinder is handed the index as a range, and measures it by the
+    /// length in the header rather than by reading a length out of the index itself, so a header that
+    /// names the start and leaves the length at zero describes an empty range and is refused.
+    /// </summary>
+    public const string FrameIndexEndSymbol = "__GNU_EH_FRAME_HDR_END";
 
     /// <summary>
     /// The marker the C module publishes to record that a module was linked against it. The
@@ -203,12 +278,26 @@ public static class CompatEmitter
 
         // The second covers the frame index. A module built without one names the image start for it,
         // and there is then nothing to describe, so only the first header is offered.
+        //
+        // Its length matters as much as its address. The reader is handed the index as a range - it
+        // takes the start from this header and the end from the start plus the length in this same
+        // header, because the index does not record its own size - and a range whose two ends meet is
+        // refused before a byte of it is read. Leaving the length at zero therefore reported an index
+        // that exists and is empty, which is worse than reporting none at all: the reader stopped at
+        // the refusal without recording where the frame information was, so every later walk up the
+        // stack found no method for the address it was standing on and ended the module. Both lengths
+        // are written, though only the one in memory is read, so the header does not contradict itself.
         a.Emit(0xC7, 0x44, 0x24, PhdrSize); a.Emit32(unchecked((int)PtGnuEhFrame));
         a.Emit(0xC7, 0x44, 0x24, PhdrSize + 4); a.Emit32(4);        // read
         a.Emit(0x48, 0x8D, 0x05, 0, 0, 0, 0);               // lea rax, [rip + the frame index]
         a.Emit(0x48, 0x29, 0xC8);                           // sub rax, rcx
         a.Emit(0x48, 0x85, 0xC0); a.JumpIfEqual("codeonly"); // test rax, rax
         a.Emit(0x48, 0x89, 0x44, 0x24, PhdrSize + 16);      // mov [rsp+.. +16], rax  (its address)
+        a.Emit(0x48, 0x8D, 0x05, 0, 0, 0, 0);               // lea rax, [rip + the end of the index]
+        a.Emit(0x48, 0x29, 0xC8);                           // sub rax, rcx   (measured from the image)
+        a.Emit(0x48, 0x2B, 0x44, 0x24, PhdrSize + 16);      // sub rax, its address (how far it reaches)
+        a.Emit(0x48, 0x89, 0x44, 0x24, PhdrSize + 32);      // mov [rsp+.. +32], rax  (stored length)
+        a.Emit(0x48, 0x89, 0x44, 0x24, PhdrSize + 40);      // mov [rsp+.. +40], rax  (length in memory)
         a.Emit(0x66, 0xC7, 0x84, 0x24); a.Emit32(InfoAt + 24); a.Emit(0x02, 0x00);   // two headers
         a.JumpIfAlways("described");
         a.Mark("codeonly");
@@ -236,92 +325,66 @@ public static class CompatEmitter
             .Where(i => code[i] == 0x48 && code[i + 1] == 0x8D
                      && (code[i + 2] == 0x05 || code[i + 2] == 0x0D)
                      && code[i + 3] == 0 && code[i + 4] == 0 && code[i + 5] == 0 && code[i + 6] == 0)];
-        if (leas.Length != 4)
-            throw new ElfLinkException("The module description does not name four addresses.");
+        if (leas.Length != 5)
+            throw new ElfLinkException("The module description does not name five addresses.");
         return new("dl_iterate_phdr", false, code,
         [
             .. relocs,
             (leas[0] + 3, TextEndSymbol),
             (leas[1] + 3, ModuleBaseSymbol),
             (leas[2] + 3, FrameIndexSymbol),
-            (leas[3] + 3, ModuleNameSymbol),
+            (leas[3] + 3, FrameIndexEndSymbol),
+            (leas[4] + 3, ModuleNameSymbol),
         ]);
     }
 
     // mmap(addr, len, prot, flags, fd, offset): the anonymous private mapping the runtime reserves its
-    // heap with. This platform has no mmap of its own - memory comes from the flexible pool, which is
-    // reached by handing an address slot in and reading back where the range was placed. The slot
-    // starts as the address the caller named, or zero to let the system choose; naming one asks for it
-    // to be held there.
+    // heap with. This platform has no mmap of its own - a range is asked for by handing an address slot
+    // in and reading back where it was placed. The slot starts as the address the caller named, or zero
+    // to let the system choose.
     //
-    // The protection bits agree with the ordinary ones except for write: here read-and-write is a
-    // single bit rather than read plus write, so a request for both is folded onto it. Everything else
-    // - none, read, read-execute, all - already lines up.
-    // Holding a range at a named address, and the protection bits. Read and write is a single bit
-    // here rather than read plus write, so a request for both folds onto it; none, read, read-execute
+    // Which call answers depends on what was asked for. A request for no access wants addresses and
+    // nothing behind them, and there is a call that does exactly that; a request for access wants
+    // memory out of the flexible budget, which is another. Both take the same slot.
+    //
+    // Pinning a range to a named address, and the protection bits: read-and-write is a single bit here
+    // rather than read plus write, so a request for both folds onto it, and none, read, read-execute
     // and all already line up.
-    // Holding a range at a named address, refusing rather than replacing one that is already held, and
-    // the protection bits.
     private const byte MapFixed = 0x10, ProtReadWrite = 0x02, PosixReadWrite = 0x03;
-    // Two bits of the range report. The fourth says the range is pool room; the fifth says it has been
-    // filled. The fifth alone does not mean "memory is behind this address" - for a range that is
-    // neither pool room nor machine memory it reports whether the range is pinned, and ordinary memory
-    // never is - so the two are only meaningful together.
-    private const byte PooledFlag = 0x08, CommittedFlag = 0x10;
-    // The memory kind a processor-visible range is committed as.
-    private const byte CpuMemoryType = 11;
+    // The kinds of range that already have something behind them: memory taken from the flexible
+    // budget, memory taken from the machine directly, a thread stack, and pool room. A range that is
+    // none of these and carries no protection at all is one whose addresses are held and nothing more.
+    private const byte RangeIsBacked = 0x0F;
 
     private static CompatFunc Mmap()
     {
         var a = new Asm();
         a.Emit(0x55, 0x48, 0x89, 0xE5);                     // push rbp ; mov rbp, rsp
         a.Emit(0x48, 0x83, 0xEC, 0x10);                     // sub rsp, 16   (the address slot)
-        // A length is rounded up to a whole page. Asking for memory hands back whole pages either way,
-        // and the platform's call refuses a length that is not a multiple of one - so a request for a
-        // few hundred bytes, which the ordinary call answers with a page, would be refused outright.
+        // A length is rounded up to a whole page. Asking for memory hands back whole pages anyway, and
+        // both of the platform's calls refuse a length that is not a multiple of one - so a request for
+        // a few hundred bytes, which the ordinary call answers with a page, would be refused outright.
         a.Emit(0x48, 0x81, 0xC6, 0xFF, 0x3F, 0x00, 0x00);   // add rsi, page - 1
         a.Emit(0x48, 0x81, 0xE6, 0x00, 0xC0, 0xFF, 0xFF);   // and rsi, -page
         a.Emit(0x48, 0x89, 0x3C, 0x24);                     // mov [rsp], rdi
-        // The caller's own flags are kept before the register holding them is reused: whether the
-        // caller pinned the range is what separates the two requests that ask for no access, and it can
-        // only be read from that word. Both sides spell the pinning bit the same.
-        a.Emit(0x41, 0x89, 0xCA);                           // mov r10d, ecx
-        a.Emit(0x31, 0xC9);                                 // xor ecx, ecx  (place it anywhere)
-        a.Emit(0x48, 0x85, 0xFF); a.JumpIfEqual("placed");   // test rdi, rdi
-        a.Emit(0xB9, MapFixed, 0x00, 0x00, 0x00);           // mov ecx, fixed
-        a.Mark("placed");
+        // Of the caller's flags only the pinning bit carries over, and both sides spell it the same. An
+        // address handed in without it is a suggestion on either side - the platform reads it as where
+        // to start looking for room - so passing it through unchanged keeps a suggestion from hardening
+        // into a demand that fails when those addresses are taken.
+        a.Emit(0x83, 0xE1, MapFixed);                       // and ecx, pinned
 
-        // Asking for no access is asking for room, not for memory: backing the whole of it would spend
-        // the pool on a range nothing has written to yet. There are two ways to hold room and they are
-        // not interchangeable. One holds addresses and nothing else - it asks for no protection at all
-        // and marks the range as holding nothing - and a range held that way can never have memory put
-        // behind it afterwards. The other holds the addresses **as pool room**: it asks for every
-        // protection and leaves the range attached to the pool, which is what lets memory be committed
-        // to it later, one piece at a time. This takes the second. It reads the address as a value and
-        // writes back where the range landed through a slot handed in last, so the address stays in
-        // place and the slot goes in the fifth argument.
+        // Asking for no access is asking for room, not for memory: putting memory behind the whole of
+        // it would spend the budget on a range nothing has written to yet. The platform holds addresses
+        // and nothing else for exactly this, and a range held that way is filled afterwards by mapping
+        // over it pinned, which is what the protection change below does the first time the range is
+        // written to. The same call also answers the opposite request - a range pinned to addresses the
+        // caller already holds is memory being given back - because mapping room over it pinned
+        // replaces what was there, releasing the memory and leaving the addresses held.
         a.Emit(0x85, 0xD2); a.JumpIfNotEqual("access");      // test edx, edx
-
-        // Asking for no access is two different requests, and only the caller's flags tell them apart.
-        // A range asked for without pinning it is a request for room, whether or not an address is
-        // suggested. A range **pinned to an address the caller already holds** is the opposite: the
-        // caller is giving the memory behind that range back and keeping the range itself. Answering
-        // the second with a fresh reservation releases nothing and cannot even succeed, since those
-        // addresses are already taken - so the memory stayed held for as long as the module ran, and a
-        // collector that gives memory back and asks for it again a moment later ran the machine out.
-        // Giving it back is its own call, and it leaves the reservation to be filled again. Its flags
-        // argument is the register just tested, which is zero.
-        a.Emit(0x41, 0xF6, 0xC2, MapFixed); a.JumpIfEqual("reserve");   // test r10b, pinned
-        a.Call("sceKernelMemoryPoolDecommit");
-        a.Emit(0x85, 0xC0); a.JumpIfNotEqual("refuse");     // test eax, eax
-        a.Emit(0x48, 0x8B, 0x04, 0x24);                     // mov rax, [rsp]  (still the caller's range)
-        a.Emit(0xC9, 0xC3);                                 // leave ; ret
-
-        // No address named, so this is a request for room rather than a release.
-        a.Mark("reserve");
-        a.Emit(0x31, 0xD2);                                 // xor edx, edx  (any alignment)
-        a.Emit(0x49, 0x89, 0xE0);                           // mov r8, rsp   (where it landed)
-        a.Call("sceKernelMemoryPoolReserve");
+        a.Emit(0x48, 0x89, 0xE7);                           // mov rdi, rsp  (the address slot)
+        a.Emit(0x89, 0xCA);                                 // mov edx, ecx  (pinned, or not)
+        a.Emit(0x31, 0xC9);                                 // xor ecx, ecx  (any alignment)
+        a.Call("sceKernelReserveVirtualRange");
         a.JumpIfAlways("settle");
 
         a.Mark("access");
@@ -330,6 +393,16 @@ public static class CompatEmitter
         a.JumpIfNotEqual("mapit");
         a.Emit(0xBA, ProtReadWrite, 0x00, 0x00, 0x00);      // mov edx, read-write
         a.Mark("mapit");
+        // The mapping call reads two registers past the ones it documents, and coming from the ordinary
+        // call both still hold that call's own arguments. The first decides whether the request is
+        // refused outright: anything above three and it is, and what sits there is the caller's file,
+        // which is -1 for a mapping backed by no file at all - so every request for memory was turned
+        // away before it reached the platform, and nothing said so. The second is read whenever no
+        // address was named, and a value in one particular range moves the mapping to a region kept for
+        // the system; what sits there is the caller's offset, which is zero for these mappings, but
+        // that is the caller's business to get right and not something to lean on. Both are cleared.
+        a.Emit(0x45, 0x31, 0xC0);                           // xor r8d, r8d
+        a.Emit(0x45, 0x31, 0xC9);                           // xor r9d, r9d
         a.Call("sceKernelMapFlexibleMemory");
 
         a.Mark("settle");
@@ -360,8 +433,8 @@ public static class CompatEmitter
         var a = new Asm();
         a.Emit(0x55, 0x48, 0x89, 0xE5);                     // push rbp ; mov rbp, rsp
         a.Emit(0x48, 0x83, 0xEC, 0x70);                     // sub rsp, 112
-        // The frame holds the three arguments at [rbp-8], [rbp-16] and [rbp-24], the range report from
-        // [rbp-0x60] to [rbp-0x18], and the address slot the mapping call reads and writes at [rsp].
+        // The frame holds the three arguments at [rbp-8], [rbp-16] and [rbp-24], and the range report
+        // from [rbp-0x60] up to where the arguments start.
         // A protection change covers whole pages: the address moves back to the start of its page and
         // the length grows by as much, then rounds up. The platform's call refuses anything else, and
         // the runtime changes protection on ranges it sized in objects rather than in pages.
@@ -373,6 +446,7 @@ public static class CompatEmitter
         a.Emit(0x48, 0x81, 0xE6, 0x00, 0xC0, 0xFF, 0xFF);   // and rsi, -page
         a.Emit(0x48, 0x89, 0x7D, 0xF8);                     // mov [rbp-8], rdi   (addr)
         a.Emit(0x48, 0x89, 0x75, 0xF0);                     // mov [rbp-16], rsi  (len)
+
         a.Emit(0x83, 0xFA, PosixReadWrite);                 // cmp edx, read|write
         a.JumpIfNotEqual("kept");
         a.Emit(0xBA, ProtReadWrite, 0x00, 0x00, 0x00);      // mov edx, read-write
@@ -380,75 +454,44 @@ public static class CompatEmitter
         a.Emit(0x89, 0x55, 0xE8);                           // mov [rbp-24], edx  (prot)
 
         // Ask what is at that address rather than guess. A range can be held without memory behind it,
-        // and the two cases need opposite calls, so the report is what decides. Its committed bit is the
-        // fifth in the word of flags at offset 0x20, and the whole report is 0x48 bytes.
+        // and the two cases need opposite calls, so the report is what decides. Its protection sits at
+        // offset 0x18 and the word saying what kind of range it is at 0x20; the whole report is 0x48
+        // bytes, which is what the call is told so it fills all of it.
         a.Emit(0x48, 0x8B, 0x7D, 0xF8);                     // mov rdi, [rbp-8]
         a.Emit(0x31, 0xF6);                                 // xor esi, esi   (no search)
         a.Emit(0x48, 0x8D, 0x55, 0xA0);                     // lea rdx, [rbp-96]
         a.Emit(0xB9, 0x48, 0x00, 0x00, 0x00);               // mov ecx, 0x48
         a.Call("sceKernelVirtualQuery");
-        a.Emit(0x85, 0xC0); a.JumpIfNotEqual("nothing");    // no report at all: nothing is there
-        // Two bits decide this, not one. The committed bit does not mean "memory is behind this
-        // address" for every kind of range: for anything that is not pool room or machine memory it
-        // reports whether the range is pinned, which ordinary memory never is. Reading it alone calls a
-        // live range empty and the step below would then place fresh memory over it, losing what it
-        // held. Only a range that is pool room *and* not yet filled takes that step.
+        // No report came back, so nothing here knows what that range is. The one thing that must not
+        // happen then is placing memory over it: a mapping pinned to an address replaces whatever was
+        // there, and if the range did hold something - this module's own image, say - it is gone and
+        // the fault lands somewhere else entirely. Ask for the protection change instead and let the
+        // platform refuse it if the range is not real.
+        a.Emit(0x85, 0xC0); a.JumpIfNotEqual("keepit");
+        // Two things have to agree before fresh memory is placed over a range, because placing it is
+        // destructive: a mapping pinned to an address replaces whatever was there, so misreading a live
+        // range as empty would throw away what it held - this module's own data, say, whose protection
+        // the runtime changes while it starts. A range whose addresses are merely held carries no
+        // protection at all *and* is none of the kinds that have something behind them. Anything else
+        // is left to the protection change, which is harmless when the guess is wrong either way.
+        a.Emit(0x8B, 0x45, 0xB8);                           // mov eax, [rbp-72]   (protection)
+        a.Emit(0x85, 0xC0); a.JumpIfNotEqual("keepit");     // test eax, eax
         a.Emit(0x0F, 0xB6, 0x45, 0xC0);                     // movzbl [rbp-64], eax
-        a.Emit(0x83, 0xE0, PooledFlag | CommittedFlag);     // and eax, pooled|committed
-        a.Emit(0x83, 0xF8, PooledFlag);                     // cmp eax, pooled
+        a.Emit(0xA8, RangeIsBacked);                        // test al, backed
         a.JumpIfNotEqual("keepit");
 
-        // Nothing behind that range yet, so put memory behind it. A range that was reserved is filled
-        // by committing to it, which is how a reservation is meant to be backed and the step the
-        // protection call cannot do: that one reports success over a reservation and leaves it as empty
-        // as it found it.
-        a.Mark("take");
-        a.Emit(0x48, 0x8B, 0x7D, 0xF8);                     // mov rdi, [rbp-8]
-        a.Emit(0x48, 0x8B, 0x75, 0xF0);                     // mov rsi, [rbp-16]
-        a.Emit(0xBA, CpuMemoryType, 0x00, 0x00, 0x00);      // mov edx, processor memory
-        a.Emit(0x8B, 0x4D, 0xE8);                           // mov ecx, [rbp-24]
-        a.Emit(0x45, 0x31, 0xC0);                           // xor r8d, r8d
-        a.Call("sceKernelMemoryPoolCommit");
-        a.Emit(0x85, 0xC0); a.JumpIfEqual("done");          // test eax, eax
-
-        // The pool starts empty - it is opened the first time room is held and holds nothing until
-        // memory is put into it - so a commit is refused until it has some. Grow it by what this call
-        // needs, out of the memory the machine has, and commit again. Growing is what makes the memory
-        // available; committing is what puts it behind these addresses. The amount is rounded up to the
-        // size the machine's memory is carved in, which is larger than a page.
-        a.Call("sceKernelGetDirectMemorySize");
-        a.Emit(0x48, 0x89, 0xC6);                           // mov rsi, rax  (search to the end of it)
-        a.Emit(0x31, 0xFF);                                 // xor edi, edi  (search from the start)
-        a.Emit(0x48, 0x8B, 0x55, 0xF0);                     // mov rdx, [rbp-16]  (this much)
-        a.Emit(0x48, 0x81, 0xC2, 0xFF, 0xFF, 0x00, 0x00);   // add rdx, block - 1
-        a.Emit(0x48, 0x81, 0xE2, 0x00, 0x00, 0xFF, 0xFF);   // and rdx, -block
-        a.Emit(0x31, 0xC9);                                 // xor ecx, ecx  (any alignment)
-        a.Emit(0x4C, 0x8D, 0x45, 0x98);                     // lea r8, [rbp-104]  (where it came from)
-        a.Call("sceKernelMemoryPoolExpand");
-        a.Emit(0x85, 0xC0); a.JumpIfNotEqual("refuse");     // test eax, eax
-        a.Emit(0x48, 0x8B, 0x7D, 0xF8);                     // mov rdi, [rbp-8]
-        a.Emit(0x48, 0x8B, 0x75, 0xF0);                     // mov rsi, [rbp-16]
-        a.Emit(0xBA, CpuMemoryType, 0x00, 0x00, 0x00);      // mov edx, processor memory
-        a.Emit(0x8B, 0x4D, 0xE8);                           // mov ecx, [rbp-24]
-        a.Emit(0x45, 0x31, 0xC0);                           // xor r8d, r8d
-        a.Call("sceKernelMemoryPoolCommit");
-        a.Emit(0x85, 0xC0); a.JumpIfEqual("done");          // test eax, eax
-
-        a.JumpIfAlways("refuse");
-
-        // No report came back, so nothing is at that address at all. This is the only case where memory
-        // may be placed there: over a range the report resolved, placing memory would lose whatever it
-        // already held.
-        a.Mark("nothing");
-        a.Emit(0x48, 0x8B, 0x45, 0xF8);                     // mov rax, [rbp-8]
-        a.Emit(0x48, 0x89, 0x04, 0x24);                     // mov [rsp], rax
-        a.Emit(0x48, 0x89, 0xE7);                           // mov rdi, rsp
+        // Nothing behind that range yet, so put memory behind it, pinned to the addresses that are
+        // already held. This is the step the protection call cannot do: that one reports success over a
+        // range that holds nothing and leaves it as empty as it found it, so the runtime believes it
+        // owns memory it has not been given and faults on the first write.
+        a.Emit(0x48, 0x8D, 0x7D, 0xF8);                     // lea rdi, [rbp-8]
         a.Emit(0x48, 0x8B, 0x75, 0xF0);                     // mov rsi, [rbp-16]
         a.Emit(0x8B, 0x55, 0xE8);                           // mov edx, [rbp-24]
-        a.Emit(0xB9, MapFixed, 0x00, 0x00, 0x00);           // mov ecx, fixed
+        a.Emit(0xB9, MapFixed, 0x00, 0x00, 0x00);           // mov ecx, pinned
+        a.Emit(0x45, 0x31, 0xC0);                           // xor r8d, r8d  (read past the arguments)
         a.Call("sceKernelMapFlexibleMemory");
-        a.Emit(0x85, 0xC0); a.JumpIfNotEqual("refuse");     // test eax, eax
-        a.JumpIfAlways("done");
+        a.Emit(0x85, 0xC0); a.JumpIfEqual("done");          // test eax, eax
+        a.JumpIfAlways("refuse");
 
         // Memory is already there, so this is a protection change on what it holds and nothing moves.
         a.Mark("keepit");
@@ -562,6 +605,12 @@ public static class CompatEmitter
             _code.AddRange([0, 0, 0, 0]);
         }
 
+        /// <summary>
+        /// Records a name reached by an instruction that is not a call - an address load, say - so the
+        /// linker fills its displacement the same way.
+        /// </summary>
+        public void Note(int offset, string target) => _calls.Add((offset, target));
+
         /// <summary>A call to a name the linker binds, recording where its displacement sits.</summary>
         public void Call(string target)
         {
@@ -638,10 +687,13 @@ public static class CompatEmitter
         a.Emit(0x31, 0xF6);                                 // xor esi, esi          no remainder
         a.Call("nanosleep");
 
-        // The device's call answers -1 and leaves the reason elsewhere; this one answers the reason.
+        // The device's call answers -1 and leaves the reason elsewhere; this one answers the reason
+        // itself. It is read through the translating thunk rather than the device's own place, so what
+        // comes back is the number the caller was compiled to compare against - and the place is left
+        // as it was, which is what the call this stands in for does.
         a.Mark("settle");
         a.Emit(0x85, 0xC0); a.JumpIfEqual("done");          // test eax, eax
-        a.Call("__error");
+        a.Call("__errno_location");
         a.Emit(0x8B, 0x00);                                 // mov eax, [rax]
         a.Mark("done");
         a.Emit(0x48, 0x83, 0xC4, 0x28, 0x5B, 0x5D, 0xC3);   // add rsp,40; pop rbx; pop rbp; ret
@@ -656,6 +708,45 @@ public static class CompatEmitter
     // both: the caller reads back whatever was on the stack and hands that to the device as a set of
     // signals to act on.
     private const int SignalWords = 4, MaxSignal = 128;
+
+    /// <summary>What the platform answers for a thread that is not there.</summary>
+    private const int NoSuchThread = 3;
+
+    /// <summary>
+    /// What the collector says when it cannot start. The routine it would reach is empty in the build
+    /// linked here, so every reason it gives for refusing is discarded - and a collector that will not
+    /// start is the failure hardest to place from the outside, because nothing else reports it either.
+    /// This writes it where anything else fatal goes, using only names the catalog already resolves.
+    /// </summary>
+    private const string GcLogSymbol = "_ZN15GCToEEInterface14LogErrorToHostEPKc";
+
+    /// <summary>
+    /// The names this object defines on purpose over a definition the runtime archives also carry. A
+    /// link refuses two full definitions of one name, so the ones meant to stand in front of another
+    /// are listed here rather than being told apart by luck of ordering.
+    /// </summary>
+    public static IReadOnlySet<string> DeliberateOverrides { get; } =
+        new HashSet<string>(StringComparer.Ordinal) { GcLogSymbol };
+    private const byte ErrorStream = 2;
+
+    private static CompatFunc GcLog()
+    {
+        var a = new Asm();
+        a.Emit(0x55, 0x48, 0x89, 0xE5);                     // push rbp ; mov rbp, rsp
+        a.Emit(0x53);                                       // push rbx
+        a.Emit(0x48, 0x83, 0xEC, 0x08);                     // sub rsp, 8
+        a.Emit(0x48, 0x85, 0xFF); a.JumpIfEqual("out");     // test rdi, rdi
+        a.Emit(0x48, 0x89, 0xFB);                           // mov rbx, rdi
+        a.Call("strlen");
+        a.Emit(0x48, 0x89, 0xC2);                           // mov rdx, rax   (how much)
+        a.Emit(0x48, 0x89, 0xDE);                           // mov rsi, rbx   (what)
+        a.Emit(0xBF, ErrorStream, 0x00, 0x00, 0x00);        // mov edi, where anything fatal goes
+        a.Call("write");
+        a.Mark("out");
+        a.Emit(0x48, 0x83, 0xC4, 0x08, 0x5B, 0x5D, 0xC3);   // add rsp,8 ; pop rbx ; pop rbp ; ret
+        (byte[] code, (int, string)[] relocs) = a.Build();
+        return new(GcLogSymbol, false, code, relocs);
+    }
 
     // sigemptyset(set): clear the four words and report success.
     private static CompatFunc SigEmptySet()
@@ -725,29 +816,135 @@ public static class CompatEmitter
         // left in place it would read as the controlling-terminal bit.
     ];
 
-    private static CompatFunc Open64()
+    /// <summary>
+    /// Rewrites a word of open flags in place, in either direction. The three bytes name the register
+    /// being rewritten: how to copy it out, how to copy it out again, and how to copy the result back.
+    /// </summary>
+    private static void TranslateOpenFlags(Asm a, bool toDevice, byte outA, byte outB, byte back)
     {
-        var a = new Asm();
-        a.Emit(0x41, 0x89, 0xF0);                           // mov r8d, esi
+        a.Emit(0x41, 0x89, outA);                           // mov r8d, <reg>
         a.Emit(0x41, 0x81, 0xE0, 0x03, 0x00, 0x00, 0x00);   // and r8d, access mode
         foreach ((uint ours, uint theirs) in OpenFlagMap)
         {
-            a.Emit(0x41, 0x89, 0xF1);                       // mov r9d, esi
-            a.Emit(0x41, 0x81, 0xE1);                       // and r9d, ours
-            a.Emit((byte)ours, (byte)(ours >> 8), (byte)(ours >> 16), (byte)(ours >> 24));
-            int ourBit = System.Numerics.BitOperations.TrailingZeroCount(ours);
-            int theirBit = System.Numerics.BitOperations.TrailingZeroCount(theirs);
-            if (theirBit > ourBit)
-                a.Emit(0x41, 0xC1, 0xE1, (byte)(theirBit - ourBit));   // shl r9d, n
-            else if (theirBit < ourBit)
-                a.Emit(0x41, 0xC1, 0xE9, (byte)(ourBit - theirBit));   // shr r9d, n
+            uint from = toDevice ? ours : theirs, to = toDevice ? theirs : ours;
+            a.Emit(0x41, 0x89, outB);                       // mov r9d, <reg>
+            a.Emit(0x41, 0x81, 0xE1);                       // and r9d, the bit as it arrives
+            a.Emit32(unchecked((int)from));
+            int fromBit = System.Numerics.BitOperations.TrailingZeroCount(from);
+            int toBit = System.Numerics.BitOperations.TrailingZeroCount(to);
+            if (toBit > fromBit)
+                a.Emit(0x41, 0xC1, 0xE1, (byte)(toBit - fromBit));     // shl r9d, n
+            else if (toBit < fromBit)
+                a.Emit(0x41, 0xC1, 0xE9, (byte)(fromBit - toBit));     // shr r9d, n
             a.Emit(0x45, 0x09, 0xC8);                       // or r8d, r9d
         }
-        a.Emit(0x44, 0x89, 0xC6);                           // mov esi, r8d
+        a.Emit(0x44, 0x89, back);                           // mov <reg>, r8d
+    }
+
+    private static CompatFunc Open64()
+    {
+        var a = new Asm();
+        TranslateOpenFlags(a, toDevice: true, 0xF0, 0xF1, 0xC6);       // the word arrives in esi
         a.Emit(0xE9, 0x00, 0x00, 0x00, 0x00);               // jmp open
         (byte[] code, (int, string)[] relocs) = a.Build();
         return new("open64", false, code, [.. relocs, (code.Length - 4, "open")]);
     }
+
+    // ---------------------------------------------------------------------------
+    // Two more calls whose arguments are numbers meaning something else on each side.
+    // ---------------------------------------------------------------------------
+
+    // pthread_sigmask(how, set, previous): whether to add to the set of blocked signals, remove from
+    // it, or replace it. The runtime was built where those three are nought, one and two; here they are
+    // one, two and three, so every request lands one place along. The runtime asks to **remove** the
+    // signal it interrupts a thread with - one place along from remove is add - so every thread it made
+    // had that signal blocked, which is the opposite of what it asked for, on every thread it owns.
+    private static CompatFunc PthreadSigmask()
+    {
+        var a = new Asm();
+        a.Emit(0x83, 0xFF, 0x03); a.JumpIfAtOrAbove("asis"); // cmp edi, how many we know
+        a.Emit(0xFF, 0xC7);                                 // inc edi
+        a.Mark("asis");
+        a.Emit(0xE9, 0x00, 0x00, 0x00, 0x00);               // jmp the platform's own
+        (byte[] code, (int, string)[] relocs) = a.Build();
+        return new("pthread_sigmask", false, code,
+            [.. relocs, (code.Length - 4, Linker.DeviceAliasPrefix + "pthread_sigmask")]);
+    }
+
+    // fcntl(descriptor, command, argument): the commands are numbered differently, and two of them
+    // carry a word of open flags that needs the same translation an open's does. Left alone, asking a
+    // descriptor to stop waiting set a wholly different flag, and asking to take a lock ran the command
+    // that sets which process receives a signal - with the lock's address standing in for the process.
+    private static readonly (int Runtime, int Device, string What)[] FcntlCommands =
+    [
+        (0, 0,  "duplicate it"),
+        (1, 1,  "read whether it closes when the module is replaced"),
+        (2, 2,  "set whether it closes when the module is replaced"),
+        (3, 3,  "read the open flags"),
+        (4, 4,  "set the open flags"),
+        (5, 11, "read a lock"),
+        (6, 12, "take a lock"),
+        (7, 13, "take a lock, waiting for it"),
+        (8, 6,  "set which process is signalled"),
+        (9, 5,  "read which process is signalled"),
+    ];
+    private const string FcntlTableSymbol = "__sp_fcntl_commands";
+    private const int FcntlTableSize = 10;
+    private const int FcntlDuplicateClosing = 1030, FcntlDeviceDuplicateClosing = 19;
+    private const int FcntlReadFlags = 3, FcntlSetFlags = 4;
+
+    private static byte[] BuildFcntlTable()
+    {
+        byte[] t = new byte[FcntlTableSize];
+        foreach ((int runtime, int device, string _) in FcntlCommands)
+            t[runtime] = (byte)device;
+        return t;
+    }
+
+    private static CompatFunc Fcntl()
+    {
+        var a = new Asm();
+        a.Emit(0x55, 0x48, 0x89, 0xE5);                     // push rbp ; mov rbp, rsp
+        a.Emit(0x53);                                       // push rbx
+        a.Emit(0x48, 0x83, 0xEC, 0x08);                     // sub rsp, 8
+        a.Emit(0x89, 0xF3);                                 // mov ebx, esi  (what was asked for)
+
+        // The word an open-flags request carries is translated the way an open's is.
+        a.Emit(0x81, 0xFB); a.Emit32(FcntlSetFlags); a.JumpIfNotEqual("notflags");
+        TranslateOpenFlags(a, toDevice: true, 0xD0, 0xD1, 0xC2);       // the word arrives in edx
+        a.Mark("notflags");
+
+        a.Emit(0x81, 0xFB); a.Emit32(FcntlTableSize); a.JumpIfAtOrAbove("wider");
+        a.Emit(0x89, 0xF6);                                 // mov esi, esi
+        int at = a.Length + 3;
+        a.Emit(0x48, 0x8D, 0x05, 0, 0, 0, 0);               // lea rax, [rip + the numbering]
+        a.Emit(0x0F, 0xB6, 0x34, 0x30);                     // movzx esi, byte [rax + rsi]
+        a.JumpIfAlways("ready");
+
+        // One command sits far outside the run the numbering covers.
+        a.Mark("wider");
+        a.Emit(0x81, 0xFB); a.Emit32(FcntlDuplicateClosing); a.JumpIfNotEqual("ready");
+        a.Emit(0xBE); a.Emit32(FcntlDeviceDuplicateClosing);
+
+        a.Mark("ready");
+        a.Emit(0x31, 0xC0);                                 // xor eax, eax  (no vector arguments)
+        a.Call(Linker.DeviceAliasPrefix + "fcntl");
+
+        // A request that reads the open flags answers with a word needing translation back.
+        a.Emit(0x85, 0xC0); a.JumpIfNegative("out");        // test eax, eax  (a refusal passes through)
+        a.Emit(0x81, 0xFB); a.Emit32(FcntlReadFlags); a.JumpIfNotEqual("out");
+        TranslateOpenFlags(a, toDevice: false, 0xC0, 0xC1, 0xC0);      // the word came back in eax
+        a.Mark("out");
+        a.Emit(0x48, 0x83, 0xC4, 0x08, 0x5B, 0x5D, 0xC3);   // add rsp,8 ; pop rbx ; pop rbp ; ret
+
+        (byte[] code, (int Offset, string Target)[] relocs) = a.Build();
+        return new("fcntl", false, code, [.. relocs, (at, FcntlTableSymbol)]);
+    }
+
+    // The count answered when the pool cannot say how much memory this module has. Sixteen thousand
+    // pages is a quarter of a gigabyte, which is under the pool a module of this kind is given and well
+    // over what the collector needs to start - cautious in the direction that fails safely.
+    private const int AssumedPages = 16384;
 
     private static CompatFunc SysConf()
     {
@@ -767,10 +964,16 @@ public static class CompatEmitter
         a.Mark("cpus");
         a.Emit(0xB8, 0x08, 0x00, 0x00, 0x00, 0xC3);                         // mov eax, 8 ; ret
 
-        // How much memory this module can have, in pages. What it can get is what it has: the pool it
-        // maps from. Reporting more has the collector size itself against memory that is not there;
-        // reporting less starves it. A refusal is not an option - the caller's own result is this
-        // answer not refusing.
+        // How much memory this module can have, in pages, and how much of it is still free.
+        //
+        // **Neither may refuse.** The caller that asks how much memory there is refuses to start the
+        // runtime at all when this answers -1 - it compares the result against -1 and returns failure
+        // for its whole initialisation, which surfaces as the module reporting a non-zero result from
+        // its entry and nothing else. The caller that asks how much is free does not check at all, and
+        // reads -1 as sixteen million million pages. So the two want opposite wrong answers, and the
+        // way out of that is to give neither a wrong answer: when the question the pool answers fails,
+        // ask the machine how much memory it has instead. That is a real figure from the device rather
+        // than a number invented here, and it is the same order as the pool's own.
         a.Mark("pages");
         a.Emit(0x55, 0x48, 0x89, 0xE5);                                     // push rbp ; mov rbp, rsp
         a.Emit(0x48, 0x83, 0xEC, 0x10);                                     // sub rsp, 16
@@ -779,10 +982,6 @@ public static class CompatEmitter
         a.Call("sceKernelConfiguredFlexibleMemorySize");
         a.JumpIfAlways("settle");
 
-        // How much of that is still free. The same question with a different answer, and the one the
-        // collector sizes each of its regions against rather than the total. Left unanswered it took
-        // the refusal for a count, so the free memory came out as sixteen million million pages and
-        // every sizing decision above it was made against a figure the machine could not honour.
         a.Mark("avail");
         a.Emit(0x55, 0x48, 0x89, 0xE5);                                     // push rbp ; mov rbp, rsp
         a.Emit(0x48, 0x83, 0xEC, 0x10);                                     // sub rsp, 16
@@ -791,13 +990,24 @@ public static class CompatEmitter
         a.Call("sceKernelAvailableFlexibleMemorySize");
 
         a.Mark("settle");
-        a.Emit(0x85, 0xC0); a.JumpIfNotEqual("refuse");                     // test eax, eax
+        a.Emit(0x85, 0xC0); a.JumpIfNotEqual("assume");                     // test eax, eax
         a.Emit(0x48, 0x8B, 0x04, 0x24);                                     // mov rax, [rsp]
+        // A byte count of nothing is not an answer of "no memory" - it is the question going
+        // unanswered. Passed on it stamps the collector's idea of how much memory exists with zero,
+        // which satisfies the caller's check and starves everything above it instead.
+        a.Emit(0x48, 0x85, 0xC0); a.JumpIfEqual("assume");                  // test rax, rax
         a.Emit(0x48, 0xC1, 0xE8, 0x0E);                                     // shr rax, 14 (16 KB pages)
         a.Emit(0xC9, 0xC3);                                                 // leave ; ret
 
-        a.Mark("refuse");
-        a.Emit(0x48, 0xC7, 0xC0, 0xFF, 0xFF, 0xFF, 0xFF, 0xC9, 0xC3);       // mov rax, -1 ; leave ; ret
+        // Nothing came back, so a figure is used instead of a refusal. It is a fixed, cautious one in
+        // the same spirit as the page size and processor count above, and deliberately **not** the
+        // machine's own memory size: the collector's pages come from the pool this module maps out of,
+        // which is a small fraction of what the machine has, and answering with the larger figure would
+        // size every decision above it against memory this module can never reach - trading a refusal
+        // that stops the module cleanly for an exhaustion much further on that reads as nothing at all.
+        a.Mark("assume");
+        a.Emit(0xB8); a.Emit32(AssumedPages);                               // mov eax, a cautious count
+        a.Emit(0xC9, 0xC3);                                                 // leave ; ret
 
         (byte[] code, (int, string)[] relocs) = a.Build();
         return new("sysconf", false, code, relocs);
@@ -923,9 +1133,10 @@ public static class CompatEmitter
     private static CompatFunc Readdir64()
     {
         // Two references are patched by relocations: the call to the device readdir (PLT32, +1 in its
-        // instruction) and the local-exec load of the per-thread block's address (TPOFF32, the lea's disp32).
+        // instruction) and the address load of the per-thread block, whose form and whose relocation
+        // depend on which kind of module is being built.
         const int callSite = 2;      // operand of `call readdir`
-        const int tlsSite = 28;      // disp32 of `lea rdi, [rax + buf@tpoff]`
+        const int tlsSite = 16;      // where the address load of the per-thread block starts
         byte[] code =
         [
             0x53,                                           // 0   push rbx
@@ -935,26 +1146,25 @@ public static class CompatEmitter
             0x5B,                                           // 11  pop rbx
             0xC3,                                           // 12  ret                     (null: end of directory)
             0x48, 0x89, 0xC3,                               // 13  mov rbx, rax            (device entry)
-            0x64, 0x48, 0x8B, 0x04, 0x25, 0, 0, 0, 0,       // 16  mov rax, fs:[0]         (thread pointer)
-            0x48, 0x8D, 0xB8, 0, 0, 0, 0,                   // 25  lea rdi, [rax + buf@tpoff]  (block base)
-            0x8B, 0x03,                                     // 32  mov eax, [rbx]          (d_fileno, zero-extended)
-            0x48, 0x89, 0x07,                               // 34  mov [rdi], rax          (d_ino)
-            0x31, 0xC0,                                     // 37  xor eax, eax
-            0x48, 0x89, 0x47, 0x08,                         // 39  mov [rdi+8], rax        (d_off = 0)
-            0x8A, 0x43, 0x06,                               // 43  mov al, [rbx+6]         (d_type)
-            0x88, 0x47, 0x12,                               // 46  mov [rdi+18], al        (d_type)
-            0x0F, 0xB6, 0x4B, 0x07,                         // 49  movzx ecx, byte [rbx+7] (d_namlen)
-            0x8D, 0x41, 0x14,                               // 53  lea eax, [rcx+20]       (record length)
-            0x66, 0x89, 0x47, 0x10,                         // 56  mov [rdi+16], ax        (d_reclen)
-            0x48, 0x89, 0xF8,                               // 60  mov rax, rdi            (return value: block base)
-            0x48, 0x8D, 0x73, 0x08,                         // 63  lea rsi, [rbx+8]        (source name)
-            0x48, 0x83, 0xC7, 0x13,                         // 67  add rdi, 19             (dest name)
-            0xFF, 0xC1,                                     // 71  inc ecx                 (copy the terminating null too)
-            0xF3, 0xA4,                                     // 73  rep movsb
-            0x5B,                                           // 75  pop rbx
-            0xC3,                                           // 76  ret
+            .. TlsLoad(RegRdi),                             // 16  rdi = the per-thread block
+            0x8B, 0x03,                                     // 35  mov eax, [rbx]          (d_fileno, zero-extended)
+            0x48, 0x89, 0x07,                               // 37  mov [rdi], rax          (d_ino)
+            0x31, 0xC0,                                     // 40  xor eax, eax
+            0x48, 0x89, 0x47, 0x08,                         // 42  mov [rdi+8], rax        (d_off = 0)
+            0x8A, 0x43, 0x06,                               // 46  mov al, [rbx+6]         (d_type)
+            0x88, 0x47, 0x12,                               // 49  mov [rdi+18], al        (d_type)
+            0x0F, 0xB6, 0x4B, 0x07,                         // 52  movzx ecx, byte [rbx+7] (d_namlen)
+            0x8D, 0x41, 0x14,                               // 56  lea eax, [rcx+20]       (record length)
+            0x66, 0x89, 0x47, 0x10,                         // 59  mov [rdi+16], ax        (d_reclen)
+            0x48, 0x89, 0xF8,                               // 63  mov rax, rdi            (return value: block base)
+            0x48, 0x8D, 0x73, 0x08,                         // 66  lea rsi, [rbx+8]        (source name)
+            0x48, 0x83, 0xC7, 0x13,                         // 70  add rdi, 19             (dest name)
+            0xFF, 0xC1,                                     // 74  inc ecx                 (copy the terminating null too)
+            0xF3, 0xA4,                                     // 76  rep movsb
+            0x5B,                                           // 78  pop rbx
+            0xC3,                                           // 79  ret
         ];
-        return new("readdir64", false, code, [(callSite, "readdir")], Tls: (tlsSite, ReaddirBufSymbol));
+        return new("readdir64", false, code, [(callSite, "readdir")], Tls: (tlsSite, RegRdi, ReaddirBufSymbol));
     }
 
     // ---------------------------------------------------------------------------
@@ -1166,22 +1376,26 @@ public static class CompatEmitter
     // call by testing for the first concludes the call is there, caches that, and never takes the way
     // that works. The same trade in reverse marks a working feature unsupported.
     //
-    // Translating the value alone will not do, because what is handed over is a **place** and the
-    // runtime writes to it as well as reading it. So this keeps a place of its own, one per thread, and
-    // moves the device's number into it - translated - whenever it is asked. Taking a number clears the
-    // device's own, so the same error arriving twice is seen twice, and a place the runtime cleared
-    // itself stays clear until the device puts something new there. That is the behaviour the runtime
-    // was written against.
+    // Translating the value alone will not do, because what is handed over is a **place**, and the
+    // runtime writes to it as well as reading it. Two places will not do either: the runtime saves the
+    // number, does something, and puts it back, and it also reads it inside a signal handler - so a
+    // copy kept beside the device's own goes stale the moment anything writes the other one, and the
+    // put-back lands in the copy while the device's wins the next read.
+    //
+    // So there is one place, the device's, and the number in it is translated where it lies. What that
+    // needs is a way to tell a number this already translated from one the device has just written,
+    // because the numbering is not its own inverse - two codes trade places, so translating twice puts
+    // them back. A word per thread remembers what was last written; a value equal to it is left alone.
     //
     // Both columns below are read off their own side rather than derived from one another - the
-    // device's from the platform headers, cross-checked against the table its own C++ library carries;
-    // the runtime's from the numbering it was compiled with - so a wrong pairing takes two independent
-    // mistakes. A device number with no counterpart the runtime names is reported as a number above
-    // everything it knows, which it reads as an error it has no name for. That is honest, and better
-    // than passing it through to be read as some unrelated error that happens to share the number.
+    // device's from the platform headers, the runtime's from the numbering it was compiled with - so a
+    // wrong pairing takes two independent mistakes. A device number with no counterpart the runtime
+    // names is reported as a number above everything it knows, which it reads as an error it has no
+    // name for. That is better than passing it through to be read as some unrelated error that happens
+    // to share the number.
     // ---------------------------------------------------------------------------
 
-    private const string ErrnoShadowSymbol = "__sp_errno";
+    private const string ErrnoShadowSymbol = "__sp_errno_written";
     private const string ErrorTableSymbol = "__sp_error_numbers";
     private const byte UnnamedError = 132;      // above every number the runtime has a name for
     private const int ErrorTableSize = 256;
@@ -1229,20 +1443,327 @@ public static class CompatEmitter
         return table;
     }
 
-    // __errno_location(): the place the runtime reads its last error from.
+    /// <summary>The same pairing read the other way, for a number going back to the platform.</summary>
+    private const string ReverseErrorTableSymbol = "__sp_platform_error_numbers";
+
+    private static byte[] BuildReverseErrorTable()
+    {
+        byte[] table = new byte[ErrorTableSize];
+        Array.Fill(table, UnnamedError);
+        table[0] = 0;
+        foreach ((string _, byte device, byte runtime) in ErrorNumbers)
+            table[runtime] = device;
+        return table;
+    }
+
+    // strerror_r(number, buffer, size): the message for an error.
+    //
+    // Both sides publish this name and they do not agree on what it answers. The runtime expects the
+    // message itself back - it hands the answer straight on as text - while this platform answers zero
+    // when it filled the buffer and an error number when it could not, which is what it does for any
+    // buffer of twenty-two bytes or fewer. So a caller with a small buffer was handed the number
+    // thirty-four and read it as an address. Nothing caught it because the one caller in the runtime
+    // always passes a thousand bytes, and a thousand bytes always succeeds and always answers zero,
+    // which reads as "no message" and is quietly handled.
+    //
+    // The number also has to go back the way it came: the runtime counts errors its own way, so asking
+    // the platform for the message belonging to the runtime's number describes a different error.
+    private static CompatFunc StrErrorR()
+    {
+        var a = new Asm();
+        a.Emit(0x55, 0x48, 0x89, 0xE5);                     // push rbp ; mov rbp, rsp
+        a.Emit(0x53);                                       // push rbx
+        a.Emit(0x48, 0x83, 0xEC, 0x08);                     // sub rsp, 8
+        a.Emit(0x48, 0x89, 0xF3);                           // mov rbx, rsi   (the buffer)
+        a.Emit(0x48, 0x85, 0xD2); a.JumpIfEqual("nowhere"); // test rdx, rdx
+        a.Emit(0x81, 0xFF); a.Emit32(ErrorTableSize);       // cmp edi, the numbering's reach
+        a.JumpIfAtOrAbove("asis");
+        a.Emit(0x89, 0xFF);                                 // mov edi, edi
+        int tableAt = a.Length + 3;
+        a.Emit(0x48, 0x8D, 0x05, 0, 0, 0, 0);               // lea rax, [rip + the numbering, reversed]
+        a.Emit(0x0F, 0xB6, 0x3C, 0x38);                     // movzx edi, byte [rax + rdi]
+        a.Mark("asis");
+        a.Call(Linker.DeviceAliasPrefix + "strerror_r");
+        a.Emit(0x85, 0xC0); a.JumpIfEqual("filled");        // test eax, eax
+        a.Emit(0xC6, 0x03, 0x00);                           // mov byte [rbx], 0   (nothing to say)
+        a.Mark("filled");
+        a.Emit(0x48, 0x89, 0xD8);                           // mov rax, rbx   (the message, as text)
+        a.Mark("out");
+        a.Emit(0x48, 0x83, 0xC4, 0x08, 0x5B, 0x5D, 0xC3);   // add rsp,8 ; pop rbx ; pop rbp ; ret
+        a.Mark("nowhere");
+        a.Emit(0x31, 0xC0);                                 // xor eax, eax   (nowhere to put it)
+        a.JumpIfAlways("out");
+        (byte[] code, (int Offset, string Target)[] relocs) = a.Build();
+        return new("strerror_r", false, code, [.. relocs, (tableAt, ReverseErrorTableSymbol)]);
+    }
+
+    // pthread_cond_timedwait: wait on a condition until a deadline.
+    //
+    // A thread call answers its error by value rather than through the per-thread word, so the
+    // translation the per-thread word gets does not reach it. The two sides number a timeout
+    // differently, and the collector's own wait compares what comes back against the runtime's number
+    // for it - so a wait that timed out read as a wait that failed, and the collector treated a
+    // deadline it set itself as an error. This stands in front of the platform's and puts the answer
+    // through the same numbering everything else goes through.
+    private static CompatFunc PthreadCondTimedWait()
+    {
+        var a = new Asm();
+        a.Emit(0x55, 0x48, 0x89, 0xE5);                     // push rbp ; mov rbp, rsp
+        a.Call(Linker.DeviceAliasPrefix + "pthread_cond_timedwait");
+        a.Emit(0x85, 0xC0); a.JumpIfEqual("done");          // test eax, eax   (no error stays none)
+        a.Emit(0x3D); a.Emit32(ErrorTableSize);             // cmp eax, the numbering's reach
+        a.JumpIfAtOrAbove("unnamed");
+        a.Emit(0x89, 0xC0);                                 // mov eax, eax    (clear the upper half)
+        int tableAt = a.Length + 3;
+        a.Emit(0x48, 0x8D, 0x15, 0, 0, 0, 0);               // lea rdx, [rip + the numbering]
+        a.Emit(0x0F, 0xB6, 0x04, 0x02);                     // movzx eax, byte [rdx + rax]
+        a.JumpIfAlways("done");
+        a.Mark("unnamed");
+        a.Emit(0xB8, UnnamedError, 0x00, 0x00, 0x00);       // mov eax, no name for it
+        a.Mark("done");
+        a.Emit(0x5D, 0xC3);                                 // pop rbp ; ret
+        (byte[] code, (int Offset, string Target)[] relocs) = a.Build();
+        return new("pthread_cond_timedwait", false, code, [.. relocs, (tableAt, ErrorTableSymbol)]);
+    }
+
+    // ---------------------------------------------------------------------------
+    // File timestamps.
+    //
+    // The runtime sets a file's times through a pair of routines this platform does not publish, and
+    // it does publish the older pair that differ only in how fine the time is: microseconds rather
+    // than nanoseconds. So each of these divides the fractional part down and hands the older routine
+    // the result.
+    //
+    // Two things they cannot carry across. A time given as "leave this one alone" needs the file's
+    // current time read back first, and one given as "set it to now" only works when both are, so
+    // anything else in that shape is refused rather than written wrong; the runtime asks for neither.
+    // And the newer routine is asked not to follow a link, which the older one always does - the
+    // platform publishes nothing that does not, so setting the times of a link sets its target's.
+    // ---------------------------------------------------------------------------
+
+    private const int UtimeNow = 0x3FFFFFFF, UtimeOmit = 0x3FFFFFFE;
+
+    // Fills two microsecond times at [rsp] from the two nanosecond times rsi points at, or jumps to
+    // "now" for a null pointer or a pair both meaning now, or to "refuse" for anything else in that
+    // shape. Leaves rsi pointing at the pair it filled.
+    private static void EmitTimeConversion(Asm a)
+    {
+        a.Emit(0x48, 0x85, 0xF6); a.JumpIfEqual("now");     // test rsi, rsi
+        a.Emit(0x48, 0x8B, 0x46, 0x08);                     // mov rax, [rsi+8]    first nanoseconds
+        a.Emit(0x4C, 0x8B, 0x46, 0x18);                     // mov r8, [rsi+24]    second nanoseconds
+        a.Emit(0x48, 0x3D); a.Emit32(UtimeNow);             // cmp rax, set it to now
+        a.JumpIfNotEqual("settled");
+        a.Emit(0x49, 0x81, 0xF8); a.Emit32(UtimeNow);       // cmp r8, set it to now
+        a.JumpIfEqual("now");
+        a.Mark("settled");
+        a.Emit(0x48, 0x3D); a.Emit32(UtimeOmit);            // cmp rax, leave it alone
+        a.JumpIfAtOrAbove("refuse");
+        a.Emit(0x49, 0x81, 0xF8); a.Emit32(UtimeOmit);      // cmp r8, leave it alone
+        a.JumpIfAtOrAbove("refuse");
+
+        a.Emit(0x4C, 0x8B, 0x0E);                           // mov r9, [rsi]       first seconds
+        a.Emit(0x4C, 0x89, 0x0C, 0x24);                     // mov [rsp], r9
+        a.Emit(0x4C, 0x8B, 0x4E, 0x10);                     // mov r9, [rsi+16]    second seconds
+        a.Emit(0x4C, 0x89, 0x4C, 0x24, 0x10);               // mov [rsp+16], r9
+        a.Emit(0x41, 0xB9, 0xE8, 0x03, 0x00, 0x00);         // mov r9d, 1000
+        a.Emit(0x31, 0xD2);                                 // xor edx, edx
+        a.Emit(0x49, 0xF7, 0xF1);                           // div r9              first microseconds
+        a.Emit(0x48, 0x89, 0x44, 0x24, 0x08);               // mov [rsp+8], rax
+        a.Emit(0x4C, 0x89, 0xC0);                           // mov rax, r8
+        a.Emit(0x31, 0xD2);                                 // xor edx, edx
+        a.Emit(0x49, 0xF7, 0xF1);                           // div r9              second microseconds
+        a.Emit(0x48, 0x89, 0x44, 0x24, 0x18);               // mov [rsp+24], rax
+        a.Emit(0x48, 0x89, 0xE6);                           // mov rsi, rsp
+        a.JumpIfAlways("hand over");
+        a.Mark("now");
+        a.Emit(0x31, 0xF6);                                 // xor esi, esi        both to now
+        a.Mark("hand over");
+    }
+
+    // The tail of one of these: hand over, or refuse and say why.
+    private static void EmitTimeTail(Asm a, string target, out int callSite)
+    {
+        a.Call(target);
+        a.JumpIfAlways("out");
+        a.Mark("refuse");
+        a.Emit(0xBF, NoSuchRoutine, 0x00, 0x00, 0x00);      // mov edi, there is no such routine
+        a.Call(SetErrnoSymbol);
+        a.Emit(0xB8, 0xFF, 0xFF, 0xFF, 0xFF);               // mov eax, -1
+        a.Mark("out");
+        a.Emit(0x48, 0x83, 0xC4, 0x28, 0x5B, 0x5D, 0xC3);   // add rsp,40 ; pop rbx ; pop rbp ; ret
+        callSite = 0;
+    }
+
+    // futimens(fd, times[2]): set an open file's times.
+    private static CompatFunc Futimens()
+    {
+        var a = new Asm();
+        a.Emit(0x55, 0x48, 0x89, 0xE5);                     // push rbp ; mov rbp, rsp
+        a.Emit(0x53);                                       // push rbx
+        a.Emit(0x48, 0x83, 0xEC, 0x28);                     // sub rsp, 40   (two times, and alignment)
+        EmitTimeConversion(a);
+        EmitTimeTail(a, "futimes", out _);
+        (byte[] code, (int Offset, string Target)[] relocs) = a.Build();
+        return new("futimens", false, code, relocs);
+    }
+
+    // utimensat(dirfd, path, times[2], flags): set a named file's times. The directory the name is
+    // relative to is always the working directory here and the flag is always "do not follow a link",
+    // which is what the runtime passes and what the older routine cannot honour.
+    private static CompatFunc Utimensat()
+    {
+        var a = new Asm();
+        a.Emit(0x55, 0x48, 0x89, 0xE5);                     // push rbp ; mov rbp, rsp
+        a.Emit(0x53);                                       // push rbx
+        a.Emit(0x48, 0x83, 0xEC, 0x28);                     // sub rsp, 40   (two times, and alignment)
+        a.Emit(0x48, 0x89, 0xF7);                           // mov rdi, rsi  (the name)
+        a.Emit(0x48, 0x89, 0xD6);                           // mov rsi, rdx  (the times)
+        EmitTimeConversion(a);
+        EmitTimeTail(a, "utimes", out _);
+        (byte[] code, (int Offset, string Target)[] relocs) = a.Build();
+        return new("utimensat", false, code, relocs);
+    }
+
+    // madvise(address, length, advice): a hint about how a range will be used.
+    //
+    // The two sides agree on the first five hints and part company immediately after. The one the
+    // collector leans on - "I am done with these pages, the contents are junk, take them back" - is
+    // the eighth number to the runtime and the fifth here; the eighth here means something else
+    // entirely, and something actively unhelpful: keep these pages out of the record written when the
+    // module dies. Passing the number through therefore did two wrong things at once. The collector
+    // asked for memory back, was told yes, and got nothing back - so a heap that should have shrunk
+    // after every collection only ever grew. And every range it asked about was quietly struck from
+    // the record the machine writes when a module fails, which is the one place the answers to
+    // questions like this one come from.
+    //
+    // Hints with no counterpart here are answered without being passed on. A hint is advisory - every
+    // caller in the runtime either ignores the answer or treats it as advice - so answering "done"
+    // and doing nothing is correct, where forwarding a number this platform reads as a different hint
+    // is not.
+    private const string AdviceTableSymbol = "__sp_memory_advice";
+    private const int AdviceTableSize = 9;
+    private const byte AdviceNoCounterpart = 0xFF;
+
+    /// <summary>Hints the runtime names, indexed straight, holding this platform's number for each.</summary>
+    private static byte[] BuildAdviceTable()
+    {
+        byte[] t = new byte[AdviceTableSize];
+        Array.Fill(t, AdviceNoCounterpart);
+        for (byte i = 0; i <= 4; i++) t[i] = i;         // ordinary, random, sequential, will need, done
+        t[8] = 5;                                       // done with these, and their contents are junk
+        return t;
+    }
+
+    private static CompatFunc MAdvise()
+    {
+        var a = new Asm();
+        a.Emit(0x55, 0x48, 0x89, 0xE5);                     // push rbp ; mov rbp, rsp
+        a.Emit(0x83, 0xFA, AdviceTableSize);                // cmp edx, how many the runtime names
+        a.JumpIfAtOrAbove("nohint");
+        a.Emit(0x89, 0xD2);                                 // mov edx, edx  (clear the top before indexing)
+        int tableAt = a.Length + 3;
+        a.Emit(0x48, 0x8D, 0x05, 0, 0, 0, 0);               // lea rax, [rip + the hints]
+        a.Emit(0x0F, 0xB6, 0x14, 0x10);                     // movzx edx, byte [rax + rdx]
+        a.Emit(0x80, 0xFA, AdviceNoCounterpart);            // cmp dl, no counterpart
+        a.JumpIfEqual("nohint");
+        a.Emit(0x5D);                                       // pop rbp
+        int tailAt = a.Length + 1;
+        a.Emit(0xE9, 0, 0, 0, 0);                           // jmp the platform's own
+        a.Mark("nohint");
+        a.Emit(0x31, 0xC0, 0x5D, 0xC3);                     // xor eax, eax ; pop rbp ; ret
+        (byte[] code, (int Offset, string Target)[] relocs) = a.Build();
+        return new("madvise", false, code,
+            [.. relocs, (tableAt, AdviceTableSymbol), (tailAt, Linker.DeviceAliasPrefix + "madvise")]);
+    }
+
+    // syscall(number, ...): the runtime asks for a handful of things this way, all but one of which
+    // this platform does not have. The one it does have is the caller's own thread number, which the
+    // runtime reads once, keeps, and uses to tell its threads apart: it records each thread under that
+    // number and looks threads up by it later. A blanket refusal gave every thread the same number, so
+    // every later lookup answered with whichever thread had been recorded first - and what is done
+    // with the answer is to note where a thread was interrupted and to walk its memory looking for
+    // what is still in use, both against the wrong thread.
+    //
+    // The rest must keep being refused. One of them is how the runtime asks whether the machine offers
+    // a cheaper way to make one thread's writes visible to the others; a refusal is the answer that
+    // makes it choose the way that works here, and answering anything else would have it choose one
+    // that does not.
+    private const byte AskingForThreadNumber = 186;
+
+    private static CompatFunc SysCall()
+    {
+        var a = new Asm();
+        a.Emit(0x55, 0x48, 0x89, 0xE5);                     // push rbp ; mov rbp, rsp
+        a.Emit(0x81, 0xFF); a.Emit32(AskingForThreadNumber);
+        a.JumpIfNotEqual("norest");
+        a.Emit(0x5D);                                       // pop rbp
+        int tailAt = a.Length + 1;
+        a.Emit(0xE9, 0, 0, 0, 0);                           // jmp the platform's own
+        a.Mark("norest");
+        a.Emit(0xBF, NoSuchRoutine, 0x00, 0x00, 0x00);      // mov edi, there is no such routine
+        a.Call(SetErrnoSymbol);
+        a.Emit(0x48, 0xC7, 0xC0, 0xFF, 0xFF, 0xFF, 0xFF);   // mov rax, -1
+        a.Emit(0x5D, 0xC3);                                 // pop rbp ; ret
+        (byte[] code, (int Offset, string Target)[] relocs) = a.Build();
+        return new("syscall", false, code, [.. relocs, (tailAt, "scePthreadGetthreadid")]);
+    }
+
+    private const string SetErrnoSymbol = "__sp_set_errno";
+
+    // __sp_set_errno(number): put a number, counted the way the runtime counts them, where the runtime
+    // reads its last error from.
+    //
+    // It writes the word the runtime owns, and clears the platform's place on the way. Without the
+    // clearing, a failure the platform recorded earlier and nobody read would be taken as news on the
+    // next read and translated over the number just written.
+    private static CompatFunc SetErrno()
+    {
+        var a = new Asm();
+        a.Emit(0x55, 0x48, 0x89, 0xE5);                     // push rbp ; mov rbp, rsp
+        a.Emit(0x53);                                       // push rbx
+        a.Emit(0x48, 0x83, 0xEC, 0x08);                     // sub rsp, 8
+        a.Emit(0x89, 0xFB);                                 // mov ebx, edi   (the number)
+        a.Call("__error");
+        a.Emit(0xC7, 0x00, 0x00, 0x00, 0x00, 0x00);         // mov dword [rax], 0   (nothing pending)
+        int tlsAt = a.Length;
+        a.Emit(TlsLoad(RegRdx));                            // rdx = this thread's word
+        a.Emit(0x89, 0x1A);                                 // mov [rdx], ebx  (the runtime's own word)
+        a.Emit(0x48, 0x83, 0xC4, 0x08, 0x5B, 0x5D, 0xC3);   // add rsp,8 ; pop rbx ; pop rbp ; ret
+        (byte[] code, (int Offset, string Target)[] relocs) = a.Build();
+        return new(SetErrnoSymbol, false, code, relocs, Tls: (tlsAt, RegRdx, ErrnoShadowSymbol));
+    }
+
+    // __errno_location(): the place the runtime reads its last error from, and writes to.
+    //
+    // It is a place of this object's own, per thread, not the platform's. Translating the platform's
+    // place where it lies looked simpler and is wrong, because the runtime does not only read that
+    // place: it writes numbers of its own into it, at fourteen points in what gets linked. A number
+    // the runtime writes is already counted the way the runtime counts, and translating it again takes
+    // it somewhere else - two of the codes trade places, so each becomes the other, and one the
+    // runtime writes has no counterpart at all and comes back as the number for an error with no name.
+    // Remembering the last number written does not tell the two apart either, since it cannot say who
+    // wrote it.
+    //
+    // What separates them is that the platform only ever writes that place to report a failure, and a
+    // failure is never numbered zero. So a number sitting there is news, and it is taken once: read,
+    // translated into the runtime's word, and cleared. After that the runtime's word is the runtime's
+    // to keep, and saving it, calling something, and putting it back all work - the reading happens
+    // before the writing, so a failure in between is taken first and then written over, which is the
+    // order the caller asked for. Clearing is what makes the same failure twice in a row readable as
+    // two failures rather than one.
     private static CompatFunc ErrnoLocation()
     {
         var a = new Asm();
         a.Emit(0x55, 0x48, 0x89, 0xE5);                     // push rbp ; mov rbp, rsp
         a.Emit(0x53);                                       // push rbx
         a.Emit(0x48, 0x83, 0xEC, 0x08);                     // sub rsp, 8
-        a.Emit(0x64, 0x48, 0x8B, 0x04, 0x25, 0, 0, 0, 0);   // mov rax, fs:[0]   (this thread)
-        int tlsAt = a.Length + 3;
-        a.Emit(0x48, 0x8D, 0x98, 0, 0, 0, 0);               // lea rbx, [rax + our place]
+        int tlsAt = a.Length;
+        a.Emit(TlsLoad(RegRbx));                            // rbx = this thread's word
         a.Call("__error");
-        a.Emit(0x8B, 0x08);                                 // mov ecx, [rax]    (what the device left)
+        a.Emit(0x8B, 0x08);                                 // mov ecx, [rax]   (the platform's number)
+        // Nothing there, so nothing has failed since it was last taken and the runtime's word stands.
         a.Emit(0x85, 0xC9); a.JumpIfEqual("keep");          // test ecx, ecx
-        a.Emit(0xC7, 0x00, 0x00, 0x00, 0x00, 0x00);         // mov dword [rax], 0  (take it)
+        a.Emit(0xC7, 0x00, 0x00, 0x00, 0x00, 0x00);         // mov dword [rax], 0   (taken)
         a.Emit(0x81, 0xF9); a.Emit32(ErrorTableSize);       // cmp ecx, the numbering's reach
         a.JumpIfAtOrAbove("unnamed");
         int tableAt = a.Length + 3;
@@ -1252,14 +1773,222 @@ public static class CompatEmitter
         a.Mark("unnamed");
         a.Emit(0xB9, UnnamedError, 0x00, 0x00, 0x00);       // mov ecx, no name for it
         a.Mark("store");
-        a.Emit(0x89, 0x0B);                                 // mov [rbx], ecx
+        a.Emit(0x89, 0x0B);                                 // mov [rbx], ecx   (the runtime's own word)
         a.Mark("keep");
-        a.Emit(0x48, 0x89, 0xD8);                           // mov rax, rbx
+        a.Emit(0x48, 0x89, 0xD8);                           // mov rax, rbx     (hand back our word)
         a.Emit(0x48, 0x83, 0xC4, 0x08, 0x5B, 0x5D, 0xC3);   // add rsp,8 ; pop rbx ; pop rbp ; ret
 
         (byte[] code, (int Offset, string Target)[] relocs) = a.Build();
         return new("__errno_location", false, code, [.. relocs, (tableAt, ErrorTableSymbol)],
-            Tls: (tlsAt, ErrnoShadowSymbol));
+            Tls: (tlsAt, RegRbx, ErrnoShadowSymbol));
+    }
+
+    // ---------------------------------------------------------------------------
+    // Clocks.
+    //
+    // The two sides number their clocks differently, and the one the runtime asks for most is the one
+    // that differs. It asks for clock one meaning "counts steadily and never jumps"; here clock one
+    // counts only the time this process spent on a processor, and the steady one is four. Every waiting
+    // deadline, every measured interval and every pause the collector times is taken against it, so the
+    // module is not broken by this so much as quietly wrong about how much time has passed - and the
+    // condition variables are told to wait on one clock while their deadlines are computed against
+    // another, which is worse than either alone.
+    //
+    // The names this reaches are deliberately the platform's own rather than the portable ones. A
+    // definition here shadows the portable name for every reference in the module including its own, so
+    // a translating clock_gettime that called clock_gettime would call itself for ever.
+    //
+    // (what the runtime asks for, what it means here)
+    private static readonly (byte Runtime, byte Device, string What)[] ClockIds =
+    [
+        (0, 0,  "wall clock"),
+        (1, 4,  "steady, never jumps"),          // the one that matters: here 1 is processor time
+        (2, 15, "processor time for this module"),
+        (3, 14, "processor time for this thread"),
+        (4, 4,  "steady and unadjusted"),
+        (5, 10, "wall clock, cheap and coarse"),
+        (6, 12, "steady, cheap and coarse"),
+        (7, 20, "counts since the machine started"),
+    ];
+    private const string ClockTableSymbol = "__sp_clock_ids";
+    private const int ClockTableSize = 8;
+
+    private static byte[] BuildClockTable()
+    {
+        byte[] t = new byte[ClockTableSize];
+        foreach ((byte runtime, byte device, string _) in ClockIds)
+            t[runtime] = device;
+        return t;
+    }
+
+    /// <summary>Rewrites the clock in a register to the one this platform numbers it as.</summary>
+    private static void TranslateClock(Asm a, byte[] compare, byte[] widen, byte[] load, string past)
+    {
+        a.Emit(compare);                                    // cmp <reg>, how many we know
+        a.JumpIfAtOrAbove(past);
+        a.Emit(widen);                                      // clear the top half before indexing
+        int at = a.Length + 3;
+        a.Emit(0x48, 0x8D, 0x05, 0, 0, 0, 0);               // lea rax, [rip + the numbering]
+        a.Emit(load);                                       // movzx <reg>, byte [rax + <reg>]
+        a.Mark(past);
+        a.Note(at, ClockTableSymbol);
+    }
+
+    // clock_gettime(clock, out time): the platform's own call, with the clock and the result convention
+    // translated. It answers zero or a coded failure rather than -1 and an error left elsewhere.
+    private static CompatFunc ClockGettime()
+    {
+        var a = new Asm();
+        a.Emit(0x55, 0x48, 0x89, 0xE5);                     // push rbp ; mov rbp, rsp
+        a.Emit(0x53);                                       // push rbx
+        a.Emit(0x48, 0x83, 0xEC, 0x08);                     // sub rsp, 8
+        TranslateClock(a, [0x83, 0xFF, ClockTableSize], [0x89, 0xFF], [0x0F, 0xB6, 0x3C, 0x38], "asis");
+        a.Call("sceKernelClockGettime");
+        a.Emit(0x85, 0xC0); a.JumpIfEqual("out");           // test eax, eax
+        a.Emit(0x89, 0xC3);                                 // mov ebx, eax   (keep the coded failure)
+        a.Call("__error");
+        a.Emit(0x81, 0xE3, 0xFF, 0xFF, 0x00, 0x00);         // and ebx, the error itself
+        a.Emit(0x89, 0x18);                                 // mov [rax], ebx
+        a.Emit(0xB8, 0xFF, 0xFF, 0xFF, 0xFF);               // mov eax, -1
+        a.Mark("out");
+        a.Emit(0x48, 0x83, 0xC4, 0x08, 0x5B, 0x5D, 0xC3);   // add rsp,8 ; pop rbx ; pop rbp ; ret
+        (byte[] code, (int, string)[] relocs) = a.Build();
+        return new("clock_gettime", false, code, relocs);
+    }
+
+    // The attribute objects a thread is configured through are the one place where this platform's
+    // type is LARGER than the one the runtime reserves room for. An attribute object is a single
+    // word here - the platform keeps the object and hands back a reference to it - while the runtime
+    // sets aside four bytes, which is all its own library needs. So the platform's own routine, asked
+    // to fill four bytes, writes eight, and the other four land on whatever the compiler placed next.
+    //
+    // What it placed next was the value guarding the return address, so the routine ran to completion
+    // and died on the way out reporting a damaged frame, several calls away from the write that did
+    // it. Nothing about that failure points back here, which is worth saying plainly: this was found
+    // by reading the four bytes out of a machine's own record of the crash and recognising the top
+    // half of an address that belongs to the platform.
+    //
+    // Every other object of this shape is safe, and for the same reason read the other way: a mutex,
+    // a condition, a lock and a thread are each one word here against the forty, forty-eight, fifty-
+    // six and eight reserved for them, so the platform writes well inside what it was given.
+    //
+    // The answer is that attribute objects never reach the platform at all. The four bytes the caller
+    // owns hold the setting itself - a clock, or a kind of mutex - and the routine that consumes the
+    // attributes builds a real one on its own frame, applies the setting, uses it, and releases it
+    // before returning. Nothing belonging to the platform is ever written into the caller's four
+    // bytes, and the setting still arrives where it was meant to go.
+
+    // The settings an attribute object carries before anything is asked of it, in the caller's own
+    // numbering: the wall clock, and an ordinary mutex.
+    private const byte AttrStartingClock = 0, AttrStartingKind = 0;
+    // The kinds of mutex run the other way round here: what the caller numbers 0, 1, 2 - ordinary,
+    // re-entrant, checked - this platform numbers 3, 2, 1, so one is the other subtracted from three.
+    // Anything outside that range asks for a kind this platform does not have, and gets the one it
+    // uses when none is named.
+    private const byte MutexKindsKnown = 3, MutexKindsMirror = 3, MutexKindWhenUnknown = 1;
+
+    /// <summary>An attribute object starts holding one setting, in the four bytes the caller owns.</summary>
+    private static CompatFunc AttrStart(string name, byte setting)
+    {
+        var a = new Asm();
+        a.Emit(0xC7, 0x07);                                 // mov dword [rdi], setting
+        a.Emit32(setting);
+        a.Emit(0x31, 0xC0, 0xC3);                           // xor eax, eax ; ret
+        (byte[] code, (int, string)[] relocs) = a.Build();
+        return new(name, false, code, relocs);
+    }
+
+    /// <summary>Changing a setting keeps it in those same four bytes, and writes no more than four.</summary>
+    private static CompatFunc AttrKeep(string name)
+    {
+        var a = new Asm();
+        a.Emit(0x89, 0x37);                                 // mov [rdi], esi
+        a.Emit(0x31, 0xC0, 0xC3);                           // xor eax, eax ; ret
+        (byte[] code, (int, string)[] relocs) = a.Build();
+        return new(name, false, code, relocs);
+    }
+
+    /// <summary>The frame the two consuming routines share: the platform's own attributes at [rbp-24].</summary>
+    private static void AttrFrameStart(Asm a)
+    {
+        a.Emit(0x55, 0x48, 0x89, 0xE5);                     // push rbp ; mov rbp, rsp
+        a.Emit(0x53, 0x41, 0x54);                           // push rbx ; push r12
+        a.Emit(0x48, 0x83, 0xEC, 0x10);                     // sub rsp, 16
+        a.Emit(0x48, 0x89, 0xFB);                           // mov rbx, rdi   (what is being set up)
+        a.Emit(0x45, 0x31, 0xE4);                           // xor r12d, r12d (the setting, if none named)
+        a.Emit(0x48, 0x85, 0xF6); a.JumpIfEqual("plain");    // test rsi, rsi
+        a.Emit(0x44, 0x8B, 0x26);                           // mov r12d, [rsi]  (four bytes, no more)
+        a.Mark("plain");
+    }
+
+    /// <summary>Answer zero, or the error itself rather than the platform's coded form.</summary>
+    private static void AttrFrameEnd(Asm a)
+    {
+        a.Mark("coded");
+        a.Emit(0x85, 0xC0); a.JumpIfEqual("out");           // test eax, eax
+        a.Emit(0x25, 0xFF, 0xFF, 0x00, 0x00);               // and eax, the error itself
+        a.Mark("out");
+        a.Emit(0x48, 0x83, 0xC4, 0x10);                     // add rsp, 16
+        a.Emit(0x41, 0x5C, 0x5B, 0x5D, 0xC3);               // pop r12 ; pop rbx ; pop rbp ; ret
+    }
+
+    // pthread_cond_init(condition, attributes): the platform's attributes are built here, given the
+    // clock the caller asked for, and released again. The clock is translated on the way, so a wait
+    // and the deadline it is measured against are on the same one.
+    private static CompatFunc CondInit()
+    {
+        var a = new Asm();
+        AttrFrameStart(a);
+        a.Emit(0x48, 0x8D, 0x7D, 0xE8);                     // lea rdi, [rbp-24]
+        a.Call("scePthreadCondattrInit");
+        a.Emit(0x85, 0xC0); a.JumpIfNotEqual("coded");      // test eax, eax
+        a.Emit(0x44, 0x89, 0xE6);                           // mov esi, r12d
+        TranslateClock(a, [0x83, 0xFE, ClockTableSize], [0x89, 0xF6], [0x0F, 0xB6, 0x34, 0x30], "asis");
+        a.Emit(0x48, 0x8D, 0x7D, 0xE8);                     // lea rdi, [rbp-24]
+        a.Call("scePthreadCondattrSetclock");
+        a.Emit(0x48, 0x89, 0xDF);                           // mov rdi, rbx
+        a.Emit(0x48, 0x8D, 0x75, 0xE8);                     // lea rsi, [rbp-24]
+        a.Emit(0x31, 0xD2);                                 // xor edx, edx  (unnamed; the platform allows it)
+        a.Call("scePthreadCondInit");
+        a.Emit(0x41, 0x89, 0xC4);                           // mov r12d, eax  (keep it across the release)
+        a.Emit(0x48, 0x8D, 0x7D, 0xE8);                     // lea rdi, [rbp-24]
+        a.Call("scePthreadCondattrDestroy");
+        a.Emit(0x44, 0x89, 0xE0);                           // mov eax, r12d
+        AttrFrameEnd(a);
+        (byte[] code, (int, string)[] relocs) = a.Build();
+        return new("pthread_cond_init", false, code, relocs);
+    }
+
+    // pthread_mutex_init(mutex, attributes): the same shape, with the kind of mutex translated rather
+    // than a clock.
+    private static CompatFunc MutexInit()
+    {
+        var a = new Asm();
+        AttrFrameStart(a);
+        a.Emit(0x48, 0x8D, 0x7D, 0xE8);                     // lea rdi, [rbp-24]
+        a.Call("scePthreadMutexattrInit");
+        a.Emit(0x85, 0xC0); a.JumpIfNotEqual("coded");      // test eax, eax
+        a.Emit(0x41, 0x83, 0xFC, MutexKindsKnown);          // cmp r12d, how many we know
+        a.JumpIfAtOrAbove("theirs");
+        a.Emit(0xBE, MutexKindsMirror, 0x00, 0x00, 0x00);   // mov esi, the mirror
+        a.Emit(0x44, 0x29, 0xE6);                           // sub esi, r12d
+        a.JumpIfAlways("settle");
+        a.Mark("theirs");
+        a.Emit(0xBE, MutexKindWhenUnknown, 0x00, 0x00, 0x00);
+        a.Mark("settle");
+        a.Emit(0x48, 0x8D, 0x7D, 0xE8);                     // lea rdi, [rbp-24]
+        a.Call("scePthreadMutexattrSettype");
+        a.Emit(0x48, 0x89, 0xDF);                           // mov rdi, rbx
+        a.Emit(0x48, 0x8D, 0x75, 0xE8);                     // lea rsi, [rbp-24]
+        a.Emit(0x31, 0xD2);                                 // xor edx, edx  (unnamed)
+        a.Call("scePthreadMutexInit");
+        a.Emit(0x41, 0x89, 0xC4);                           // mov r12d, eax
+        a.Emit(0x48, 0x8D, 0x7D, 0xE8);                     // lea rdi, [rbp-24]
+        a.Call("scePthreadMutexattrDestroy");
+        a.Emit(0x44, 0x89, 0xE0);                           // mov eax, r12d
+        AttrFrameEnd(a);
+        (byte[] code, (int, string)[] relocs) = a.Build();
+        return new("pthread_mutex_init", false, code, relocs);
     }
 
     private static IReadOnlyList<CompatFunc> Functions =>
@@ -1275,15 +2004,41 @@ public static class CompatEmitter
         StatThunk("__fxstat64", "fstat", byFd: true),
         StatThunk("__xstat64", "stat", byFd: false),
 
+        // The clock the runtime asks for is numbered differently here, and the one it asks for most is
+        // the one that differs; both routines that take a clock translate it.
+        ClockGettime(),
+        PthreadSigmask(),
+        Fcntl(),
+
+        // Thread attributes are held as a setting in the four bytes the caller reserved, never as
+        // something belonging to the platform, which needs eight and would write past them.
+        AttrStart("pthread_condattr_init", AttrStartingClock),
+        AttrKeep("pthread_condattr_setclock"),
+        Zero("pthread_condattr_destroy"),
+        CondInit(),
+        AttrStart("pthread_mutexattr_init", AttrStartingKind),
+        AttrKeep("pthread_mutexattr_settype"),
+        Zero("pthread_mutexattr_destroy"),
+        MutexInit(),
+
         // Mapped to a device entry, or refused where there is no counterpart.
+        SetErrno(),
         ErrnoLocation(),
+        StrErrorR(),
         Forward("pthread_setname_np", "scePthreadRename"),
         // Reading a thread's own attributes. The device publishes the same call under the name the
-        // system it descends from uses, and the two agree exactly - a thread handle first, a place to
-        // put the attributes second, zero or an error number back - so the arguments and the result
-        // pass straight through. Refusing instead left the attributes at the defaults that were put
-        // there before the call, so the caller read the template's stack address and size rather than
-        // the running thread's, and every later check against those bounds asked about the wrong range.
+        // system it descends from uses, and the arguments and the result line up - a thread handle
+        // first, a place to put the attributes second, zero or an error number back - so both pass
+        // straight through. Refusing instead left the attributes at the defaults that were put there
+        // before the call, so the caller read the template's stack address and size rather than the
+        // running thread's, and every later check against those bounds asked about the wrong range.
+        //
+        // Two things about the platform's version are worth writing down, because they are not true of
+        // the one the runtime was built against. It refuses a place that has not already been made
+        // ready, answering "not valid" rather than filling it in, and what it fills in it also
+        // allocates, which only the matching release call frees. The runtime happens to do both -
+        // it makes the place ready, reads, takes the stack out of it, and releases - so this holds
+        // today; a caller that skipped either step would get nothing and leak on every call.
         Forward("pthread_getattr_np", "pthread_attr_get_np"),
         ClockNanosleep(),
         Forward("pipe2", "pipe"),                   // the extra flags argument is dropped
@@ -1309,7 +2064,11 @@ public static class CompatEmitter
         Zero("gai_strerror"),                       // no message
         Refuse("sysinfo"),
         Zero("prctl"),                              // process controls are no-ops
-        RefuseWide("syscall"),                      // a machine word, so all of it has to say -1
+        SysCall(),                                  // one of the numbers asked for does exist here
+        MAdvise(),                                  // the hints are numbered differently past the fifth
+        PthreadCondTimedWait(),                     // the answer is by value, so it needs its own translation
+        Futimens(),                                 // the finer pair is not published; the older one is
+        Utimensat(),
         // Which processor this thread is on. The platform publishes exactly that question.
         Forward("sched_getcpu", "sceKernelGetCurrentCpu"),
         SchedGetAffinity(),
@@ -1327,7 +2086,7 @@ public static class CompatEmitter
         Zero("posix_fadvise64"),                    // advice is optional
         Zero("sched_setaffinity"),                  // affinity is fixed
         Zero("getauxval"),                          // no auxiliary value
-        Zero("mkdtemp"),                            // no temporary directory
+        RefuseNull("mkdtemp"),                      // no temporary directory, and it says why
         Value("getgrgid_r", 2),                     // no such group
         Value("getpwnam_r", 2),                     // no such user
 
@@ -1335,8 +2094,6 @@ public static class CompatEmitter
         Refuse("__xmknod"),
         Refuse("fallocate64"),
         Refuse("fstatfs64"),
-        Refuse("futimens"),
-        Refuse("utimensat"),
         Refuse("getgrouplist"),
         Refuse("inotify_add_watch"),
         Refuse("inotify_init1"),
@@ -1356,10 +2113,6 @@ public static class CompatEmitter
         // System queries the platform does not offer an application module. The bindings for these
         // exist because the query is a reasonable thing to want, but nothing publishes an entry point
         // for them, so each reports failure rather than binding to nothing.
-        Refuse("sceKernelGetAllowedSdkVersionOnSystem"),
-        Refuse("sceKernelGetOpenPsId"),
-        Refuse("sceKernelGetProsperoSystemSwVersion"),
-        Refuse("sysctlbyname"),
 
         // Taking a compute queue directly from the graphics driver. The toolchain offers both of these
         // and the module that would answer them carries neither, which is a difference worth being
@@ -1401,21 +2154,45 @@ public static class CompatEmitter
         // is what takes the memory.
         Mmap(),
         MProtect(),
-        // Signals are the platform's to deliver; installing a handler succeeds and changes nothing.
+        // Keeping a page resident. The collector asks for this on one page it then changes protection
+        // on twice, so that the change is seen by every processor; the lock is there only to keep that
+        // page from being paged out in between, and nothing afterwards depends on it having happened.
+        // The call it would otherwise reach is a bare system call the kernel guards with a privilege
+        // an application is not given, and refuses outright when a limit it never raises is exceeded -
+        // and the collector treats a refusal as fatal, so a hint it can do without would stop the
+        // runtime from starting. Of every module that launches on this platform, not one asks for it.
+        Zero("mlock"),
+        Zero("munlock"),
+        // Installing a signal handler reports success and changes nothing. **This must not be made to
+        // fail.** Of the 119 libraries the toolchain lets an application link, not one publishes any
+        // real signal call, so this object has to define the name and there is no better body for it -
+        // and the caller treats a refusal as fatal: it gives up on installing its handlers, which makes
+        // the platform layer refuse, which makes the runtime refuse, which is the module reaching its
+        // entry and reporting a non-zero result with nothing said anywhere. Reporting success leaves
+        // the runtime's hardware-exception path inert, which costs nothing until something faults.
         Zero("sigaction"),
         SigEmptySet(),
         SigAddSet(),
         Zero("signal"),                             // the previous handler, which is the default one
-        Zero("pthread_kill"),
+        // Sending a signal to a thread. Nothing published delivers one, so the collector's way of
+        // interrupting a thread to take control of it cannot work whatever this answers. It answers
+        // "there is no such thread", which is the one refusal the caller already has a path for: it
+        // leaves the thread unmarked, where reporting success leaves it marked as interrupted for ever
+        // and the collector waits on something that will never happen.
+        Value("pthread_kill", NoSuchThread),
+        GcLog(),
         // Directory streams, which nothing published offers, built on the call underneath them.
         OpenDir(),
         ReadDir(),
         CloseDir(),
-        // Nothing found, reported the way each caller expects: a null result.
+        // Nothing found, reported the way each caller expects. Asking for a name that is not set is
+        // an ordinary answer rather than a failure, and the two that load code report why through a
+        // call of their own, so those three answer nothing and leave the number alone. Resolving a
+        // path is a failure when it answers nothing, so that one says why.
         Zero("dlopen"),
         Zero("dlsym"),
         Zero("getenv"),
-        Zero("realpath"),
+        RefuseNull("realpath"),
     ];
 
     /// <summary>
@@ -1443,10 +2220,16 @@ public static class CompatEmitter
     public static IReadOnlyList<string> DefinedNames =>
         [.. Functions.Select(f => f.Name), .. DataObjects.Select(d => d.Name)];
 
-    /// <summary>Builds the compat object bytes.</summary>
-    public static byte[] BuildObject()
+    /// <summary>
+    /// Builds the compat object bytes for the kind of module being linked. The kind settles how the
+    /// object reaches its own per-thread storage, which is the one thing it cannot do the same way in
+    /// both: an application knows the distance from the thread pointer when it is linked, a library
+    /// does not.
+    /// </summary>
+    public static byte[] BuildObject(ModuleKind kind = ModuleKind.Executable)
     {
         IReadOnlyList<CompatFunc> funcs = Functions;
+        bool library = kind == ModuleKind.Library;
 
         // Lay out .text: each function on a 16-byte boundary. Record each function's offset.
         var text = new List<byte>();
@@ -1457,6 +2240,12 @@ public static class CompatEmitter
                 text.Add(0x90);   // nop padding
             textOffsets[i] = text.Count;
             text.AddRange(funcs[i].Code);
+            // A library asks the helper where its block ended up rather than adding a distance settled
+            // here. The two forms are the same length, so this replaces the one written into the code
+            // above and nothing after it moves.
+            if (library && funcs[i].Tls is var (site, register, _))
+                for (int b = 0; b < TlsLoadSize; b++)
+                    text[textOffsets[i] + site + b] = TlsLoadThroughHelper(register)[b];
         }
         byte[] textBytes = [.. text];
 
@@ -1465,9 +2254,17 @@ public static class CompatEmitter
         IReadOnlyList<CompatData> data = DataObjects;
         int moduleNameOffset = data.Count * 8;
         int errorTableOffset = moduleNameOffset + ModuleNameText.Length;
-        byte[] dataBytes = new byte[errorTableOffset + ErrorTableSize];
+        int clockTableOffset = errorTableOffset + ErrorTableSize;
+        int fcntlTableOffset = clockTableOffset + ClockTableSize;
+        int adviceTableOffset = fcntlTableOffset + FcntlTableSize;
+        int reverseErrorTableOffset = adviceTableOffset + AdviceTableSize;
+        byte[] dataBytes = new byte[reverseErrorTableOffset + ErrorTableSize];
         ModuleNameText.CopyTo(dataBytes, moduleNameOffset);
         BuildErrorTable().CopyTo(dataBytes, errorTableOffset);
+        BuildClockTable().CopyTo(dataBytes, clockTableOffset);
+        BuildFcntlTable().CopyTo(dataBytes, fcntlTableOffset);
+        BuildAdviceTable().CopyTo(dataBytes, adviceTableOffset);
+        BuildReverseErrorTable().CopyTo(dataBytes, reverseErrorTableOffset);
 
         // Section header indices.
         const int shText = 1, shTbss = 2, shRela = 3, shData = 4, shRelaData = 5, shSym = 6, shStr = 7, shShStr = 8;
@@ -1488,12 +2285,24 @@ public static class CompatEmitter
                 (ulong)moduleNameOffset, (ulong)ModuleNameText.Length),
             (strtab.Add(ErrorTableSymbol), (BindLocal << 4) | TypeObject, shData,                  // [4] the numbering
                 (ulong)errorTableOffset, ErrorTableSize),
+            (strtab.Add(ClockTableSymbol), (BindLocal << 4) | TypeObject, shData,                  // [5] the clocks
+                (ulong)clockTableOffset, ClockTableSize),
+            (strtab.Add(FcntlTableSymbol), (BindLocal << 4) | TypeObject, shData,                  // [6] the commands
+                (ulong)fcntlTableOffset, FcntlTableSize),
+            (strtab.Add(AdviceTableSymbol), (BindLocal << 4) | TypeObject, shData,                 // [7] the hints
+                (ulong)adviceTableOffset, AdviceTableSize),
+            (strtab.Add(ReverseErrorTableSymbol), (BindLocal << 4) | TypeObject, shData,           // [8] read back
+                (ulong)reverseErrorTableOffset, ErrorTableSize),
         };
-        const int LocalSymbolCount = 5;
+        const int LocalSymbolCount = 9;
         symIndex[ReaddirBufSymbol] = 1;
         symIndex[ErrnoShadowSymbol] = 2;
         symIndex[ModuleNameSymbol] = 3;
         symIndex[ErrorTableSymbol] = 4;
+        symIndex[ClockTableSymbol] = 5;
+        symIndex[FcntlTableSymbol] = 6;
+        symIndex[AdviceTableSymbol] = 7;
+        symIndex[ReverseErrorTableSymbol] = 8;
 
         for (int i = 0; i < funcs.Count; i++)
         {
@@ -1521,20 +2330,35 @@ public static class CompatEmitter
         foreach (CompatFunc f in funcs)
             foreach ((int _, string target) in f.Relocs)
                 AddExternal(target, TypeFunc);
+        // The helper a library's address loads call. An application resolves the same loads itself and
+        // so names nothing.
+        if (library && funcs.Any(f => f.Tls is not null))
+            AddExternal(TlsGetAddrSymbol, TypeFunc);
         // A name whose address a variable holds is data, and has to say so: a module that calls it a
         // function invites the loader to bind it the way a function is bound.
         foreach (CompatData d in data)
             if (d.PointsAt is not null)
                 AddExternal(d.PointsAt, TypeObject);
 
-        // Relocations: a PLT32 per tail call, plus a TPOFF32 for the one function that names a thread-local.
+        // Relocations: a PLT32 per tail call, plus what each address load of a thread-local needs. An
+        // application takes one record for the distance it adds to the thread pointer; a library takes
+        // two, one naming the pair of table slots and one for the call to the helper that reads them.
         var relocs = new List<(int Offset, int Symbol, uint Type, long Addend)>();
         for (int i = 0; i < funcs.Count; i++)
         {
             foreach ((int off, string target) in funcs[i].Relocs)
                 relocs.Add((textOffsets[i] + off, symIndex[target], RPlt32, -4));
-            if (funcs[i].Tls is var (tlsOff, tlsName))
-                relocs.Add((textOffsets[i] + tlsOff, symIndex[tlsName], RTpOff32, 0));
+            if (funcs[i].Tls is not var (tlsSite, _, tlsName))
+                continue;
+            if (library)
+            {
+                relocs.Add((textOffsets[i] + tlsSite + 4, symIndex[tlsName], RTlsGd, -4));
+                relocs.Add((textOffsets[i] + tlsSite + 12, symIndex[TlsGetAddrSymbol], RPlt32, -4));
+            }
+            else
+            {
+                relocs.Add((textOffsets[i] + tlsSite + TlsLoadDisp, symIndex[tlsName], RTpOff32, 0));
+            }
         }
 
         // A variable holding an address needs a load-time fixup, the same as any other absolute

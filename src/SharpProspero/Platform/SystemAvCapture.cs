@@ -8,8 +8,8 @@ using System;
 namespace SharpProspero.Platform;
 
 /// <summary>
-/// Captures the system-composited audio and video the console produces — the finished screen the whole
-/// system draws, together with its audio — for a recorder or a stream. Open it, open a video channel,
+/// Captures the system-composited video the console produces — the finished screen the whole
+/// system draws — for a recorder or a stream. Open it, open a video channel,
 /// start it, and read frames; each read hands back a descriptor into the capture buffers.
 /// </summary>
 /// <remarks>

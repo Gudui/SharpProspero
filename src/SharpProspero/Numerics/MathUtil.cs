@@ -117,7 +117,11 @@ public static class MathUtil
         if ((originalTarget - current > 0f) == (output > originalTarget))
         {
             output = originalTarget;
-            velocity = (output - originalTarget) / deltaTime;
+            // The value has been pinned to the target, so it is no longer moving. Deriving that from
+            // the difference divides a zero that is bit-exactly zero by the step, which is right until
+            // the step is zero - and then it writes a number that is not a number back through the
+            // caller's own speed, where it stays and poisons every later call.
+            velocity = 0f;
         }
         return output;
     }

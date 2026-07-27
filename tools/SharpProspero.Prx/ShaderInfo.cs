@@ -85,8 +85,7 @@ public readonly record struct ShaderInfo(
         if (header.Length < 96)
             throw new PrxFormatException("Shader-binary header block is too short.");
 
-        // The program header: pointer fields stored as offsets, then sizes and counts. See the header
-        // layout note in the reversed graphics record.
+        // The program header: pointer fields stored as offsets, then sizes and counts.
         uint magic = BinaryPrimitives.ReadUInt32LittleEndian(header);
         uint version = BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(4));
         ulong cxOff = BinaryPrimitives.ReadUInt64LittleEndian(header.AsSpan(24));

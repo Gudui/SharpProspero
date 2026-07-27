@@ -53,7 +53,9 @@ public static class DynamicWriter
 
     // The prefixes a compiler splits one output section across. `.text.f` belongs to `.text`, so the
     // pieces every object contributes land together instead of being scattered among whatever else that
-    // object carries. Longest first, so `.data.rel.ro.x` is not taken for `.data.x`.
+    // object carries. **Longest first, and the order is what makes this correct rather than merely
+    // tidy**: a name is now matched whole as well as as a prefix, so `.data.rel.ro` reaches its own
+    // entry before it can be taken for a piece of `.data`.
     private static readonly string[] SectionPrefixes =
         [".data.rel.ro", ".text", ".rodata", ".data", ".bss", ".init_array", ".fini_array",
          ".tdata", ".tbss", ".gcc_except_table", FrameSectionName];
@@ -61,15 +63,44 @@ public static class DynamicWriter
     /// <summary>The name a section ends up under: its own, or the prefix it is a piece of.</summary>
     internal static string OutputSectionName(string name)
     {
+        // A name matches whole as well as split. Matching only the split form sent a section named
+        // exactly `.data.rel.ro` to `.data`, so content the loader is meant to seal once it has finished
+        // binding stayed writable for as long as the module ran.
         foreach (string prefix in SectionPrefixes)
-            if (name.Length > prefix.Length && name[prefix.Length] == '.'
+            if (name.Length >= prefix.Length
+                && (name.Length == prefix.Length || name[prefix.Length] == '.')
                 && name.StartsWith(prefix, StringComparison.Ordinal))
                 return prefix;
         return name;
     }
 
+    /// <summary>
+    /// The guard value the runtime stamps into itself while starting up. Its own object marks it
+    /// read-only, and the runtime widens the page holding it to writable, writes the value, and narrows
+    /// it again - refusing to start at all if either protection change is turned down.
+    /// <para>
+    /// That works where a protection change may widen any mapping. Here it cannot: the loader settles a
+    /// range's <em>greatest</em> allowed protection when it maps the segment, taking it from the
+    /// protection that segment asks for, and a segment asking for read alone is given a ceiling with no
+    /// write in it. No later call can raise it. So an object the runtime writes cannot be placed in the
+    /// read-only group, however read-only it is meant to be at rest - it goes in the writable group,
+    /// whose ceiling admits write, and the runtime's own narrowing gives it back its read-only rest
+    /// state. It is given a page of its own because that narrowing covers a whole page.
+    /// </para>
+    /// </summary>
+    private const string GuardObjectSymbol = "__security_cookie";
+
+    /// <summary>
+    /// The name the guard object is placed under. It is named apart from the group it came from so the
+    /// section table does not report one name spanning two groups.
+    /// </summary>
+    private const string GuardSectionName = ".sce_guard";
+
     /// <summary>The two arrays whose order within a group is set by the priority in each section name.</summary>
     private static readonly string[] ConstructorArrays = [".init_array", ".fini_array"];
+
+    /// <summary>The older way of recording the same two, which this linker refuses rather than skips.</summary>
+    private static readonly string[] OlderConstructorArrays = [".ctors", ".dtors"];
 
     /// <summary>
     /// The priority a constructor-array section carries in its own name. A section named for one runs
@@ -82,8 +113,8 @@ public static class DynamicWriter
     }
 
     // The linking group starts where the writable group's memory ends rather than on the next page, and
-    // its file offset carries the same page offset as its address. Every module measured that starts is
-    // laid out this way; none puts the group on a page of its own.
+    // its file offset carries the same page offset as its address. The loader reads the group by that
+    // relation; it never sits on a page of its own.
     private const ulong DynlibAlign = 16;
     // The constructor walker and the teardown routine that follows it, which is a single return.
     private const int InitFiniSize = EntryStubSize + 8;
@@ -97,7 +128,13 @@ public static class DynamicWriter
     // The revision the modules an application links against are built at. Reported back by the system
     // as the process starts, and recorded again in the version segment; the two must not drift.
     private const uint ModuleSdkVersion = 0x02000009;
-    private const uint PtLoad = 1, PtDynamic = 2, PtNote = 4, PtTls = 7, PtSceProcParam = 0x61000001, PtGnuEhFrame = 0x6474E550;
+    // The version that travels with the one above. The pair is fixed: every module measured that
+    // carries one carries this alongside it, and neither is chosen without the other.
+    private const uint CompanionSdkVersion = 0x08050001;
+    // The record a library carries in place of an executable's process parameters, and its marker.
+    private const uint ModuleParamMagic = 0x3C13F4BF;
+    private const int ModuleParamSize = 0x20;
+    private const uint PtLoad = 1, PtDynamic = 2, PtNote = 4, PtTls = 7, PtSceProcParam = 0x61000001, PtSceModuleParam = 0x61000002, PtGnuEhFrame = 0x6474E550;
     private const uint PtGnuRelro = 0x6474E552, PtSceComment = 0x6FFFFF00, PtSceVersion = 0x6FFFFF01;
 
     private const long DtNeeded = 1, DtHash = 4, DtStrTab = 5, DtSymTab = 6, DtStrSz = 10, DtSymEnt = 11;
@@ -108,7 +145,9 @@ public static class DynamicWriter
     private const long DtRela = 7, DtRelaSz = 8, DtRelaEnt = 9, DtRelaCount = 0x6ffffff9;
     private const long DtInitArray = 25, DtFiniArray = 26, DtInitArraySz = 27, DtFiniArraySz = 28;
     private const long DtInit = 12, DtFini = 13, DtDebug = 21, DtPreInitArray = 32, DtPreInitArraySz = 33;
-    private const uint RJumpSlot = 7, RGlobDat = 6, RRelative = 8, RAbs64 = 1, RIRelative = 37;
+    private const uint RJumpSlot = 7, RGlobDat = 6, RRelative = 8, RAbs64 = 1;
+    // Which module owns a thread-local block. A library's descriptor pairs carry one each.
+    private const uint RDtpMod64 = 16;
     private const ushort ShnAbs = 0xFFF1; // an absolute symbol: its value is its address, not a section offset
     private const ushort ShnCommon = 0xFFF2; // a common (tentative, uninitialized global) symbol with no section
     private const string Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+-";
@@ -120,6 +159,8 @@ public static class DynamicWriter
     private sealed class Import
     {
         public required string PlainName { get; init; }
+        /// <summary>The name the providing module publishes; the identifier is computed from this.</summary>
+        public required string PublishedName { get; init; }
         public required string ModuleName { get; init; }
         public int ModuleId { get; set; }
         public int LibraryId { get; set; }
@@ -144,8 +185,19 @@ public static class DynamicWriter
     /// <param name="kind">Whether the output is an application or a library module.</param>
     /// <param name="exportSymbols">Defined symbols the module exports for other modules to import.</param>
     /// <param name="moduleFileName">The module's own file name, recorded in the module for self-reference.</param>
+    /// <param name="moduleName">
+    /// The name the module publishes itself under, which the loader and any importer resolve against.
+    /// Null takes the file name without its extension, which is what a module built from one source
+    /// file is expected to be called.
+    /// </param>
+    /// <param name="exportLibraryName">
+    /// The name of the library the module publishes its exports under. Null takes the module name.
+    /// The two are separate because a module publishing more than one library names each apart from
+    /// itself, which is how every module on the console is arranged.
+    /// </param>
     public static byte[] Write(LinkResolution resolution, string? entrySymbol, ModuleKind kind = ModuleKind.Executable,
-        IReadOnlyList<string>? exportSymbols = null, string? moduleFileName = null)
+        IReadOnlyList<string>? exportSymbols = null, string? moduleFileName = null,
+        string? moduleName = null, string? exportLibraryName = null)
     {
         ArgumentNullException.ThrowIfNull(resolution);
         if (resolution.Unresolved.Count > 0)
@@ -171,10 +223,20 @@ public static class DynamicWriter
             (string, string) libraryKey = (imp.Soname, imp.LibraryName);
             if (!libraryIndex.TryGetValue(libraryKey, out int l)) { l = libraryIndex.Count; libraryIndex[libraryKey] = l; }
             libraryData.TryAdd(libraryKey, (imp.Soname, imp.LibraryName, imp.LibraryVersion, n + 1));
-            imports.Add(new Import { PlainName = imp.Name, ModuleName = imp.Soname, ModuleId = n + 1, LibraryId = l });
+            // The identifier is computed from the name the providing module publishes, which is not
+            // always the name the reference carries: a routine standing in front of a published name
+            // reaches it under one of its own.
+            imports.Add(new Import
+            {
+                PlainName = imp.Name,
+                PublishedName = imp.PublishedName ?? imp.Name,
+                ModuleName = imp.Soname,
+                ModuleId = n + 1,
+                LibraryId = l
+            });
         }
         foreach (Import imp in imports)
-            imp.MangledName = $"{SceNid.Compute(imp.PlainName)}#{Encode(imp.LibraryId)}#{Encode(imp.ModuleId)}";
+            imp.MangledName = $"{SceNid.Compute(imp.PublishedName)}#{Encode(imp.LibraryId)}#{Encode(imp.ModuleId)}";
         var importByName = new Dictionary<string, Import>(StringComparer.Ordinal);
         foreach (Import imp in imports)
             importByName[imp.PlainName] = imp;
@@ -229,7 +291,47 @@ public static class DynamicWriter
         // other sections that object happens to carry. That is what makes a name a contiguous run - the
         // frame records need it to be read as one chain, and the constructor array needs it to be named
         // by one address and one length.
-        var placed = new HashSet<(ElfObject, int)>();
+        // Sections another object carried first are not laid out at all: marking them placed before
+        // anything is gathered keeps every group from claiming them.
+        var placed = new HashSet<(ElfObject, int)>(resolution.DroppedSections.Select(d => (d.Object, d.Section)));
+
+        // The one object the runtime writes to through a protection change, held out of the read-only
+        // group before anything is gathered so no group claims it first. See <see cref="GuardObjectSymbol"/>
+        // for why it cannot live there. It is placed at the head of the writable group below.
+        (ElfObject Obj, int Index)? guard = null;
+        foreach (ElfObject obj in resolution.Included)
+        {
+            foreach (ElfSymbol sym in obj.Symbols)
+            {
+                if (sym.Name != GuardObjectSymbol || sym.IsUndefined)
+                    continue;
+                int gi = sym.SectionIndex;
+                if ((uint)gi < (uint)obj.Sections.Count
+                    && obj.Sections[gi] is { IsAlloc: true, IsWritable: false, IsTls: false, IsExecutable: false })
+                    guard = (obj, gi);
+                break;
+            }
+            if (guard is not null)
+                break;
+        }
+        if (guard is { } heldOut)
+            placed.Add(heldOut);
+
+        // The older way of recording global constructors, which this linker does not walk. Everything it
+        // links today records them the newer way, so this never fires - but an object built by a
+        // different compiler can carry the older form, and its constructors would then be laid into the
+        // image and never run, which shows up far away as something not being set up. Refusing by name
+        // is better than running a module that quietly skipped part of its own start-up.
+        foreach (ElfObject obj in resolution.Included)
+            foreach (ElfSection sec in obj.Sections)
+                if (sec.IsAlloc && sec.Size > 0 && (OlderConstructorArrays.Contains(sec.Name)
+                    || OlderConstructorArrays.Any(n => sec.Name.StartsWith(n + ".", StringComparison.Ordinal))))
+                    throw new ElfLinkException(
+                        $"{obj.Origin} records its global constructors in '{sec.Name}', which this linker " +
+                        "does not walk. Its constructors would be laid into the module and never run. " +
+                        "Rebuild that object so it records them in .init_array, which every current " +
+                        "compiler does by default.");
+
         List<(ElfObject Obj, int Index)> Gather(Func<ElfSection, bool> inGroup, string[] order)
         {
             var byName = new Dictionary<string, List<(ElfObject, int)>>(StringComparer.Ordinal);
@@ -293,14 +395,11 @@ public static class DynamicWriter
             if (placedAs == ".fini_array") { if (!haveFini) { finiArrayOff = o; haveFini = true; } finiArrayEnd = relroDataLen; }
         }
 
-        // An executable runs its own global constructors: the loader runs the init array of a shared
-        // library it loads, but not of the main executable - that is the start code's job. Without this
-        // the module's initializers (including the runtime's own registration) never run, so it starts
-        // and then fails on the first managed call. The entry calls a walker the linker writes, which
-        // is what the setup routine points at. The array itself is still named, the way a module built
-        // against the same objects names it: nothing runs it twice, because the only thing that runs it
-        // is the walker the entry calls.
-        bool runsOwnConstructors = kind != ModuleKind.Library;
+        // An executable runs its own global constructors: the loader runs the init array of a library it
+        // loads, but not of the main executable - that is the start code's job. Without this the
+        // module's initializers, the runtime's own registration among them, never run, so it starts and
+        // then fails on the first managed call. Which of the two names the array, and which is left
+        // doing nothing, is settled where the setup routine is written.
 
         // The thread-local template: the initialized sections first so their file image is contiguous,
         // then the zero-filled sections. Each thread receives a copy of this template at run time. It is
@@ -352,6 +451,15 @@ public static class DynamicWriter
         }
         if (frameLen > 0 && !frameRunClosed) roLen = Align(roLen, 4) + 4;
 
+        // The guard object leads the writable group and keeps its page to itself. The runtime narrows
+        // that whole page back to read-only the moment it has written the value, so anything sharing the
+        // page would be frozen with it for as long as the module runs.
+        if (guard is { } guardSection)
+        {
+            sectionOffsetInGroup[guardSection] = 0;
+            dataLen = dataMem = SegAlign;
+        }
+
         // The writable group: what it stores first, then what it only reserves. Placing a reserved
         // section between two stored ones would force the group to store the whole span and write out as
         // zeros what it could have reserved.
@@ -388,14 +496,17 @@ public static class DynamicWriter
 
         // Build dynamic-metadata bytes. The needed record uses the module file name; the module and
         // library records use the bare name (no extension), matching the reference layout.
+        string fileName = moduleFileName ?? (kind == ModuleKind.Library ? "prospero_module.prx" : "eboot.bin");
+        string publishedModuleName = moduleName ?? System.IO.Path.GetFileNameWithoutExtension(fileName);
         var dynstr = new StringTable();
-        int moduleInfoName = dynstr.Add(kind == ModuleKind.Library ? "prospero_module" : "eboot");
-        int origFileNameOff = dynstr.Add(moduleFileName ?? (kind == ModuleKind.Library ? "prospero_module.prx" : "eboot.bin"));
+        int moduleInfoName = dynstr.Add(publishedModuleName);
+        int exportLibNameOffset = dynstr.Add(exportLibraryName ?? publishedModuleName);
+        int origFileNameOff = dynstr.Add(fileName);
         var moduleRecords = new (int SonameOff, int ModuleNameOff, int ModuleId, ushort ModuleVersion)[moduleIndex.Count];
         foreach ((string soname, int n) in moduleIndex)
         {
-            (string moduleName, ushort moduleVersion) = moduleData[soname];
-            moduleRecords[n] = (dynstr.Add(soname), dynstr.Add(moduleName), n + 1, moduleVersion);
+            (string neededModuleName, ushort moduleVersion) = moduleData[soname];
+            moduleRecords[n] = (dynstr.Add(soname), dynstr.Add(neededModuleName), n + 1, moduleVersion);
         }
         // One record per library, carrying the id of the module that publishes it. A module publishing
         // two libraries produces one needed record and two library records.
@@ -412,6 +523,10 @@ public static class DynamicWriter
         var gotDataOrder = new List<string>();
         var gotDataSym = new List<(ElfObject Obj, int SymIndex)>();
         var gotDataIndex = new Dictionary<string, int>(StringComparer.Ordinal);
+        // The thread-local descriptor pairs, keyed by where in the module's block they point.
+        var tlsPairOrder = new List<ulong>();
+        var tlsPairIndex = new Dictionary<ulong, int>();
+        bool needsTlsModulePair = false;
         int abs64Count = 0;
         // An import gets a linkage-table entry only when something calls it. One reached only by taking
         // its address - which is what a data import is - is bound by a relocation on the reference
@@ -423,13 +538,42 @@ public static class DynamicWriter
             {
                 if (kv.Key >= o.Sections.Count || !o.Sections[kv.Key].IsAlloc)
                     continue;
-                HashSet<ulong>? folded = FoldedTlsCalls(kv.Value);
+                // A section another object carried first is not in the output, so its relocations are
+                // not applied either. Counting them anyway made the table longer than what goes into
+                // it, and the difference stayed as records of nothing at the end of it - which the
+                // pass that applies them already knew to skip, so the two disagreed.
+                if (resolution.DroppedSections.Contains((o, kv.Key)))
+                    continue;
+                HashSet<ulong>? folded = FoldedTlsCalls(kv.Value, kind);
                 foreach (ElfRelocation r in kv.Value)
                 {
                     if (r.SymbolIndex >= (uint)o.Symbols.Count)
                         continue;
                     if (folded is not null && folded.Contains(r.Offset))
                         continue;
+                    // A library reaches a thread-local through a pair of table slots holding which
+                    // module owns the variable and where in that module's block it sits. Which module
+                    // is only settled as the module loads, so the pair is what the load-time record
+                    // fills. One pair serves every reference resolving to the same place in the block,
+                    // which is what the offset keys the collection on: two names at one place are one
+                    // pair, and the same name reached from two objects is not two.
+                    if (kind == ModuleKind.Library && r.Type == RelType.TlsGd)
+                    {
+                        ElfSymbol ts = o.Symbols[(int)r.SymbolIndex];
+                        if (!TryTlsTemplateOffset(resolution, tlsOffset, o, ts, out ulong blockOff))
+                            throw new ElfLinkException($"Thread-local symbol '{ts.Name}' has no template section.");
+                        tlsPairIndex.TryAdd(blockOff, tlsPairOrder.Count);
+                        if (tlsPairIndex[blockOff] == tlsPairOrder.Count)
+                            tlsPairOrder.Add(blockOff);
+                        continue;
+                    }
+                    if (kind == ModuleKind.Library && r.Type == RelType.TlsLd)
+                    {
+                        // The module-base lookup needs one pair for the module, with no offset in it;
+                        // each member is then reached by an offset written straight into the code.
+                        needsTlsModulePair = true;
+                        continue;
+                    }
                     // A GOT-relative data load and an initial-exec thread-local load both need a GOT slot;
                     // the thread-local slot holds a link-time offset rather than an address (filled below).
                     if (RelType.IsGotPcRel(r.Type) || r.Type == RelType.GotTpOff)
@@ -497,13 +641,15 @@ public static class DynamicWriter
         byte[] dynstrBytes = dynstr.ToBytes();
         byte[] dynsymBytes = [.. dynsym];
         // The hash table is indexed by the name a symbol was written with, not by the shortened name the
-        // string table ends up holding. Every module measured that starts is built this way: the string
-        // table holds the shortened form, and the bucket a symbol sits in is the hash of the plain name
-        // it had before it was shortened. Checked over four modules the other toolchain built - 581
-        // symbols - and every one of them lands where hashing the plain name puts it.
+        // string table ends up holding: the string table holds the shortened form, while the bucket a
+        // symbol sits in is the hash of the plain name it had before it was shortened. Hashing the
+        // shortened form instead files every shortened symbol in a bucket no lookup ever reaches.
         var dynsymNames = new List<string>(imports.Count + exports.Count + 1) { "" };
         foreach (Import imp in imports)
-            dynsymNames.Add(imp.PlainName);
+            // The published name, because that is the one the shortened form in the string table was
+            // computed from. Hashing the name the reference carried instead puts a routine that stands
+            // in front of a published name into a bucket nothing looks in.
+            dynsymNames.Add(imp.PublishedName);
         foreach ((string _, ElfObject _, ElfSymbol sym, bool _) in exports)
             dynsymNames.Add(sym.Name);
         byte[] hashBytes = BuildSysVHash(dynsymNames);
@@ -534,14 +680,16 @@ public static class DynamicWriter
         // taken from the same condition the records are written under, so the two cannot drift apart.
         int paramBlockPointers = ParamBlockPointers
             + (importByName.ContainsKey(CompatEmitter.LibcMarkerName) ? 1 : 0);
-        byte[] relaDynBytes = new byte[(gotDataRelocCount + abs64Count + paramBlockPointers) * 24];
+        // One pair per thread-local descriptor, plus one for the module's own block when a
+        // local-dynamic base asks for it. Each pair takes one load-time record, for its module word.
+        int tlsPairCount = tlsPairOrder.Count + (needsTlsModulePair ? 1 : 0);
+        byte[] relaDynBytes = new byte[(gotDataRelocCount + abs64Count + paramBlockPointers + tlsPairCount) * 24];
         byte[] pltBytes = new byte[16 + boundImports.Count * 16 + InitFiniSize];
-        byte[] gotBytes = new byte[24 + boundImports.Count * 8 + gotDataOrder.Count * 8];
-        byte[] procParam = BuildProcParam();
+        byte[] gotBytes = new byte[24 + boundImports.Count * 8 + gotDataOrder.Count * 8 + tlsPairCount * 16];
+        byte[] procParam = kind == ModuleKind.Library ? BuildModuleParam() : BuildProcParam();
         byte[] paramBlocks = BuildParamBlocks();
         byte[] note = BuildNote();
-        string ownFileName = moduleFileName ?? (kind == ModuleKind.Library ? "prospero_module.prx" : "eboot.bin");
-        byte[] comment = BuildComment(ownFileName);
+        byte[] comment = BuildComment(fileName);
         // One record per component the link consumed: the start object this linker writes, then each
         // module the result binds against. A built module names its own start files and every library it
         // was given, in that order.
@@ -585,6 +733,10 @@ public static class DynamicWriter
         // description reads as having none.
         linkerDefined[CompatEmitter.TextEndSymbol] = textSegEndAddr;
         linkerDefined[CompatEmitter.FrameIndexSymbol] = ehFrameHdrSize > 0 ? ehFrameHdrAddr : textAddr;
+        // The far end of that index. The reader is handed the index as a range and measures it from
+        // here rather than from anything inside the index, so the two names have to be given together.
+        linkerDefined[CompatEmitter.FrameIndexEndSymbol] =
+            ehFrameHdrSize > 0 ? ehFrameHdrAddr + (ulong)ehFrameHdrSize : textAddr;
         // First writable group: the global-offset table and the process parameters. The
         // relocation-read-only header covers this group, so the loader turns it read-only once it has
         // finished binding the module. That is what the table is for, and where the parameters belong -
@@ -593,6 +745,9 @@ public static class DynamicWriter
         ulong relroAddr = Align(roEndAddr, SegAlign);
         ulong gotAddr = relroAddr;
         ulong gotDataAddr = gotAddr + 24 + (ulong)boundImports.Count * 8;
+        // The descriptor pairs close the table. A pair is two words and is addressed as a unit, so the
+        // code points at the first of the two and the helper reads both.
+        ulong tlsPairAddr = gotDataAddr + (ulong)gotDataOrder.Count * 8;
         ulong relroDataAddr = Align(gotAddr + (ulong)gotBytes.Length, relroDataAlign);
         ulong procAddr = Align(relroDataAddr + relroDataLen, 8);
         // The thread-local template closes the group. Every module that carries one keeps it here
@@ -612,11 +767,10 @@ public static class DynamicWriter
         ulong dataAddr = Align(relroEndAddr, SegAlign);
         // A module with no writable data of its own still carries the group, and it has to *store*
         // something. A mapped segment that stores nothing is carried by the container as a pair of
-        // zero-length segments sharing one file offset, and none of the seventy modules measured that
-        // start carries a zero-length segment at all. It also has to reserve less than a whole page:
-        // reserving a page would end the group flush on a page boundary, and the linking group - which
-        // starts where this group's memory ends - would then begin on a page of its own at a
-        // page-aligned file offset, which no module that starts does either.
+        // zero-length segments sharing one file offset, which the loader turns away. It also has to
+        // reserve less than a whole page: reserving a page would end the group flush on a page boundary,
+        // and the linking group - which starts where this group's memory ends - would then begin on a
+        // page of its own at a page-aligned file offset, which is refused as well.
         if (dataLen == 0) dataLen = 8;
         ulong dataSegMem = Math.Max(dataMem, dataLen);
         ulong dataEndAddr = dataAddr + dataSegMem;
@@ -629,10 +783,9 @@ public static class DynamicWriter
         // the group is not an optional nicety - the module does not start without it.
         // The tables come in one order and one only: the string table at the very base of the group,
         // then the symbol table, the two relocation tables with the binding records first, the hash, the
-        // note, and the dynamic table last. Sixty-nine of the seventy modules measured that start lay
-        // them out exactly this way, as do the modules the SDK ships and a build of the same source by
-        // the other linker; nothing that starts uses a different one. Each table begins on an 8-aligned
-        // address, the note on a 4-aligned one, with no padding beyond what that alignment asks for.
+        // note, and the dynamic table last. Any other order leaves the module unable to start. Each
+        // table begins on an 8-aligned address, the note on a 4-aligned one, with no padding beyond
+        // what that alignment asks for.
         ulong dynlibAddr = Align(dataEndAddr, DynlibAlign);
         ulong dynstrAddr = dynlibAddr;
         ulong dynsymAddr = Align(dynstrAddr + (ulong)dynstrBytes.Length, 8);
@@ -676,11 +829,16 @@ public static class DynamicWriter
                 throw new ElfLinkException($"{o.Origin}: a symbol refers to section index {i}, which the object does not define.");
             ElfSection s = o.Sections[i];
             if (relroSections.Contains((o, i))) return relroDataAddr + sectionOffsetInGroup[(o, i)];
+            // The guard object sits in the writable group although its own section asks to be read-only,
+            // so its address cannot be settled from the section's flags the way every other one is.
+            if (guard == (o, i)) return dataAddr + sectionOffsetInGroup[(o, i)];
             ulong bas = s.IsExecutable ? textAddr : s.IsWritable ? dataAddr : roAddr;
             return bas + sectionOffsetInGroup[(o, i)];
         }
+        RefuseThreadLocalsInALibrary(resolution, kind, tlsAlignedMem);
         var dynRelocs = new List<DynReloc>(gotDataOrder.Count + abs64Count);
-        var sectionData = RelocateApp(resolution, importByName, SectionAddr, gotDataAddr, gotDataIndex, dynRelocs, tlsOffset, tlsAlignedMem, linkerDefined);
+        var sectionData = RelocateApp(resolution, importByName, SectionAddr, gotDataAddr, gotDataIndex, dynRelocs, tlsOffset, tlsAlignedMem, linkerDefined,
+            kind, tlsPairAddr, tlsPairIndex, tlsPairOrder.Count);
 
         // Add the global-offset-table slots to the dynamic relocations: an imported symbol resolves
         // through the dynamic symbol table (GLOB_DAT); a defined symbol is relative to the load base.
@@ -714,6 +872,20 @@ public static class DynamicWriter
             }
         }
 
+        // The descriptor pairs: which module owns the block is written by a load-time record, and where
+        // in that block the variable sits is a distance settled here. The record names no symbol, so the
+        // module it answers with is the one carrying the record - this one.
+        for (int i = 0; i < tlsPairCount; i++)
+        {
+            ulong pair = tlsPairAddr + (ulong)i * 16;
+            dynRelocs.Add(new DynReloc(pair, RDtpMod64, 0, 0));
+            int pairByte = 24 + boundImports.Count * 8 + gotDataOrder.Count * 8 + i * 16;
+            // The last pair, when a local-dynamic base asked for one, names the block itself and so
+            // carries no distance; the rest carry the distance to the variable they were made for.
+            ulong within = i < tlsPairOrder.Count ? tlsPairOrder[i] : 0;
+            BinaryPrimitives.WriteUInt64LittleEndian(gotBytes.AsSpan(pairByte + 8), within);
+        }
+
         // The process parameters name the three blocks. A built module leaves the pointers zero in the
         // image and fills them in at load time, because the addresses are only known once the module is
         // placed - which is why the block reads as all zeros in a finished module and is still not the
@@ -726,6 +898,12 @@ public static class DynamicWriter
         dynRelocs.Add(new DynReloc(paramBlocksAddr + MallocReplacePointer, RRelative, 0, paramBlocksAddr + (ulong)ParamBlockOffsets[3]));
         dynRelocs.Add(new DynReloc(paramBlocksAddr + NewReplacePointer, RRelative, 0, paramBlocksAddr + (ulong)ParamBlockOffsets[4]));
         dynRelocs.Add(new DynReloc(paramBlocksAddr + TlsMallocReplacePointer, RRelative, 0, paramBlocksAddr + (ulong)ParamBlockOffsets[5]));
+        // How large the C library may let its heap grow, and the flag that lifts its own limit. Left
+        // unnamed, the library uses a built-in quarter of a megabyte for the whole process, and every
+        // allocation past that simply fails - which reads as the runtime running out of memory while
+        // the machine has hundreds of megabytes free.
+        dynRelocs.Add(new DynReloc(paramBlocksAddr + LibcHeapSizePointer, RRelative, 0, paramBlocksAddr + (ulong)HeapSizeValueOffset));
+        dynRelocs.Add(new DynReloc(paramBlocksAddr + LibcHeapExtendedPointer, RRelative, 0, paramBlocksAddr + (ulong)HeapExtendedValueOffset));
         if (importByName.TryGetValue(CompatEmitter.LibcMarkerName, out Import? marker))
             dynRelocs.Add(new DynReloc(paramBlocksAddr + LibcMarkerPointer, RAbs64, (uint)marker.DynSymIndex, 0));
 
@@ -772,18 +950,29 @@ public static class DynamicWriter
                 if (!s.IsUndefined && s.Name == entrySymbol)
                     entry = SymbolValue(resolution, importByName, SectionAddr, eo, s, linkerDefined);
 
-        // The constructors run from a walker the linker builds, because only the linker knows where the
-        // constructor array ended up. The entry calls it by name, after the C library has been set up
-        // and never before; the teardown routine returns at once, having nothing to undo.
-        BuildInitWalker(initAddr, initArray.Address, initArray.Address + initArray.Size)
-            .CopyTo(pltBytes.AsSpan(initOffset));
+        // Whatever runs the constructors has to run them once. The two ways of naming them are the
+        // setup routine and the array, and a module that names both under one array has them run twice
+        // - which for the runtime means registering itself twice and for anything else means whatever
+        // running a constructor twice means. A module built by the reference toolchain names both, and
+        // they cover different sets: its setup routine walks the older constructor lists and never the
+        // array. So the sets are kept disjoint here too, by naming only one of them per kind.
+        //
+        // An executable has an entry of its own and the loader runs no array for it, so its setup
+        // routine is a walker over the array, called from the entry once the C library is up. A library
+        // has no entry, so the loader runs its array directly and the setup routine has nothing left to
+        // do. The teardown routine returns at once either way, having nothing to undo.
+        if (kind == ModuleKind.Library)
+            pltBytes[initOffset] = 0xC3; // ret
+        else
+            BuildInitWalker(initAddr, initArray.Address, initArray.Address + initArray.Size)
+                .CopyTo(pltBytes.AsSpan(initOffset));
         pltBytes[initOffset + EntryStubSize] = 0xC3; // ret
 
         byte[] dynamicBytes = BuildDynamic(moduleRecords, libraryRecords, moduleInfoName,
             dynsymAddr, dynstrAddr, (ulong)dynstrBytes.Length, hashAddr, (ulong)hashBytes.Length,
             relaAddr, (ulong)relaBytes.Length, gotAddr, dynsymBytes.Length,
             relaDynAddr, (ulong)relaDynBytes.Length, relativeCount,
-            hasExports, origFileNameOff, moduleInfoName, exportLibId,
+            hasExports, origFileNameOff, exportLibNameOffset, exportLibId,
             // An executable declares both arrays empty and runs its own constructors from the entry;
             // declaring a real one would have the loader run them again before the entry is reached.
             // A library has no entry of its own, so the loader is what runs its constructors and it
@@ -807,7 +996,11 @@ public static class DynamicWriter
                 ElfSection sec = o.Sections[i];
                 if (!sec.IsAlloc || sec.IsTls || !sectionOffsetInGroup.ContainsKey((o, i)) || sec.Size == 0)
                     continue;
-                string name = OutputSectionName(sec.Name);
+                // The guard object is named apart from the group it came from: merged back under that
+                // name, the name's run would stretch from the read-only group across to this one and
+                // read as a single section spanning both.
+                bool isGuard = guard == (o, i);
+                string name = isGuard ? GuardSectionName : OutputSectionName(sec.Name);
                 ulong at = SectionAddr(o, i);
                 if (outputIndex.TryGetValue(name, out int at2))
                 {
@@ -819,7 +1012,8 @@ public static class DynamicWriter
                 else
                 {
                     outputIndex[name] = outputSections.Count;
-                    outputSections.Add((name, at, sec.Size, sec.AddrAlign, sec.IsExecutable, sec.IsWritable, sec.IsNoBits));
+                    outputSections.Add((name, at, sec.Size, isGuard ? SegAlign : sec.AddrAlign,
+                        sec.IsExecutable, sec.IsWritable || isGuard, sec.IsNoBits));
                 }
             }
         outputSections.Sort((a, b) => a.Addr.CompareTo(b.Addr));
@@ -833,11 +1027,42 @@ public static class DynamicWriter
             dynamicAddr, dynamicBytes, comment, versionBlob);
     }
 
+    // Thread-local access is settled at link time by working out where a variable sits relative to the
+    // thread pointer and writing that distance into the code. That distance is only knowable for the
+    // main executable, whose block is placed first and whose offset the system therefore knows in
+    // advance. Every other module has its block placed after the ones already loaded, at a position
+    // that is not known until it is loaded, so a distance written in advance points into some other
+    // module's storage - it reads and writes another module's variables, and nothing reports a fault.
+    //
+    // A library therefore leaves the sequences alone: the pair of table slots is filled as the module
+    // loads and the helper reads them. The two forms that ask for a distance from the thread pointer
+    // have no such indirection to hide behind, so an object using one of them is refused rather than
+    // written, because what would be written is wrong in a way nothing later detects.
+    private static void RefuseThreadLocalsInALibrary(LinkResolution resolution, ModuleKind kind, ulong tlsSize)
+    {
+        if (kind != ModuleKind.Library || tlsSize == 0)
+            return;
+        foreach (ElfObject obj in resolution.Included)
+            foreach (KeyValuePair<int, IReadOnlyList<ElfRelocation>> kv in obj.Relocations)
+            {
+                if (kv.Key >= obj.Sections.Count || !obj.Sections[kv.Key].IsAlloc)
+                    continue;
+                foreach (ElfRelocation r in kv.Value)
+                    if (r.Type is RelType.GotTpOff or RelType.TpOff32 or RelType.TpOff64)
+                        throw new ElfLinkException(
+                            $"{obj.Origin}: a thread-local reference of the form this object uses cannot " +
+                            "be written into a library. It asks for the distance from the thread pointer, " +
+                            "which is settled only once every module carrying such a block has been " +
+                            "placed; written in advance it points into another module's storage.");
+            }
+    }
+
     private static Dictionary<(ElfObject, int), byte[]> RelocateApp(
         LinkResolution resolution, Dictionary<string, Import> importByName, Func<ElfObject, int, ulong> sectionAddr,
         ulong gotDataAddr, Dictionary<string, int> gotDataIndex, List<DynReloc> dynRelocs,
         Dictionary<(ElfObject, int), ulong> tlsOffset, ulong tlsAlignedMem,
-        IReadOnlyDictionary<string, ulong> linkerDefined)
+        IReadOnlyDictionary<string, ulong> linkerDefined,
+        ModuleKind kind, ulong tlsPairAddr, Dictionary<ulong, int> tlsPairIndex, int tlsPairCount)
     {
         var result = new Dictionary<(ElfObject, int), byte[]>();
         foreach (ElfObject obj in resolution.Included)
@@ -848,6 +1073,10 @@ public static class DynamicWriter
                 if (idx >= obj.Sections.Count) continue;
                 ElfSection sec = obj.Sections[idx];
                 if (!sec.IsAlloc) continue;
+                // A section another object carried first is not in the output, so it has no address to
+                // relocate against and nothing reads what it would have held. Its references are to the
+                // rest of its own group, which went with it.
+                if (resolution.DroppedSections.Contains((obj, idx))) continue;
                 byte[] bytes = sec.IsNoBits ? new byte[sec.Size] : (byte[])sec.Data.Clone();
                 ulong secAddr = sectionAddr(obj, idx);
 
@@ -855,7 +1084,7 @@ public static class DynamicWriter
                 // __tls_get_addr. Relaxing the lea rewrites both instructions, so the call's relocation is
                 // folded away rather than applied on its own. The call sits eight bytes past a general-
                 // dynamic lea's relocation and five past a local-dynamic one.
-                HashSet<ulong>? foldedTlsCall = FoldedTlsCalls(kv.Value);
+                HashSet<ulong>? foldedTlsCall = FoldedTlsCalls(kv.Value, kind);
 
                 foreach (ElfRelocation r in kv.Value)
                 {
@@ -866,6 +1095,27 @@ public static class DynamicWriter
 
                     if (foldedTlsCall is not null && foldedTlsCall.Contains(r.Offset))
                         continue; // the __tls_get_addr call, folded into the local-exec load below
+
+                    if (r.Type == RelType.TlsGd && kind == ModuleKind.Library)
+                    {
+                        // Leave the pair alone and point the lea at this variable's descriptor. Which
+                        // module owns the block is filled as the module loads, so nothing here can say
+                        // where the variable ends up - only which pair to ask.
+                        if (!TryTlsTemplateOffset(resolution, tlsOffset, obj, sym, out ulong gdBlockOff))
+                            throw new ElfLinkException($"Thread-local symbol '{sym.Name}' has no template section.");
+                        ulong pair = tlsPairAddr + (ulong)tlsPairIndex[gdBlockOff] * 16;
+                        BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(at), (uint)(long)(pair + (ulong)r.Addend - place));
+                        continue;
+                    }
+
+                    if (r.Type == RelType.TlsLd && kind == ModuleKind.Library)
+                    {
+                        // The same, for the module's own block: the pair carries no distance, and each
+                        // member is reached by the distance written into the code below.
+                        ulong pair = tlsPairAddr + (ulong)tlsPairCount * 16;
+                        BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(at), (uint)(long)(pair + (ulong)r.Addend - place));
+                        continue;
+                    }
 
                     if (r.Type == RelType.TlsGd)
                     {
@@ -931,7 +1181,12 @@ public static class DynamicWriter
                         // the thread pointer above) resolves to the same value.
                         if (!TryTlsTemplateOffset(resolution, tlsOffset, obj, sym, out ulong templateOff))
                             throw new ElfLinkException($"Thread-local symbol '{sym.Name}' has no template section.");
-                        long tp = (long)templateOff - (long)tlsAlignedMem + r.Addend;
+                        // A distance from the module's own block is what a library writes, since its
+                        // block is found through a descriptor rather than from the thread pointer. An
+                        // executable measures from the thread pointer, below which its block sits.
+                        long tp = kind == ModuleKind.Library
+                            ? (long)templateOff + r.Addend
+                            : (long)templateOff - (long)tlsAlignedMem + r.Addend;
                         if (r.Type is RelType.TpOff64 or RelType.DtpOff64)
                             BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(at), (ulong)tp);
                         else
@@ -947,13 +1202,20 @@ public static class DynamicWriter
                         case RelType.R64:
                             BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(at), s + (ulong)r.Addend);
                             // An absolute 64-bit reference needs a load-time fixup: a symbol record for
-                            // an imported target, a base-relative record for a defined one. An indirect
-                            // function is special: the loader calls its resolver and stores the result, so
-                            // the record is an irelative whose addend is the resolver address. An
+                            // an imported target, a base-relative record for a defined one. An
                             // unresolved weak reference resolves to absolute zero and needs no fixup, so
                             // leave it out rather than read the load base.
+                            //
+                            // A function whose address is settled by calling a routine that chooses one
+                            // cannot be expressed at all: the record that would say so is of a kind the
+                            // loader refuses outright, and it refuses the whole module rather than that
+                            // one record. Writing a base-relative record instead would leave the address
+                            // of the chooser in the slot and call it as though it were the function. So
+                            // it is refused here, where it can still be read.
                             if (sym.Type == SymType.GnuIfunc && !sym.IsUndefined)
-                                dynRelocs.Add(new DynReloc(place, RIRelative, 0, s + (ulong)r.Addend));
+                                throw new ElfLinkException(
+                                    $"'{sym.Name}' has its address settled by a routine that chooses one, " +
+                                    "and this platform's loader has no record for that.");
                             else if (sym.IsUndefined && importByName.TryGetValue(sym.Name, out Import? imp))
                                 dynRelocs.Add(new DynReloc(place, RAbs64, (uint)imp.DynSymIndex, (ulong)r.Addend));
                             else if (ProducesDynReloc(resolution, importByName, sym))
@@ -963,6 +1225,16 @@ public static class DynamicWriter
                         case RelType.Plt32:
                             BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(at), (uint)(long)(s + (ulong)r.Addend - place)); break;
                         case RelType.Pc64:
+                            // The distance from here to the symbol, which only means anything when the
+                            // symbol is in this module. For one that comes from elsewhere there is no
+                            // distance to write: its address is not known until the module is loaded,
+                            // and nothing here records that it needs filling in, so the reference was
+                            // quietly left pointing at whatever the arithmetic produced from an address
+                            // of zero. Refuse it rather than write that.
+                            if (sym.IsUndefined && importByName.ContainsKey(sym.Name))
+                                throw new ElfLinkException(
+                                    $"{obj.Origin}: '{sym.Name}' comes from another module, and a " +
+                                    "reference measured as a distance to it cannot be settled here.");
                             BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(at), (ulong)((long)(s + (ulong)r.Addend) - (long)place)); break;
                         case RelType.R32:
                         case RelType.R32S:
@@ -992,7 +1264,10 @@ public static class DynamicWriter
         // An absolute symbol's value is its final address; it is not relative to any section.
         if (sym.SectionIndex == ShnAbs) return sym.Value;
         if (sym.Type == SymType.Section) return sectionAddr(obj, sym.SectionIndex);
-        if (!sym.IsUndefined) return sectionAddr(obj, sym.SectionIndex) + sym.Value;
+        // A symbol defined in a section another object carried first has no address of its own: the
+        // reference resolves through the copy that was kept, the same way an undefined one does.
+        if (!sym.IsUndefined && !resolution.DroppedSections.Contains((obj, sym.SectionIndex)))
+            return sectionAddr(obj, sym.SectionIndex) + sym.Value;
         if (resolution.Defined.TryGetValue(sym.Name, out ElfObject? defObj))
             foreach (ElfSymbol d in defObj.Symbols)
                 if (!d.IsUndefined && d.Name == sym.Name)
@@ -1065,8 +1340,11 @@ public static class DynamicWriter
     // applied on its own - and the helper it names is not called at all, so it takes no linkage-table
     // slot. The call sits eight bytes past a general-dynamic lea's relocation and five past a
     // local-dynamic one.
-    private static HashSet<ulong>? FoldedTlsCalls(IReadOnlyList<ElfRelocation> relocations)
+    private static HashSet<ulong>? FoldedTlsCalls(IReadOnlyList<ElfRelocation> relocations, ModuleKind kind)
     {
+        // A library keeps the pair and lets the helper run, so nothing is folded there.
+        if (kind == ModuleKind.Library)
+            return null;
         HashSet<ulong>? folded = null;
         foreach (ElfRelocation probe in relocations)
         {
@@ -1233,9 +1511,8 @@ public static class DynamicWriter
         // The linking group follows the writable group's stored bytes in the file, at the first offset
         // that carries the same page offset as its address - the relation every mapped group keeps, held
         // here too even though this group is not mapped. Rounding to the next page instead would put the
-        // group on a page of its own and its address past the end of the writable group's memory, and no
-        // module measured is laid out that way: in all seventy the address falls inside that memory and
-        // the offset is never page-aligned.
+        // group on a page of its own and its address past the end of the writable group's memory. The
+        // address has to fall inside that memory and the offset must never be page-aligned.
         ulong dataStoredEnd = dataFileOff + dataLen;
         ulong dynlibFileOff = (dataStoredEnd & ~(SegAlign - 1)) + (dynlibAddr & (SegAlign - 1));
         // Past the writable group's last stored byte, and never at its own offset - a group that stores
@@ -1351,10 +1628,9 @@ public static class DynamicWriter
         // the writable group, the dynamic and process-parameter headers, the comment, the version
         // record, the module note and the reserved note - eleven. The read-only segment is added only
         // when it carries something, and the frame index and thread-local template when present.
-        // The thread-local header is carried whether or not the module has thread-local data: a module
-        // built from the same objects by the other linker carries an empty one, and every module
-        // measured carries fourteen headers. Leaving it out on a module with no thread-local data
-        // would produce thirteen, which nothing that loads does.
+        // The thread-local header is carried whether or not the module has thread-local data, so the
+        // count comes to fourteen either way. Leaving it out on a module with no thread-local data
+        // would produce thirteen, and a module with thirteen does not load.
         bool hasRo = roSegEnd > roAddr;
         int phnum = 12 + (hasRo ? 1 : 0) + (ehFrameHdr.Length > 0 ? 1 : 0);
         BinaryPrimitives.WriteUInt16LittleEndian(file.AsSpan(0x38), (ushort)phnum);
@@ -1387,12 +1663,13 @@ public static class DynamicWriter
         // The writable group stores what it has and reserves the rest; a module's uninitialized data
         // costs no file bytes.
         WritePh(PtLoad, PfR | PfW, dataFileOff, dataAddr, dataLen, dataSegMem, SegAlign);
-        WritePh(PtSceProcParam, PfR, relroFileOff + (procAddr - relroAddr), procAddr, (ulong)proc.Length, (ulong)proc.Length, 8);
+        WritePh(kind == ModuleKind.Library ? PtSceModuleParam : PtSceProcParam, PfR,
+            relroFileOff + (procAddr - relroAddr), procAddr, (ulong)proc.Length, (ulong)proc.Length, 8);
         WritePh(PtDynamic, PfR | PfW, dynlibFileOff + (dynamicAddr - dynlibAddr), dynamicAddr, (ulong)dynamic.Length, (ulong)dynamic.Length, 8);
         WritePh(PtTls, PfR, hasTls ? relroFileOff + (tlsAddr - relroAddr) : relroFileOff,
             hasTls ? tlsAddr : relroAddr, tlsFileLen, tlsMemLen, hasTls ? tlsAlign : 1);
-        // The frame-lookup header asks for four, which is what all seventy modules measured that start
-        // carry and what the table's own entries are sized to; eight is an alignment no module uses.
+        // The frame-lookup header asks for four, which is what the table's own entries are sized to;
+        // eight leaves the header claiming an alignment its entries do not keep.
         if (ehFrameHdr.Length > 0)
             WritePh(PtGnuEhFrame, PfR, roFileOff + (ehFrameHdrAddr - roAddr), ehFrameHdrAddr, (ulong)ehFrameHdr.Length, (ulong)ehFrameHdr.Length, 4);
         // The dynamic-linking segment requests no protection: the loader reads it to bind the module
@@ -1419,12 +1696,16 @@ public static class DynamicWriter
             {
                 ElfSection sec = obj.Sections[i];
                 if (!sec.IsAlloc || sec.IsNoBits || !sectionData.TryGetValue((obj, i), out byte[]? bytes)) continue;
+                if (resolution.DroppedSections.Contains((obj, i))) continue;
                 ulong a = sectionAddr(obj, i);
-                // A writable section can sit in either writable group; its address settles which, since
-                // the relocation-read-only group is a contiguous run of its own.
+                // Which group a section landed in is settled by where it landed, not by what its own
+                // flags ask for. The groups run in increasing address order, and a section can sit in a
+                // group its flags do not describe - the guard object asks to be read-only and is placed
+                // in the writable group, because this platform never lets a read-only mapping widen.
                 (ulong segFileOff, ulong segBase) = sec.IsExecutable ? (textFileOff, text.Addr)
-                    : a >= relroAddr && a < relroEndAddr ? (relroFileOff, relroAddr)
-                    : sec.IsWritable ? (dataFileOff, dataAddr) : (roFileOff, roAddr);
+                    : a >= dataAddr ? (dataFileOff, dataAddr)
+                    : a >= relroAddr ? (relroFileOff, relroAddr)
+                    : (roFileOff, roAddr);
                 Put(segFileOff, segBase, a, bytes);
             }
         Put(textFileOff, text.Addr, pltAddr, plt);
@@ -1472,9 +1753,9 @@ public static class DynamicWriter
         // the module carries a real, reproducible identifier rather than a run of zeros. The 20-byte
         // descriptor sits 16 bytes into the note (after its name/size/type header and the "GNU" name);
         // it is hashed while still zero, so the same inputs always yield the same identifier.
-        // Only the first sixteen bytes carry the identifier and the last four stay zero: that is what
-        // sixty-nine of the seventy modules measured that start hold, and what the system reports back
-        // when it names a module. Filling all twenty names a module in a shape none of them uses.
+        // Only the first sixteen bytes carry the identifier and the last four stay zero, which is the
+        // shape the system reads back when it names a module. Filling all twenty leaves an identifier
+        // the system does not report.
         int noteFileOff = (int)(dynlibFileOff + (noteAddr - dynlibAddr));
         byte[] buildId = System.Security.Cryptography.SHA1.HashData(file);
         buildId.AsSpan(0, BuildIdBytes).CopyTo(file.AsSpan(noteFileOff + 16, BuildIdBytes));
@@ -1547,10 +1828,9 @@ public static class DynamicWriter
         e.Add((DtStrTab, strtab)); e.Add((DtStrSz, strsz));
         e.Add((DtHash, hash));
         // The constructor and destructor arrays are always named. For an executable they are named
-        // empty: sixty-nine of the seventy modules measured that start declare both at zero and the
-        // seventieth declares neither, so none of them hands the loader an array to run. Its entry runs
-        // its constructors itself, and declaring a real array here as well would run every one of them
-        // twice. A library keeps the array it carries, because the loader is what runs those.
+        // empty, so the loader is handed no array to run: the entry runs its constructors itself, and
+        // declaring a real array here as well would run every one of them twice. A library keeps the
+        // array it carries, because the loader is what runs those.
         e.Add((DtPreInitArray, 0)); e.Add((DtPreInitArraySz, 0));
         e.Add((DtInitArray, initArray.Address)); e.Add((DtInitArraySz, initArray.Size));
         e.Add((DtFiniArray, finiArray.Address)); e.Add((DtFiniArraySz, finiArray.Size));
@@ -1654,10 +1934,8 @@ public static class DynamicWriter
         return c;
     }
 
-    // The block is 0x60 bytes and says so. Sixty-nine of the seventy modules measured that start carry
-    // exactly that, stored and in memory, and the seventieth declares a length that reads as rubbish;
-    // a build of the same source by the other linker carries it too, byte for byte. Padding it further
-    // makes the segment longer than the length it declares and longer than any module carries.
+    // The block is 0x60 bytes and says so, stored and in memory alike. Padding it further makes the
+    // segment longer than the length the block itself declares, which reads back as a malformed block.
     private const int ProcParamSize = 0x60, ProcParamDeclaredSize = 0x60;
 
     // The three parameter blocks the process parameters point at. Every built module carries them, and
@@ -1675,7 +1953,25 @@ public static class DynamicWriter
     // name, and the three replacement tables the C library's block names. The marker recording which C
     // library was linked against is counted separately, because a module linked against none has no
     // such import to name and writes no record for it.
-    private const int ParamBlockPointers = 6;
+    private const int ParamBlockPointers = 8;
+
+    /// <summary>The two heap figures stored after the blocks, and where each sits.</summary>
+    private const int HeapFigureSize = 16;
+    private static int HeapSizeValueOffset => ParamBlockOffsets[^1] + TlsMallocReplaceSize;
+    private static int HeapExtendedValueOffset => HeapSizeValueOffset + 8;
+
+    // Where in the C library's block the size of the heap it may grow to is named, and the flag that
+    // lets it grow past its own idea of a limit. Both are pointers the module fills in at load time.
+    private const int LibcHeapSizePointer = 0x10, LibcHeapExtendedPointer = 0x20;
+
+    /// <summary>
+    /// The heap figures the module carries for the C library to point at. A module that names no size
+    /// gets the library's built-in one, which is a quarter of a megabyte for the whole process - enough
+    /// to start almost nothing, and reached silently, as an allocation simply failing. The value below
+    /// is the one the platform's own header gives for "no limit", and it is what most shipping modules
+    /// carry; the flag beside it clears the same limit by a second route.
+    /// </summary>
+    private const ulong LibcHeapNoLimit = 0xFFFFFFFFFFFFFFFF;
 
     /// <summary>Where each block starts, measured from the first.</summary>
     private static readonly int[] ParamBlockOffsets =
@@ -1698,14 +1994,37 @@ public static class DynamicWriter
         int[] sizes = [LibcParamSize, KernelMemParamSize, KernelFsParamSize,
                        MallocReplaceSize, NewReplaceSize, TlsMallocReplaceSize];
         ulong[] counts = [LibcParamRevision, 0, 0, 2, 3, 1];
-        byte[] b = new byte[ParamBlockOffsets[^1] + TlsMallocReplaceSize];
+        // The two heap figures are stored past the last block and pointed at from the C library's,
+        // which is how a module names them: the block holds addresses, not values.
+        byte[] b = new byte[ParamBlockOffsets[^1] + TlsMallocReplaceSize + HeapFigureSize];
         for (int i = 0; i < sizes.Length; i++)
         {
             BinaryPrimitives.WriteUInt64LittleEndian(b.AsSpan(ParamBlockOffsets[i]), (ulong)sizes[i]);
             if (counts[i] != 0)
                 BinaryPrimitives.WriteUInt64LittleEndian(b.AsSpan(ParamBlockOffsets[i] + 8), counts[i]);
         }
+        BinaryPrimitives.WriteUInt64LittleEndian(b.AsSpan(HeapSizeValueOffset), LibcHeapNoLimit);
+        BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(HeapExtendedValueOffset), 1);
         return b;
+    }
+
+    // What a library carries where an executable carries its process parameters. The two are different
+    // records under different headers, and a module carries whichever suits what it is: of the modules
+    // measured, every one that is a library carries this one and none carries the other, and every
+    // executable is the exact reverse. The shared-object half of the reference startup code carries
+    // this block verbatim, which is where its contents come from rather than from inference.
+    //
+    // The version words are the same pair the process parameters carry, and mean the same thing.
+    private static byte[] BuildModuleParam()
+    {
+        byte[] p = new byte[ModuleParamSize];
+        BinaryPrimitives.WriteUInt64LittleEndian(p, ModuleParamSize);
+        BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(0x08), ModuleParamMagic);
+        BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(0x0C), 3);
+        BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(0x10), CompanionSdkVersion);
+        BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(0x14), ModuleSdkVersion);
+        BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(0x18), 1);
+        return p;
     }
 
     private static byte[] BuildProcParam()
@@ -1715,11 +2034,12 @@ public static class DynamicWriter
         p[8] = (byte)'O'; p[9] = (byte)'R'; p[10] = (byte)'B'; p[11] = (byte)'I';
         BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(0x0C), 5);
         // Two version words read out of the process parameters when the image is activated; the system
-        // reports both back as it starts the process. The first is a fixed compatibility stamp. The
-        // second states the version the module targets, and carries the revision the modules an
-        // application links against are built at - a revision no release carries describes a module
-        // that could not exist.
-        BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(0x10), 0x08050001);
+        // reports both back as it starts the process. The second states the version the module targets
+        // and carries the revision the modules an application links against are built at - a revision
+        // no release carries describes a module that could not exist. The first is the companion
+        // version that goes with it: the two travel as a pair and are not chosen independently, so
+        // changing one without the other describes a combination no module has.
+        BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(0x10), CompanionSdkVersion);
         BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(0x14), ModuleSdkVersion);
         BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(0x58), 1);
         return p;
@@ -1748,14 +2068,13 @@ public static class DynamicWriter
 
     // The version segment, recording the module's own name and the revision it was built against. A
     // record is a zero, the length of the record body, the width of one version word, the name ending
-    // in a colon, then two version words held most-significant byte first. Written in the form a
-    // module carries, so a reader walking record by record lands exactly on the end of the segment.
+    // in a colon, then two version words held most-significant byte first, so a reader walking record
+    // by record lands exactly on the end of the segment.
     private const int VersionWordSize = 8;
 
     // The version segment is a run of records and nothing else. A reader takes each record's declared
     // body length and steps to the next, so the segment has to end exactly where the last record does:
-    // padding past it reads as a further record declaring no body, which is not a record at all. Both
-    // built modules measured walk record by record and land exactly on their segment end.
+    // padding past it reads as a further record declaring no body, which is not a record at all.
     private static byte[] BuildVersion(IReadOnlyList<string> components)
     {
         var blob = new List<byte>();

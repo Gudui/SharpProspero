@@ -67,8 +67,11 @@ public sealed class Stepper : UiElement
         int textY = CenterTextY(Bounds, theme.TextScale);
         surface.DrawText(Text, Bounds.X + theme.Padding, textY, theme.TextScale, theme.Text);
 
-        string left = _value > Minimum ? "\x11" : " ";   // left arrow, dimmed to a space at the bottom
-        string right = _value < Maximum ? "\x10" : " ";   // right arrow, dimmed to a space at the top
+        // Drawn with characters the font has: it covers printable text only and folds anything else to
+        // a blank, so both ends were drawn blank and there was no telling a value that can still move
+        // from one that has reached its limit.
+        string left = _value > Minimum ? "<" : " ";
+        string right = _value < Maximum ? ">" : " ";
         string shown = left + " " + (Format?.Invoke(_value) ?? _value.ToString()) + " " + right;
         int width = Surface.MeasureText(shown, theme.TextScale);
         surface.DrawText(shown, Bounds.X + Bounds.Width - theme.Padding - width, textY, theme.TextScale, theme.Text);

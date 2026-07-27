@@ -65,9 +65,10 @@ if (net.IsConnected)
 
 `State` reports where the connection is as a `NetCtlState` (`Disconnected`, `Connecting`,
 `IpObtaining`, `IpObtained`); `IsConnected` is the shorthand for having an address. `Device` reports
-`Wired` or `Wireless`. `IpAddress`, `SubnetMask`, `DefaultGateway`, `PrimaryDns`, `Ssid`, `MacAddress`
-and `Mtu` fill in the rest. Opening needs no socket pool; the status service is the only network call
-it makes.
+`Wired` or `Wireless`. Both enums live in `SharpProspero.Interop.Net`, so add that using directive to
+branch on them. `IpAddress`, `SubnetMask`, `DefaultGateway`, `PrimaryDns`, `Ssid`, `MacAddress` and
+`Mtu` fill in the rest. Opening needs no socket pool; the status service is the only network call it
+makes.
 
 ## Addresses
 
@@ -95,8 +96,9 @@ int read = conn.Receive(buffer);                   // 0 means the peer closed th
 ```
 
 `SendAll` repeats until every byte is accepted. `Send` sends once and reports how many bytes went, for
-callers that manage their own buffering. `SetReceiveTimeout` bounds a blocking receive; `RemoteAddress`
-reports the peer, and `Shutdown` stops sends, receives, or both without closing the socket.
+callers that manage their own buffering. `SetReceiveTimeout` bounds a blocking receive, in microseconds,
+with zero meaning wait forever; `RemoteAddress` reports the peer, and `Shutdown` stops sends, receives,
+or both without closing the socket.
 
 ## A TCP server
 
@@ -197,13 +199,18 @@ server.PollOnce(request => request.Path switch
 `Header(name)` for one header and `BodyText()` for the body as UTF-8. `HttpServerResponse` has `Text`,
 `Html`, `Json`, `Bytes`, `NotFound` and `Redirect` builders, and its `StatusCode`, `ContentType`,
 `Headers` and `Body` are settable for anything else. Each request is answered and its connection
-closed, which keeps it simple and robust. To dedicate the loop to serving instead of polling, call
+closed, which keeps it simple and robust. `PollOnce` returns whether it served a request, and takes an
+optional wait in microseconds — zero, the default, returns at once when no client is waiting.
+`HttpServerRequest` also carries `Target`, the path and query exactly as sent;
+`HttpServerResponse.ReasonPhrase` sets the text after the status code; and `HttpServer.Port` reports
+the bound port. To dedicate the loop to serving instead of polling, call
 `Run(handler, keepRunning)`. Bind to the loopback address only, with `Start(port, loopbackOnly: true)`,
 for a server just this console reaches.
 
 {: .note }
-> The server reads the whole request into memory, so it caps the header block (`MaxHeaderBytes`) and
-> the body (`MaxBodyBytes`, default 8 MiB). A request over the body cap gets a 413.
+> The server reads the whole request into memory, so it caps the header block (`MaxHeaderBytes`, a
+> fixed 64 KiB) and the body (`MaxBodyBytes`, default 8 MiB). A request over either cap is answered
+> with 400 Bad Request and its connection closed.
 
 ## URL encoding and query strings
 
@@ -252,7 +259,8 @@ SocketAddress address = dns.Resolve("example.com", 80);
 using var conn = TcpConnection.Connect(address);
 ```
 
-`Resolve` takes an optional per-attempt timeout and retry count.
+`Resolve` takes a per-attempt timeout in seconds (5 by default, 2000 at most) and a retry count (2 by
+default). Unlike the poller and the socket timeouts, this one is in seconds.
 
 ## Background transfers
 
@@ -286,11 +294,12 @@ if (DownloadService.TryOpen(out DownloadService? transfers))
 | `TryFindTaskByContentId(contentId, kind, out taskId)` | Turn a content identifier into a task identifier. `kind` is one of the values in `FindKinds`. |
 | `Start` / `Stop` / `Pause` / `Resume` (taskId) | Control one transfer. |
 | `TryGetProgress(taskId, out progress)` | Read how far a transfer has gone as named fields. |
-| `TryGetProgressRecord(taskId, destination)` | Read the whole progress record for the fields that are not named. |
+| `TryGetProgressRecord(taskId, destination)` | Read the whole progress record for the fields that are not named. `destination` must hold at least `DownloadService.ProgressSize` (88) bytes, or the call raises `ArgumentException`. |
 
 `TryGetProgress` returns a `TransferProgress`: `TotalBytes`, `TransferredBytes`, a `PercentComplete`
-derived from them, an `ErrorCode` (negative on failure, exposed as `HasError`), and `IsComplete`. The
-service controls transfers that already exist; creating one is not offered.
+derived from them, an `ErrorCode` (negative on failure, exposed as `HasError`), `IsComplete`, and the
+raw `State` word that last flag reads. The service controls transfers that already exist; creating one
+is not offered.
 
 {: .note }
 > The service asks for at least `DownloadService.MinimumMemorySize` (1 MiB), which is the default the

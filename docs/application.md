@@ -82,14 +82,18 @@ app.Run();
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `Width`, `Height` | `1920` x `1080` | framebuffer size in pixels |
+| `Width`, `Height` | `1920` x `1080` | framebuffer size, from the sizes the output accepts (below) |
 | `BufferCount` | `2` | framebuffers in the swap chain |
-| `UserId` | `SceUser.System` | the user the display and input open for |
+| `UserId` | `SceUser.System` | the user the controller opens for; the display is not opened for a user |
 | `FlipMode` | `VideoOutFlipMode.VSync` | flip timing used each frame |
 | `HideSplashScreen` | `true` | remove the boot splash before the first frame |
 | `OpenGamePad` | `true` | open a controller for `UserId` at startup |
 
+The output takes 1920x1080, 3840x2160, 720x480 and 720x576, or a width that is a multiple of 32 from 1280 to 1888 with a height nine sixteenths of it. Any other size makes `Run` throw `ArgumentOutOfRangeException` before the display opens. Of those sizes only 1920x1080 is accepted on every console; the rest need the console set up for them and are otherwise refused when the buffers are registered.
+
 When `OpenGamePad` is set but no controller is present, the host runs anyway and `GamePad` is null; `FrameContext.Input` reports the resting sample so per-frame code needs no special case.
+
+The host opens the display in the layout the output scans out, and no setting changes that. `FrameContext.Surface` is therefore a row-major buffer of its own, and presenting a frame walks every pixel to move what was drawn into the scan-out buffer. Budget that pass on top of your own drawing: at 1920x1080 it moves just over two million pixels each frame. Drawing through the graphics processor writes into the scan-out buffer directly and has no pass to pay, but that path drives the display and its flips itself rather than through this host - see [GPU command layer](graphics-gpu.md).
 
 ## The frame context
 
@@ -99,7 +103,7 @@ When `OpenGamePad` is set but no controller is present, the host runs anyway and
 | --- | --- |
 | `Surface` | the framebuffer to draw this frame into |
 | `FrameIndex` | zero-based frame counter since `Run` began |
-| `DeltaSeconds` | seconds since the previous frame, measured at the vertical blank |
+| `DeltaSeconds` | seconds between the start of this frame and the start of the previous one, read from the monotonic counter |
 | `TotalSeconds` | seconds since `Run` began |
 | `Input` | the latest controller sample |
 | `PreviousInput` | the sample from the previous frame |
@@ -161,8 +165,8 @@ Three helpers organize the code that runs inside the loop. None of them touch a 
 ```csharp
 using SharpProspero.Application;
 
-var game = new StateMachine<Screen>()
-    .Configure(Screen.Menu, onUpdate: dt => { if (start) game.TransitionTo(Screen.Play); })
+StateMachine<Screen> game = new();
+game.Configure(Screen.Menu, onUpdate: dt => { if (start) game.TransitionTo(Screen.Play); })
     .Configure(Screen.Play, onEnter: LoadLevel, onUpdate: Step, onExit: UnloadLevel);
 game.Start(Screen.Menu);
 
@@ -230,7 +234,7 @@ events.Publish(new ScoreChanged(1200));
 public sealed record ScoreChanged(int Total);
 ```
 
-Dispose the token from `Subscribe` to stop receiving; a handler may subscribe or unsubscribe while a message is being delivered without disturbing the one in flight. An exception a handler throws propagates to the publisher and stops the remaining handlers for that message, so keep handlers from throwing on the normal path.
+Dispose the token from `Subscribe` to stop receiving; a handler may subscribe or unsubscribe while a message is being delivered without disturbing the one in flight. An exception a handler throws propagates to the publisher and stops the remaining handlers for that message, so keep handlers from throwing on the normal path. `SubscriberCount<T>()` reports how many handlers are registered for one message type, and `Clear` drops every subscription at once — useful when a screen tears down and its handlers go with it.
 
 ## Where to go next
 

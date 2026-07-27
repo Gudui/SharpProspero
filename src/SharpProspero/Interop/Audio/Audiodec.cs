@@ -18,12 +18,9 @@ public enum AudiodecCodecType : uint
     M4Aac = 0x0003,
 }
 
-/// <summary>The sample form the decoder writes.</summary>
+/// <summary>The sample form the decoder writes. There are two; a third was offered and never existed.</summary>
 public enum AudiodecWordSize
 {
-    /// <summary>Signed 24-bit samples.</summary>
-    Signed24 = 0,
-
     /// <summary>Signed 16-bit samples; the form the audio port takes.</summary>
     Signed16 = 1,
 

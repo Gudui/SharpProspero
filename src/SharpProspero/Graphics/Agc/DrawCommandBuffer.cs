@@ -24,8 +24,9 @@ namespace SharpProspero.Graphics.Agc;
 /// by <see cref="Dispose"/>. Each recording call wraps a command builder from
 /// <see cref="SharpProspero.Interop.Agc.SceAgc"/>: the builder writes its packet and advances the cursor,
 /// and returns the address of the packet it wrote (useful for the indirect-argument patch calls).
-/// If the buffer fills, a builder returns a null packet address rather than overrunning; size the buffer
-/// for the frame and check <see cref="RemainingDwords"/> when in doubt.
+/// If the buffer fills, every builder calls the routine below, which answers that no more room can be
+/// had; the builder then returns a null packet address rather than overrunning. Size the buffer for the
+/// frame and check <see cref="RemainingDwords"/> when in doubt.
 /// </remarks>
 public sealed unsafe class DrawCommandBuffer : IDisposable
 {
@@ -84,8 +85,11 @@ public sealed unsafe class DrawCommandBuffer : IDisposable
         }
     }
 
-    /// <summary>The pointer the driver submit and flip calls take - the address of the book-keeping block.</summary>
+    /// <summary>The book-keeping block. The packet builders read and advance the cursors in it.</summary>
     public void* Handle => St;
+
+    /// <summary>The recorded words themselves, which is what a submit call describes to the driver.</summary>
+    public void* BufferAddress => St->Bottom;
 
     /// <summary>The total capacity, in 32-bit words.</summary>
     public uint CapacityDwords => _capacityDwords;
@@ -107,10 +111,17 @@ public sealed unsafe class DrawCommandBuffer : IDisposable
         st->Top = _buffer + _capacityDwords;
         st->UpCursor = _buffer;
         st->DownCursor = _buffer + _capacityDwords;
-        st->Callback = 0;
+        st->Callback = (nint)(delegate* unmanaged<State*, uint, void*, byte>)&OutOfSpace;
         st->UserData = null;
         st->ReservedDwords = 0;
     }
+
+    // What a builder calls when the recording will not fit. Answering zero means no more room can be
+    // had, which is what makes the builder give back a null packet address. There is no choice about
+    // installing it: every builder calls through this slot without looking at it first, so leaving it
+    // empty is a call to address zero rather than a recording that stops politely.
+    [UnmanagedCallersOnly]
+    private static byte OutOfSpace(State* allocator, uint sizeInDwords, void* userData) => 0;
 
     /// <summary>Packs a register offset and value the way the direct register-write packet expects.</summary>
     internal static ulong Pack(uint offset, uint value) => (offset & 0xffffu) | ((ulong)value << 32);
@@ -151,8 +162,17 @@ public sealed unsafe class DrawCommandBuffer : IDisposable
 
     // --- Synchronization. ---
 
-    /// <summary>Records a wait until the GPU is no longer displaying the target, so the buffer may be reused.</summary>
-    public int WaitUntilSafeForRendering(uint waitMode = 0, uint cachePolicy = 0) => SceAgc.sceAgcDcbWaitUntilSafeForRendering(St, waitMode, cachePolicy);
+    /// <summary>
+    /// Records a wait until the display has released buffer <paramref name="displayBufferIndex"/> of
+    /// video-out handle <paramref name="videoOutHandle"/>, so the buffer may be rendered into again.
+    /// Both have to name a real display buffer: neither is a mode, and a handle of zero matches no
+    /// display, which leaves the wait out of the recording without saying so.
+    /// </summary>
+    public nint WaitUntilSafeForRendering(uint videoOutHandle, int displayBufferIndex)
+        => (nint)SceAgc.sceAgcDcbWaitUntilSafeForRendering(St, videoOutHandle, displayBufferIndex);
+
+    /// <summary>The queue a draw buffer records into.</summary>
+    private const uint DrawQueue = 0;
 
     /// <summary>Records an end-of-pipe event of <paramref name="eventType"/>.</summary>
     public nint EventWrite(uint eventType, ulong eventControl = 0) => (nint)SceAgc.sceAgcDcbEventWrite(St, eventType, eventControl);
@@ -161,19 +181,33 @@ public sealed unsafe class DrawCommandBuffer : IDisposable
 
     /// <summary>
     /// Records a wait until the display has released buffer <paramref name="bufferIndex"/> of video-out
-    /// handle <paramref name="videoOutHandle"/>, so the GPU may render into it. <paramref name="flipMode"/>
-    /// is the video-out flip mode (vertical sync by default).
+    /// handle <paramref name="videoOutHandle"/>, so the GPU may render into it. Returns the number of
+    /// words the packet took.
     /// </summary>
-    public uint WaitUntilSafeForDisplay(int videoOutHandle, uint bufferIndex, uint flipMode = 1, uint flags = 0)
-        => SceAgcDriver.sceAgcDriverWaitUntilSafeForRendering(St, videoOutHandle, bufferIndex, flipMode, flags);
+    /// <remarks>
+    /// The routine underneath takes the slot holding this buffer's write cursor rather than the buffer:
+    /// it reads the cursor, appends the packet, and writes the advanced cursor back. Handing it the
+    /// book-keeping block instead put the packet wherever the block's first word pointed and then
+    /// overwrote that word - the buffer's own base - on the first frame. It also checks nothing about
+    /// space, so the room is checked here.
+    /// </remarks>
+    /// <exception cref="InvalidOperationException">The buffer has no room for the packet.</exception>
+    public uint WaitUntilSafeForDisplay(int videoOutHandle, uint bufferIndex)
+    {
+        uint size = SceAgcDriver.sceAgcDriverGetWaitRenderingPacketSizeInDwords();
+        if (RemainingDwords < St->ReservedDwords + size)
+            throw new InvalidOperationException("The command buffer has no room for the wait packet.");
+        return SceAgcDriver.sceAgcDriverWaitUntilSafeForRendering(
+            &St->UpCursor, size, DrawQueue, (uint)videoOutHandle, (int)bufferIndex);
+    }
 
     /// <summary>
     /// Records a flip so the GPU displays buffer <paramref name="bufferIndex"/> of video-out handle
     /// <paramref name="videoOutHandle"/> once it reaches this point. <paramref name="flipMode"/> is the
     /// video-out flip mode (vertical sync by default). The flip flushes the render caches to memory first.
     /// </summary>
-    public uint SetFlip(int videoOutHandle, int bufferIndex, uint flipMode = 1, uint flipArg = 0, uint flags = 0, ulong userData = 0)
-        => SceAgcDriver.sceAgcDriverSetFlip(St, videoOutHandle, bufferIndex, flipMode, flipArg, flags, userData);
+    public nint SetFlip(int videoOutHandle, int bufferIndex, uint flipMode = 1, long flipArg = 0)
+        => (nint)SceAgc.sceAgcDcbSetFlip(St, (uint)videoOutHandle, bufferIndex, flipMode, flipArg);
 
     /// <summary>Appends <paramref name="dwordCount"/> no-op words (padding). The generic packet works on a draw buffer.</summary>
     public nint Nop(uint dwordCount) => (nint)SceAgc.sceAgcCbNop(St, dwordCount);
@@ -211,7 +245,7 @@ public sealed unsafe class DrawCommandBuffer : IDisposable
         public uint* Top;           // 0x08 end of the buffer (highest address)
         public uint* UpCursor;      // 0x10 lowest free word; the write cursor, advanced by each builder
         public uint* DownCursor;    // 0x18 highest free word (top-down allocations)
-        public nint Callback;       // 0x20 out-of-memory callback; null makes a full buffer return a null packet
+        public nint Callback;       // 0x20 out-of-room callback; every builder calls through it unconditionally
         public void* UserData;      // 0x28 callback argument
         public uint ReservedDwords; // 0x30 keep this many words free
         private uint _pad;          // 0x34 pad to eight-byte alignment

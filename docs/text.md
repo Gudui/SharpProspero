@@ -44,7 +44,8 @@ files.Sort(TextFormat.NaturalComparer);   // file1, file2, file10
 ```
 
 `CompareNatural(left, right)` is the comparison behind the comparer, for when you need the raw result
-rather than an `IComparer<string>`. Only ASCII digits take the numeric path; digits from other scripts fall
+rather than an `IComparer<string>`. It throws `ArgumentNullException` for a null argument, where the
+comparer treats a null as an empty string. Only ASCII digits take the numeric path; digits from other scripts fall
 through to the plain character comparison so the ordering stays consistent.
 
 ### Aligned columns
@@ -115,8 +116,9 @@ foreach ((string title, FuzzyMatch match) in hits)
 Each matched character earns a base amount, and three adjustments shape the ranking: a bonus when a
 character sits right after the previous one (a run reads as a word), a larger bonus when a character begins
 a word — the first character, one that follows a separator, or a camelCase boundary — and a penalty that
-grows with the gap skipped to reach a character, including the distance from the start. An empty pattern
-matches anything with a zero score and no indices.
+grows with the gap skipped to reach a character, including the distance from the start. That penalty stops
+growing past a gap of ten characters, so it never cancels the base amount a matched character earns. An
+empty pattern matches anything with a zero score and no indices.
 
 {: .note }
 > A score is only meaningful against other candidates matched with the same pattern. Do not compare a score

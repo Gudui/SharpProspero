@@ -38,12 +38,13 @@ using var saves = SaveDataManager.Open();
 
 ## Listing saves
 
-`Enumerate` returns an `IReadOnlyList<SaveDataInfo>`. Pass a title id to list that title's saves; pass
-nothing to list every save the user has. The list comes back sorted by directory name.
+`Enumerate` returns an `IReadOnlyList<SaveDataInfo>`, sorted by directory name. It lists the running
+application's own saves. Leaving the title id out does not widen the search — the service fills in the
+calling title — and passing another title's id does not reach that title's saves.
 
 ```csharp
 using var saves = SaveDataManager.Open();
-foreach (SaveDataInfo save in saves.Enumerate("CUSA00000"))
+foreach (SaveDataInfo save in saves.Enumerate())
     Show(save.Title, save.SubTitle, save.ModifiedTime);
 ```
 
@@ -66,7 +67,7 @@ live under (for example `/savedata0`); join your file names onto it and read the
 
 ```csharp
 using var saves = SaveDataManager.Open();
-string dirName = saves.Enumerate("CUSA00000")[0].DirName;
+string dirName = saves.Enumerate()[0].DirName;
 
 using MountedSave mounted = saves.Mount(dirName);
 byte[] data = FileSystem.ReadAllBytes(mounted.MountPoint + "/progress.dat");
@@ -122,7 +123,8 @@ if (directory is not null)
 finishes, `directory` holds the chosen save's directory name, or `null` if the user backed out without
 choosing. `OpenList` takes an optional `SaveDataDialogType` (`Load` by default; also `Save` and
 `Delete`) that sets the dialog's wording. The `Status` property exposes the raw `CommonDialogStatus`
-(`Running`, `Finished`, and so on) if you would rather branch on it than on `TryGetResult`.
+(`Running`, `Finished`, and so on) if you would rather branch on it than on `TryGetResult`. Both enums
+live in `SharpProspero.Interop.Dialog`, so add that using directive to name them.
 
 {: .note }
 > The picker only advances while the frame loop keeps presenting. If you stop calling `Present`, the

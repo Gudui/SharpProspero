@@ -67,6 +67,66 @@ public sealed class TarArchiveTests
     }
 
     [Fact]
+    public void Read_HonoursAnExtendedHeaderPath()
+    {
+        // What the standard way of writing a tar produces: an extended header carrying the whole path,
+        // and a shortened name in the entry's own header for a reader that does not read the extended
+        // one. Two entries differing only past the hundredth character must stay two entries.
+        string first = new string('a', 120) + "/one.txt";
+        string second = new string('a', 120) + "/two.txt";
+        byte[] archive = Archive(
+            Entry("PaxHeaders/one", Pax("path", first), typeFlag: 'x'),
+            Entry(first[..99], "1"u8.ToArray()),
+            Entry("PaxHeaders/two", Pax("path", second), typeFlag: 'x'),
+            Entry(second[..99], "2"u8.ToArray()));
+
+        List<TarEntry> entries = TarArchive.Read(archive);
+
+        Assert.Equal(2, entries.Count);
+        Assert.Equal(first, entries[0].Name);
+        Assert.Equal("1", entries[0].Text);
+        Assert.Equal(second, entries[1].Name);
+        Assert.Equal("2", entries[1].Text);
+    }
+
+    [Fact]
+    public void Read_ExtendedHeaderPathTakesPrecedenceOverALongNameRecord()
+    {
+        byte[] archive = Archive(
+            Entry("././@LongLink", Encoding.UTF8.GetBytes("from-the-old-record"), typeFlag: 'L'),
+            Entry("PaxHeaders/x", Pax("path", "from-the-extended-header"), typeFlag: 'x'),
+            Entry("shortened", "x"u8.ToArray()));
+
+        List<TarEntry> entries = TarArchive.Read(archive);
+
+        Assert.Single(entries);
+        Assert.Equal("from-the-extended-header", entries[0].Name);
+    }
+
+    [Fact]
+    public void Read_GlobalExtendedHeaderDoesNotNameTheNextEntry()
+    {
+        byte[] archive = Archive(
+            Entry("PaxHeaders/g", Pax("path", "not-a-name"), typeFlag: 'g'),
+            Entry("real.txt", "x"u8.ToArray()));
+
+        List<TarEntry> entries = TarArchive.Read(archive);
+
+        Assert.Single(entries);
+        Assert.Equal("real.txt", entries[0].Name);
+    }
+
+    // One extended-header record: the length of the whole record, a space, the pair, a newline.
+    private static byte[] Pax(string key, string value)
+    {
+        string body = $" {key}={value}\n";
+        int length = body.Length + 1;
+        if (length.ToString().Length != 1)
+            length = body.Length + length.ToString().Length;
+        return Encoding.UTF8.GetBytes(length.ToString() + body);
+    }
+
+    [Fact]
     public void Read_EmptyGnuLongNameFallsBackToTheHeaderName()
     {
         // A degenerate long-name record with no payload must not erase the following entry's real name.

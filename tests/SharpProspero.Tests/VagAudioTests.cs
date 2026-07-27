@@ -8,6 +8,9 @@ namespace SharpProspero.Tests;
 
 public sealed class VagAudioTests
 {
+    // Where a clip's blocks begin.
+    private const int HeaderBytes = 48;
+
     private static PcmAudio Sine(int samples, int rate, int channels, double amplitude, double freq)
     {
         short[] data = new short[samples * channels];
@@ -18,6 +21,43 @@ public sealed class VagAudioTests
                 data[i * channels + c] = v;
         }
         return new PcmAudio(data, rate, channels);
+    }
+
+    [Fact]
+    public void Encode_EndsWithATerminatorBlockPerChannel()
+    {
+        // A file says where its sound stops with a block per channel carrying the end mark and a fixed
+        // fill, and marks the last block that does carry sound as the last. Every clip the platform
+        // ships is built this way; one without it plays on into whatever follows it in memory.
+        foreach (int channels in (int[])[1, 2])
+        {
+            byte[] vag = VagAudio.Encode(Sine(280, 48000, channels, 8000, 440));
+            int blocks = (vag.Length - HeaderBytes) / 16;
+            for (int c = 0; c < channels; c++)
+            {
+                ReadOnlySpan<byte> terminator = vag.AsSpan(vag.Length - (channels - c) * 16, 16);
+                Assert.Equal(0, terminator[0]);
+                Assert.Equal(7, terminator[1]);
+                foreach (byte b in terminator[2..])
+                    Assert.Equal(0x77, b);
+
+                // The block before it, for the same channel, is marked as the last carrying sound.
+                Assert.Equal(1, vag[HeaderBytes + (blocks - 2 * channels + c) * 16 + 1]);
+            }
+        }
+    }
+
+    [Fact]
+    public void Decode_StopsAtTheTerminatorRatherThanPlayingIt()
+    {
+        // Decoding the terminator turns its fill into twenty-eight samples of a full-scale step, which
+        // is a click at the end of every clip. The decoder stops where the file says the sound does.
+        PcmAudio original = Sine(280, 48000, 1, 8000, 440);
+        byte[] vag = VagAudio.Encode(original);
+        PcmAudio decoded = VagAudio.Decode(vag);
+
+        int dataBlocks = (vag.Length - HeaderBytes) / 16 - 2;   // less the leading silence and the terminator
+        Assert.Equal(dataBlocks * 28, decoded.Samples.Length);
     }
 
     [Fact]

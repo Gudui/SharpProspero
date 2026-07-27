@@ -1,6 +1,6 @@
 # SharpProspero
 
-A C# SDK and toolchain for building applications that run on the console. Write the application in C#;
+A C# SDK and toolchain for building applications that run on PS5. Write the application in C#;
 the toolchain compiles it ahead of time to a self-contained ELF, links it with its own linker, and packs
 it into an installable package — an `eboot.bin` with no separate runtime to deploy alongside it.
 
@@ -19,6 +19,7 @@ from. A build needs only the .NET 10 SDK.
 - [Command-line tools](#command-line-tools)
 - [Feature reference](#feature-reference)
 - [Documentation](#documentation)
+- [System-version support](#system-version-support)
 - [Building and testing the SDK](#building-and-testing-the-sdk)
 - [License](#license)
 
@@ -44,7 +45,7 @@ from. A build needs only the .NET 10 SDK.
 
 ## How it works
 
-A build runs three steps, wired together by the shared pipeline in `build/`:
+A build runs four steps, wired together by the shared pipeline in `build/`:
 
 1. **Compile** — the C# is compiled ahead of time to a self-contained x86_64 ELF object. This step runs
    on Linux; on Windows the build runs it through WSL automatically. The runtime comes from the .NET SDK's
@@ -53,7 +54,11 @@ A build runs three steps, wired together by the shared pipeline in `build/`:
    supplies its own start object, a compatibility object that bridges the few places the C library and the
    system differ, and a stub for every device-service import, so the link needs no separate linker, start
    file, or stub library.
-3. **Package** — the packager assembles the `eboot.bin`, the `sce_sys` metadata, and any `sce_module`
+3. **Wrap** — every module goes into the container the loader expects: the one just built and the ones
+   the application carries in `sce_module`. A module left as a plain ELF is turned away before any of
+   its code runs, so this step is what makes the result launchable. A module already wrapped this way
+   is left as it is, so re-running a build is safe.
+4. **Package** — the packager assembles the `eboot.bin`, the `sce_sys` metadata, and any `sce_module`
    libraries into an installable `*.pkg`, or writes them into a single folder ready to copy
    (`-Output Folder`).
 
@@ -61,8 +66,9 @@ A build runs three steps, wired together by the shared pipeline in `build/`:
 flowchart LR
   A[C# source] -->|compile ahead of time| B[ELF object]
   B -->|SDK linker: start object + compat object + stubs| C[eboot.bin]
-  C -->|packager + sce_sys metadata| D[Installable *.pkg]
-  C -.->|-Output Folder| E[Files in one folder]
+  C -->|container wrap| W[Module the loader accepts]
+  W -->|packager + sce_sys metadata| D[Installable *.pkg]
+  W -.->|-Output Folder| E[Files in one folder]
 ```
 
 A payload takes a shorter path: it links to a single position-independent `.elf` that a loader maps and
@@ -126,7 +132,11 @@ internal sealed class HelloApp : ProsperoApp
 
 internal static class Program
 {
-    private static void Main() => new HelloApp().Run();
+    private static void Main()
+    {
+        using var app = new HelloApp();
+        app.Run();
+    }
 }
 ```
 
@@ -136,7 +146,30 @@ See [docs/getting-started.md](docs/getting-started.md) to go from an empty proje
 
 Nineteen `dotnet new` templates cover each kind of project. Install one, create a project from it, and its
 `build.ps1` runs the shared pipeline. Applications take the package identity (`--title`, `--titleId`,
-`--conceptId`, `--contentId`) as options.
+`--conceptId`, `--contentIdOverride`) as options; the content id is derived from the title id unless
+the override is given.
+
+| Template | Creates |
+|---|---|
+| `prospero-app` | A frame-loop application that draws to the screen and reads the controller. |
+| `prospero-game` | A real-time game paced by the frame time, with a score and a frame-rate overlay. |
+| `prospero-scene` | A scrolling 2D scene: a camera that follows a sprite, a tile map with collision, and particles. |
+| `prospero-3d` | A spinning, lit cube rendered on the graphics processor with the built-in mesh shaders. |
+| `prospero-ui` | An application built from the interface toolkit (labels, buttons, sliders, steppers, pickers). |
+| `prospero-launcher` | An app launcher: a carousel of entries that launches the chosen title id. |
+| `prospero-filemanager` | A file browser that walks the file system with the controller. |
+| `prospero-dashboard` | A tabbed read-out of system, user, network, memory, and firmware facts. |
+| `prospero-tool` | A toolbox application that shows a checksum, the console name, and the network status. |
+| `prospero-media` | A media player that plays a bundled file, pacing the loop to the decoded audio. |
+| `prospero-synth` | An audio synthesizer that generates and mixes tones and streams them to the output. |
+| `prospero-input` | An input tester that draws the live controller, keyboard, and mouse state each frame. |
+| `prospero-savedata` | A save browser that mounts a save, reads a counter, increments it, and writes it back. |
+| `prospero-dialog` | A menu that opens the system message, on-screen keyboard, and error dialogs. |
+| `prospero-server` | A network service that serves an HTTP control panel and a JSON status endpoint. |
+| `prospero-prx` | A relocatable library module (`.prx`) that exports functions for another module to load. |
+| `prospero-payload` | A headless network service built as a payload `.elf` a loader maps and runs; echoes what it receives. |
+| `prospero-payload-httpd` | A payload web service that answers requests with a status page. |
+| `prospero-payload-beacon` | A one-shot payload that connects out, sends a short report, and returns. |
 
 See [docs/templates.md](docs/templates.md) for the options, what each template contains, and the full
 install list.
@@ -149,18 +182,28 @@ hosts most of them as verbs (`dotnet run --project tools/SharpProspero.Bindings.
 | Command | What it does |
 |---|---|
 | `prx` | Read a `.prx` or `.sprx`, list its exports, and generate a C# wrapper for it. |
+| `link` | Link objects into an `eboot.bin`, a `.prx` library, or a payload `.elf`. |
+| `stub` | Build an import library for a module from a name list, with the module and library versions assumed (`--lib`) or read from the module itself (`--module`). |
+| `crt` | Write the start object that carries the program entry point. |
+| `compat` | Write the compatibility object that bridges the runtime's C calls. |
+| `nid` | Compute the export identifier for a name. |
+| `diff` | Report the exports added, removed and moved between two modules. |
 | `elf` | Inspect an ELF or signed module: segments, plus `--sizes`, `--symbols`, `--strings`, and `--strip`. |
-| `self` | Read a signed container, extract its ELF, report which form a file is, and convert between the forms. |
+| `self` | Report which form a file is, sign an `.elf` or `.prx` into its container, and extract a container back to its ELF. |
+| `param` | Check the metadata that describes the application to the system, fill in what a finished title carries (`--apply`), and list the kinds of title (`--list`). |
+| `modules` | Check that every module the application has to carry travels with it, and gather the missing ones. |
+| `sysver` | Settle the system version the application requires against the modules it ships. |
 | `offsets` | Dump a module's export identifiers and addresses, and how it covers the names the SDK needs. |
 | `retarget` | Change the system version a module records, so one built for a newer system loads on an older one. |
-| `gnf` | Build a GNF texture file from a PNG, TGA or BMP image, and resize an image with `--resize`. |
-| `shader` | Inspect a shader binary: its kind, inputs, and resources. |
-| `vag` | Convert audio between WAV and VAG. |
+| `gnf` | Build a GNF texture file from a PNG, QOI, TGA or BMP image (`--resize` scales first, `--srgb` marks the colour channels), and read a GNF back with `--info`. |
+| `shader` | Report a compiled shader's kind, version, sizes, and — with `--registers` — the registers it writes. |
+| `vag` | Convert a 16-bit PCM WAV to VAG, or a VAG back to WAV. |
 | `payload` | Send a built payload `.elf` to a loader over the network. |
 
-The packager (`tools/SharpProspero.Packager`) assembles a package over the packaging library, and the
-binding generator with no verb turns the SDK headers into more bindings from a catalog. See
-[docs/toolchain.md](docs/toolchain.md) for the toolchain as a whole.
+Run any verb with `--help` for its full options. The packager (`tools/SharpProspero.Packager`) assembles
+a package over the packaging library, and the binding generator with no verb turns the SDK headers into
+more bindings from a catalog. See [docs/commands.md](docs/commands.md) for every command grouped by task,
+and [docs/toolchain.md](docs/toolchain.md) for the toolchain as a whole.
 
 ## Feature reference
 
@@ -174,7 +217,7 @@ binding generator with no verb turns the SDK headers into more bindings from a c
   rounded rectangles, thin and thick
   lines, outlines, opaque, alpha-blended, scaled (nearest or smooth) and rotated surface copies, and
   sub-region clipping; in-place image effects (grayscale, invert,
-  brightness, contrast, tint, flip and blur); PNG, JPEG, BMP, TGA, QOI and animated GIF image decoding, PNG, JPEG, BMP and
+  brightness, contrast, tint, flip and blur); PNG, JPEG, BMP, TGA and animated GIF image decoding, PNG, JPEG, BMP and
   TGA encoding for screenshots; off-screen buffers you own for pre-rendering and caching; ellipses, arcs,
   pies and rings, connected lines, thick outlines and nine-part panel stretching; an 8x8 bitmap
   font and a scalable TrueType/OpenType font for antialiased text, with an outlined form that stays
@@ -188,11 +231,15 @@ binding generator with no verb turns the SDK headers into more bindings from a c
 - **A GPU graphics layer (Agc)**: the complete flat-C command interface (192 command builders and 79
   driver calls) under `SharpProspero.Interop.Agc`, and a managed layer over it: a `DrawCommandBuffer` that
   records register writes, draws and synchronization; shader, format and device helpers; the present path;
-  surface layout for every tile mode (`AgcSurface`); the sixteen-register color render-target block with
-  typed field setters and a description-driven setup (`CxRenderTarget`, `AgcRenderTargetSetup`); and a
-  pixel tiler that converts an image between linear and hardware-tiled order for texture upload and
-  framebuffer read-back (`AgcTiler`). Above it, `Renderer3D` draws a lit mesh with built-in shaders, and
-  the toolchain's `gnf` command builds texture files from PNG, TGA, and BMP images. See
+  surface layout for every tile mode (`AgcSurface`, with `LinearSurface` for plain row-major arithmetic);
+  the sixteen-register color and depth render-target blocks with typed field setters and a
+  description-driven setup (`CxRenderTarget`, `CxDepthRenderTarget`, `AgcRenderTargetSetup`); blend and
+  depth-stencil state blocks (`CxBlendControl`, `CxBlendColor`, `CxDepthStencilControl`); the viewport and
+  scissor block (`AgcViewport`); the image, sampler and buffer descriptors a shader reads
+  (`AgcTextureDescriptor`, `AgcSamplerDescriptor`, `AgcBufferDescriptor`); and a pixel tiler that converts
+  an image between linear and hardware-tiled order for texture upload and framebuffer read-back
+  (`AgcTiler`). Above it, `Renderer3D` draws a lit mesh with built-in shaders over `MeshBuffer`, and the
+  toolchain's `gnf` command builds texture files from PNG, QOI, TGA, and BMP images. See
   [docs/graphics-gpu.md](docs/graphics-gpu.md).
 - **Text that fits**: wrap a paragraph to a width, place a line left, centred or right, measure the
   wrapped block, and shorten a label that will not fit. It measures through a font abstraction, so the
@@ -202,15 +249,18 @@ binding generator with no verb turns the SDK headers into more bindings from a c
   logic on top, a state machine runs the app as named states (a menu, a level, a pause screen) with
   paired enter and exit work, an in-process event bus lets parts of the app talk without holding
   references to each other, an undo/redo history backs editor-style tools, a fixed-timestep accumulator
-  advances a simulation deterministically, and a localization table keeps user-facing text in data.
+  advances a simulation deterministically, a tween with a full easing set animates a value over a
+  duration, and a localization table keeps user-facing text in data.
 - **An interface toolkit**: build screens from labels, buttons, lists, checkboxes, radio groups,
-  sliders and progress bars, driven by the controller with automatic layout and focus, so an
-  application does not draw its interface by hand. Move between pages with a back-stack of screens,
-  stack controls down a column or across a row, wrap a paragraph, divide a tool into tabbed pages,
-  scroll content taller than the screen, show a name and its value on one line, put a panel over
-  everything that takes the controller until it is answered (with one-call message and confirm
-  panels), fill a round meter to a known amount, turn a ring while work is under way, repeat a held
-  direction for fast scrolling, and raise a short message that takes itself down.
+  sliders, steppers, option selectors, text fields, images and progress bars, driven by the controller
+  with automatic layout and focus, so an application does not draw its interface by hand. Move between
+  pages with a back-stack of screens, stack controls down a column, across a row or into a wrapping
+  grid, wrap a paragraph, divide a tool into tabbed pages, rule off one group from the next, scroll
+  content taller than the screen, run a highlight through a column longer than the space available,
+  turn a horizontal strip of entries the way a launcher does, show a name and its value on one line,
+  put a panel over everything that takes the controller until it is answered (with one-call message and
+  confirm panels), fill a round meter to a known amount, turn a ring while work is under way, repeat a
+  held direction for fast scrolling, and raise a short message that takes itself down.
   See [docs/ui.md](docs/ui.md).
 - **Memory tools** for the constrained heap: a direct-memory region with deterministic release, a
   heap monitor that reads usage against the configured ceiling, an object pool that reuses
@@ -248,20 +298,28 @@ binding generator with no verb turns the SDK headers into more bindings from a c
   rectangle and circle overlap tests game code reaches for, the small floating-point helpers that go with
   them (blend, remap, smooth-step, move-towards, angle wrapping) plus critically-damped smoothing for a
   camera or value that eases to a target without overshoot, coherent noise for terrain and textures, and a
-  rectangle packer for building a sprite sheet or a glyph atlas.
+  rectangle packer for building a sprite sheet or a glyph atlas. The same namespace carries the 3D set the
+  mesh renderer runs on: a perspective and orthographic camera that projects a point to the screen and
+  turns a cursor position into a pick ray, a position-rotation-scale transform, rays that intersect a
+  plane, sphere, box or triangle, axis-aligned boxes and spheres, and a frustum for culling what the
+  camera cannot see.
 - **Settings and users**: a reader for the user's system settings (language, date and time formats,
   time zone), and the signed-in users with their display names.
 - **System features**: play a media file or a network stream and pull its decoded audio, open the
-  system browser over the running application, and install a package file. Read and write the values
+  system browser over the running application, and install a package file. Raise the on-screen toast
+  that slides in at the top of the screen and drive the persistent banner beside it, read the console's
+  feature flags, and open the Bluetooth human-interface-device driver. Read and write the values
   the system keeps for itself, by identifier, where the running build is permitted to. Services a
   title does not link against are loaded at run time and resolved by name.
 - **Media decoding**: turn compressed audio (Layer III, Advanced Audio Coding) into samples an audio
-  port takes, and decode H.264 a unit at a time to get the pictures themselves — for a stream an
-  application receives, or anywhere the frames are wanted rather than playback.
+  port takes, compress PCM back to AAC-LC for a recording or an upload, decode H.264 a unit at a time to
+  get the pictures themselves — for a stream an application receives, or anywhere the frames are wanted
+  rather than playback — and read a track's descriptive tags for a music list without decoding it.
 - **App and content management**: install, size, check, uninstall and launch an application by its
-  title id; list the photos and videos in the content library, export a file into it, and read a
-  file's metadata; find connected USB drives and where they are mounted (mapping one on request), to
-  browse them with the file APIs; and let the user pick a save through the save-data dialog.
+  title id; read the install and download progress of the running application's content chunks; list
+  the photos and videos in the content library, export a file into it, and read a file's metadata; find
+  connected USB drives and where they are mounted (mapping one on request), to browse them with the
+  file APIs; and let the user pick a save through the save-data dialog.
 - **Trophies**: read a title's trophy set and the signed-in player's progress — the set title, the
   unlocked count and completion, and each trophy's grade, name and unlock state — show the system trophy
   list, and unlock a trophy or report an activity or statistic by posting an event through the
@@ -271,8 +329,9 @@ binding generator with no verb turns the SDK headers into more bindings from a c
   audio file; a mixer that layers several sounds at once, spreading mono to stereo and retuning a clip
   recorded at another rate; a two-pole filter (low, high, band-pass and notch) for tone shaping and an
   attack-decay-sustain-release envelope for giving a note a natural swell and fade; a microphone-input
-  port for recording and level metering; 16-bit WAV file
-  reading and writing with no module; controller vibration and light-bar control; controller samples
+  port for recording and level metering; 16-bit WAV file reading and writing with no module, and a
+  four-bit VAG codec that keeps a folder of sound effects small; controller vibration and light-bar
+  control; controller samples
   decoded down to motion (orientation, acceleration, angular velocity) and touch-pad contacts, with a
   gesture recognizer for taps, holds, drags, flicks and pinches; and an
   action map that names the controls (single button, chord, or alternatives) so game code reads clearly
@@ -305,12 +364,16 @@ binding generator with no verb turns the SDK headers into more bindings from a c
 - **Signed and unsigned forms**: a program is a `.elf` or a signed `.self`, a library a `.prx` or a
   signed `.sprx`. The reader and inspector take either, unwrapping a signed module to its ELF first,
   and a container tool reports which form a file is and converts between them.
-- **A module shaped the way the loader checks it**: the linker writes four load segments — code,
-  read-only data, writable data, and a fourth carrying no memory protection that holds the linking
-  tables, the module note and the dynamic table. The container writer sizes each segment's digest
-  table from its content. Both are what decide whether an installed application starts, and the build
-  handles both without configuration. See
-  [docs/build-pipeline.md](docs/build-pipeline.md) and
+- **A module shaped the way the loader checks it**: the linker writes five load segments — code,
+  read-only data, the data written only while the module is bound, the data it writes to afterwards,
+  and a last one carrying no memory protection that holds the linking tables, the module note and the
+  dynamic table. Where each goes follows the placement the loader checks for, and the module names its
+  regions in a section table so it reads back in any tool that reads a built one. The container writer
+  sizes each segment's digest table from its content, writes the
+  header magic together with the metadata region length that goes with it, and keeps the module's
+  version records after the last stored segment. These are what decide whether an installed
+  application starts, and the build handles all of them without configuration.
+  See [docs/build-pipeline.md](docs/build-pipeline.md) and
   [docs/signed-and-unsigned.md](docs/signed-and-unsigned.md).
 - **A module toolkit** that reads a `.prx` or `.sprx`, lists its exports, and generates a C# wrapper
   for it, so a project needs only its own module to interact with it.
@@ -332,6 +395,14 @@ The pages under `docs/` are both the repository documentation and a Jekyll site.
 
 Every page names the namespace it documents, and the site's search box indexes the whole set.
 
+## System-version support
+
+One build runs across a range of system versions. A module targets the earliest supported system by
+default and runs on every later one; raise the target only to call a function a later system added. At run
+time it reads the running version, resolves system services by name rather than pinning an address, and
+checks that a service provides every export a feature needs before using it — so the same build adapts
+instead of breaking. See [docs/firmware.md](docs/firmware.md).
+
 ## Building and testing the SDK
 
 ```
@@ -340,7 +411,8 @@ dotnet test tests/SharpProspero.Tests/SharpProspero.Tests.csproj
 ```
 
 The class library builds and the tests run on .NET 10 alone, with no console or WSL involved; the compile
-and link steps only come in when building an actual module.
+and link steps only come in when building an actual module. The documentation is a Jekyll site under
+`docs/`; [docs/setup.md](docs/setup.md) covers previewing it locally.
 
 ## License
 

@@ -9,7 +9,7 @@ nav_order: 5
 `SharpProspero.Xml` reads and writes XML for a configuration or data file without pulling in a system module. It gives you both a small tree model for whole documents and a forward-only reader and writer for streaming, and it never loads an external DTD or entity, so it stays safe on a constrained target.
 
 {: .note }
-> Parsing is checked for well-formedness — matching tags, one root element — and resolves the standard entity references (`&lt;`, `&gt;`, `&amp;`, `&quot;`, `&apos;`, and numeric `&#nn;`). It refuses documents nested deeper than 256 levels so an adversarial file cannot overflow the stack. A `<!DOCTYPE>` is skipped rather than fetched, and an entity the parser does not recognize is reported as an error instead of looked up.
+> Parsing is checked for well-formedness — matching tags, one root element — and resolves the standard entity references (`&lt;`, `&gt;`, `&amp;`, `&quot;`, `&apos;`, and numeric `&#nn;` or `&#xNN;`; a numeric reference outside Unicode or in the surrogate range is rejected). It refuses documents nested deeper than 256 levels so an adversarial file cannot overflow the stack. A `<!DOCTYPE>` is skipped rather than fetched, and an entity the parser does not recognize is reported as an error instead of looked up.
 
 ## The document model
 
@@ -33,7 +33,7 @@ foreach (XmlElement enemy in doc.Root.Element("enemies")!.Elements("enemy"))
 }
 ```
 
-`Attribute` returns the value or `null`; `AttributeOrDefault` returns a fallback instead. `Element` returns the first matching child (or `null`), `Elements` enumerates the direct children with a given name, and `Descendants` walks the whole subtree for a name at any depth.
+`Attribute` returns the value or `null`; `AttributeOrDefault` returns a fallback instead. `Element` returns the first matching child (or `null`), `Elements` enumerates the direct children with a given name, and `Descendants` walks the whole subtree for a name at any depth. `Children` lists the direct child elements in document order and `Attributes` lists every attribute, for walking a tree whose names you do not know in advance. `Text` is the element's own text with entities resolved, and it is settable, so the same property reads a document and builds one.
 
 ### Building a tree
 
@@ -111,7 +111,7 @@ string xml = writer.ToString();
 `WriteElementString` is the shorthand for an open/content/close triple. `WriteString` writes escaped text into the current element, `WriteCData` writes a verbatim CDATA section, and `WriteComment` writes a comment. `ToString` closes any elements still open and returns the text. Every write method returns the writer, so a whole document can be produced as one chained expression.
 
 {: .warning }
-> `WriteAttribute` only works while a start tag is still open. Once you write content or a child element the start tag closes, and a later `WriteAttribute` throws `InvalidOperationException`. A name that contains whitespace or markup characters is rejected up front rather than written into output that cannot be read back.
+> `WriteAttribute` only works while a start tag is still open. Once you write content or a child element the start tag closes, and a later `WriteAttribute` throws `InvalidOperationException`. A name that contains whitespace or markup characters is rejected up front rather than written into output that cannot be read back. A control character other than tab, carriage return or line feed is refused in text and in an attribute value — a document cannot carry one at all, escaped or not — so `WriteString`, `WriteAttribute` and `WriteElementString` raise `ArgumentException` naming the character rather than produce output no reader loads.
 
 ## Handling malformed input
 

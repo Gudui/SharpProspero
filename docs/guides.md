@@ -37,7 +37,14 @@ Writable storage is elsewhere (for example `/data`); the package root is read-on
 
 The console's memory maps are limited, so cap the managed heap and avoid churn:
 
-- Set `<ProsperoHeapHardLimitBytes>` in the project to the largest heap the module should use.
+- Set `<ProsperoHeapHardLimitBytes>` in the project to the largest heap the module should use. The
+  default is 256 MiB.
+- Raise `<ProsperoHeapRegionRangeBytes>` alongside it — the unbroken address run the collector holds
+  for its regions, 384 MiB by default, so keep it above the ceiling. Without a figure the collector
+  would hold five times the ceiling, more than the console hands out, and refuses to start when it
+  cannot get it. Give it a whole number of megabytes.
+- `<ProsperoThreadStackBytes>` is the stack a runtime thread gets, 1 MiB by default; the console's own
+  64 KiB is too small for the collector's threads. It is read as a decimal count of bytes.
 - Read usage at run time with `SharpProspero.Memory.HeapMonitor`.
 - Draw into the pre-allocated back buffer each frame and reuse buffers rather than allocating in the
   frame loop. Pull GPU-visible buffers from `SharpProspero.Memory.DirectMemoryRegion`.
@@ -55,7 +62,7 @@ using SharpProspero.Animation;
 var slideIn = new Tween(from: -200, to: 0, durationSeconds: 0.3f, Ease.OutCubic);
 
 // each frame, in OnFrame:
-int x = (int)slideIn.Update((float)frame.DeltaSeconds);
+int x = (int)slideIn.Update((float)context.DeltaSeconds);
 panel.DrawAt(x, y);
 if (slideIn.IsComplete) { /* settled */ }
 ```
@@ -84,10 +91,17 @@ A module built with the SDK targets the earliest supported system and runs on la
 running version, and resolve services by name so one build adapts instead of pinning an address:
 
 ```csharp
-FirmwareVersion version = FirmwareSupport.RunningVersion;
-if (!FirmwareSupport.Provides(feature))
-    ShowUnsupported();
+FirmwareVersion version = FirmwareSupport.Current;
+FirmwareSupport.EnsureSupported();          // throws when the system is outside the supported range
+
+FirmwareValidation? check = FirmwareSupport.Validate("Package installer");
+if (check is null || !check.IsValid)
+    ShowUnsupported(check?.ToString());     // names the exports this system does not provide
 ```
+
+The string is the service name from `FirmwareRegistry.DynamicLibraries`; the registered names are
+"Package installer" and "USB mass storage". Pass a `SystemLibraryDescriptor` to the other `Validate`
+overload for a service resolved outside the registry.
 
 See [Firmware compatibility](firmware.md).
 
@@ -97,6 +111,11 @@ See [Firmware compatibility](firmware.md).
   from the home screen.
 - While iterating, build with `-Output Folder` to get `eboot.bin`, `sce_sys` and any `sce_module`
   together in one folder to copy directly or inspect with the `elf` tool.
+- An installer treats a title already on the machine as present and declines to replace it, so give a
+  build meant to sit beside the last one a title of its own:
+  `pwsh build/build-app.ps1 -ProjectPath MyGame/MyGame.csproj -TitleId PPSA99098`. Only the gathered
+  copy changes — `titleId` and the title inside `contentId` — and the project's own `param.json` is
+  left alone. The id is four letters then five digits.
 
 ## Ship a library with your application
 
@@ -155,6 +174,7 @@ _dialog ??= MessageDialog.ShowMessage("Delete this save?", MessageDialogButtons.
 if (_dialog.Update() == MessageDialogState.Finished)
 {
     if (_dialog.ChosenButton == MsgDialogButtonId.Ok) Delete();  // Ok is the Yes/first button
+    _dialog.Dispose();
     _dialog = null;
 }
 ```
@@ -195,7 +215,7 @@ without overshooting; keep its velocity in a field and pass it by reference each
 ```csharp
 Vector2 _cameraVelocity;   // survives between frames
 
-camera.Target = Vector2.SmoothDamp(camera.Target, player.Position,
+camera.Position = Vector2.SmoothDamp(camera.Position, player.Position,
     ref _cameraVelocity, smoothTime: 0.25f, (float)context.DeltaSeconds);
 ```
 
@@ -222,10 +242,10 @@ Decoding a texture or sound every time it is needed is wasteful; keeping every o
 out. An `LruCache<TKey, TValue>` keeps a fixed number of the most recently used and drops the rest.
 
 ```csharp
-var textures = new LruCache<string, Texture>(capacity: 32);
-textures.Evicted += (key, tex) => tex.Dispose();     // free the dropped one
+var images = new LruCache<string, PngImage>(capacity: 32);
+images.Evicted += (key, image) => image.Dispose();      // free the dropped one
 
-Texture icon = textures.GetOrAdd(path, LoadTexture); // built once, then served from the cache
+PngImage icon = images.GetOrAdd(path, p => PngImage.Decode(FileSystem.ReadAllBytes(p)));
 ```
 
 See [Memory](memory.md).
@@ -236,10 +256,13 @@ Packing many small images into one texture cuts the number of draws and binds. `
 non-overlapping spot for each piece; copy the image in and record where it landed.
 
 ```csharp
+using var atlas = new PixelBuffer(1024, 1024);
+Surface sheet = atlas.AsSurface();
 var packer = new RectPacker(1024, 1024);
-foreach (Sprite s in sprites)
-    if (packer.Insert(s.Width, s.Height, s.Id) is { } r)
-        atlas.Blit(s.Pixels, r.X, r.Y);              // remember (r.X, r.Y, r.Width, r.Height)
+
+foreach ((int id, Surface image) in sprites)
+    if (packer.Insert(image.Width, image.Height, id) is { } r)
+        sheet.Blit(image, r.X, r.Y);                  // remember (r.X, r.Y, r.Width, r.Height)
 ```
 
 Turn the finished atlas into a texture file with the `gnf` command; see
@@ -248,13 +271,14 @@ Turn the finished atlas into a texture file with the `gnf` command; see
 ## Store and read settings
 
 For a handful of options, an `IniFile` is the least ceremony; for structured data reach for JSON. Both
-live in `SharpProspero.Storage` and read and write plain text under your writable area.
+live in `SharpProspero.Storage`. `IniFile` reads typed values with `GetString`, `GetInt` and `GetBool`,
+and writes back with `Save`.
 
 ```csharp
-var settings = IniFile.Parse(FileSystem.ReadAllText("/data/settings.ini"));
-int volume = int.Parse(settings.Get("audio", "volume", "80"));
-settings.Set("audio", "volume", "60");
-FileSystem.WriteAllText("/data/settings.ini", settings.Write());
+var settings = IniFile.Load("/data/settings.ini");
+int volume = settings.GetInt("audio", "volume", 80);
+settings.Set("audio", "volume", 60);
+settings.Save("/data/settings.ini");
 ```
 
 See [Files and storage](storage.md) for JSON, CSV, tables, and versioned saves.
@@ -286,6 +310,7 @@ See [Buffers and encodings](buffers.md).
 | "No compiled object was produced" | The compile runs on Linux. On Windows the build uses WSL for it — make sure WSL and the .NET 10 SDK are installed inside it (`doctor.ps1` checks). On macOS, run the compile in a Linux container. See [Setup](setup.md). |
 | The link step reports no runtime archives | Run the compile step once so the .NET SDK restores its runtime pack, which `build.ps1` then gathers; on Windows this happens inside WSL. |
 | The package installs but the module will not load | The system version the application requires is lower than a module it ships needs. `build-app.ps1` settles this with `-SystemVersionPolicy`; the default `Match` raises the requirement to what the modules need. See [Firmware compatibility](firmware.md). |
+| "The application is missing a module it has to carry" | The build found a module the application imports from that the system does not publish, and could not gather it. Point `ProsperoModuleFolder` in the project (or the `PROSPERO_MODULES` environment variable) at a folder holding it, or drop the module into the project's `sce_module` folder. |
 | A binding call is unresolved at link time | The module's export is not in the linker's catalog. Add it, or supply a stub for your own module with `ProsperoUserStubLibrary`. See [Bindings](bindings.md). |
 | `dotnet new prospero-app` not found | Install the template: `dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-app`. |
 
@@ -305,7 +330,7 @@ See [Buffers and encodings](buffers.md).
 - Drive timing off `context.DeltaSeconds`, never a fixed step, so behaviour holds if a frame runs long;
   `FixedTimestep` gives physics a steady tick on top of a variable frame.
 - Press `s` on any documentation page to search the whole site; every page names the namespace it covers.
-- Decode an image straight from bytes with `DecodedImage.Decode` — it detects PNG, JPEG, BMP, TGA, GIF
-  and QOI from the header, so you do not pick the decoder yourself.
+- Pick the decoder that matches the asset: `PngImage.Decode`, `JpegImage.Decode`, `BmpImage.Decode`,
+  `TgaImage.Decode` and `GifImage.Decode` all take the file bytes and return a disposable image.
 - Keep a build reproducible: the same C# and toolchain version produce the same `eboot.bin`, so check the
   toolchain version into source control alongside the project.

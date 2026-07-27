@@ -38,7 +38,7 @@ public sealed class Interval(float periodSeconds)
     /// </summary>
     public int Advance(float deltaSeconds)
     {
-        if (deltaSeconds <= 0f || Period <= 0f)
+        if (!float.IsFinite(deltaSeconds) || deltaSeconds <= 0f || Period <= 0f)
             return 0;
 
         _accumulated += deltaSeconds;

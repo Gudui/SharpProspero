@@ -14,7 +14,18 @@ public static class ShType
     public const uint StrTab = 3;
     public const uint Rela = 4;
     public const uint NoBits = 8; // .bss
+    public const uint Group = 17;
 }
+
+/// <summary>
+/// One group of sections a compiler emitted knowing other objects would emit the same thing. Every
+/// object that needs an inline function, a template body or a virtual table carries its own copy, and
+/// the group names them all under one signature so exactly one copy is kept.
+/// </summary>
+/// <param name="Signature">The name every copy of this group shares.</param>
+/// <param name="Members">The sections belonging to it.</param>
+/// <param name="KeepOnlyOne">Whether the group asks for duplicates to be dropped.</param>
+public sealed record ElfSectionGroup(string Signature, IReadOnlyList<int> Members, bool KeepOnlyOne);
 
 /// <summary>Section flags.</summary>
 public static class ShFlags
@@ -129,4 +140,7 @@ public sealed class ElfObject
 
     /// <summary>Relocations keyed by the index of the section they apply to.</summary>
     public required IReadOnlyDictionary<int, IReadOnlyList<ElfRelocation>> Relocations { get; init; }
+
+    /// <summary>Groups of sections this object shares with others, each under one signature.</summary>
+    public IReadOnlyList<ElfSectionGroup> Groups { get; init; } = [];
 }

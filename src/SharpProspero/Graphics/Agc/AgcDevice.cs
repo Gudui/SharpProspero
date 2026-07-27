@@ -1,7 +1,10 @@
 // SharpProspero - a C# SDK for on-device application modules.
 // Copyright (C) 2026 SvenGDK
 
+using SharpProspero.Interop;
 using SharpProspero.Interop.Agc;
+using System;
+using System.Runtime.InteropServices;
 
 namespace SharpProspero.Graphics.Agc;
 
@@ -12,15 +15,70 @@ namespace SharpProspero.Graphics.Agc;
 /// </summary>
 public static unsafe class AgcDevice
 {
-    /// <summary>Prepares the graphics API. Call once before any other graphics work.</summary>
-    public static void Initialize() => SceAgc.sceAgcInit(0);
+    // The revision of the register defaults the library starts from. Distinct revisions select distinct
+    // default tables, and the library skips its whole setup when the revision it is given matches the
+    // one already recorded - which on a fresh process is zero, so asking for zero asks for nothing to
+    // happen. The reference startup code asks for this revision, and so does the table this SDK reads
+    // its own defaults from.
+    private const uint DefaultsRevision = 8;
+
+    private static void* _state;
+
+    /// <summary>
+    /// Prepares the graphics API. Call once before any other graphics work; calling again does nothing.
+    /// </summary>
+    /// <exception cref="ProsperoException">The graphics library refused to start.</exception>
+    public static void Initialize()
+    {
+        if (_state is not null)
+            return;
+        // The library keeps a word of its own here and the caller owns it for the life of the process.
+        void* state = NativeMemory.AllocZeroed(sizeof(ulong));
+        int rc = SceAgc.sceAgcInit(state, DefaultsRevision);
+        if (rc != 0)
+        {
+            NativeMemory.Free(state);
+            SceResult.ThrowIfFailed(rc, nameof(SceAgc.sceAgcInit));
+        }
+        _state = state;
+    }
+
+    /// <summary>
+    /// What the driver reads to find a recorded buffer: where the words are, how many there are, and a
+    /// flag. It is a description of the buffer rather than the buffer itself, which is the distinction
+    /// that matters - handing over the book-keeping block instead had the driver read the word count
+    /// out of whatever happened to sit twelve bytes into it.
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential, Size = 16)]
+    private struct SubmitDescription
+    {
+        public void* Words;
+        public uint WordCount;
+        public byte Flag;
+    }
 
     /// <summary>
     /// Submits a recorded command buffer to the graphics queue. The buffer's recorded contents run on
-    /// the GPU; keep the buffer and everything it references alive until the GPU has finished.
+    /// the GPU; keep the buffer and everything it references alive until the GPU has finished. A buffer
+    /// with nothing recorded is not submitted.
     /// </summary>
-    public static void Submit(DrawCommandBuffer commandBuffer) =>
-        SceAgcDriver.sceAgcDriverSubmitDcb(commandBuffer.Handle);
+    /// <exception cref="ProsperoException">The driver refused the submission.</exception>
+    public static void Submit(DrawCommandBuffer commandBuffer)
+    {
+        ArgumentNullException.ThrowIfNull(commandBuffer);
+        uint words = commandBuffer.SubmitSizeDwords;
+        if (words == 0)
+            return;
+
+        var description = new SubmitDescription
+        {
+            Words = commandBuffer.BufferAddress,
+            WordCount = words,
+            Flag = 0,
+        };
+        SceResult.ThrowIfFailed(
+            SceAgcDriver.sceAgcDriverSubmitDcb(&description), nameof(SceAgcDriver.sceAgcDriverSubmitDcb));
+    }
 
     /// <summary>
     /// Marks the end of a frame's submission. If the application is being suspended, it happens here.

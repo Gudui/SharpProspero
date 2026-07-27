@@ -13,6 +13,15 @@ sharpprospero-bindgen <command> [options]
 sharpprospero-bindgen <command> --help
 ```
 
+`sharpprospero-bindgen` is the program `tools/SharpProspero.Bindings.Generator` produces; the name works
+once that build output is on `PATH`. From a checkout, reach the same commands through the project:
+
+```
+dotnet run --project tools/SharpProspero.Bindings.Generator -- <command> [options]
+```
+
+Both forms run the same program, and the pages linked below use either one.
+
 Building an application does not need any of these directly — `build/build-app.ps1` runs the ones it
 needs. They are here for when you want to look at what was built, work with a module you were given, or
 build a piece by hand.
@@ -28,8 +37,10 @@ build a piece by hand.
 | `self` | Signs, extracts, or reports the form of a container. | [Signed and unsigned](signed-and-unsigned.md) |
 | `payload` | Sends a payload built with `link --kind payload` to a listening loader. | [Modules and payloads](modules-and-payloads.md) |
 
-`crt` and `compat` exist so the same objects this toolchain links can also be handed to another linker.
-Producing both builds and comparing them is the sharpest check available on what a module carries:
+`crt` writes the start object an executable link uses; `compat` writes the compatibility object a link adds
+once it pulls in the runtime archives. Writing them out lets another linker take the same inputs. `compat`
+always writes the executable form here - a `--kind prx` link builds a library variant of its own, and a
+payload link supplies its own start object.
 
 ```
 sharpprospero-bindgen compat --out compat.o
@@ -71,6 +82,6 @@ step.
 
 | Command | What it does | More |
 |---|---|---|
-| `modules` (with `--catalog`) and the generator's binding mode | Turns the SDK headers into more bindings from a small catalog. | [Bindings](bindings.md) |
+| the generator's binding mode (no verb) | Turns the SDK headers into response files describing a header-to-C# run, from the catalog named by `--modules` (default `modules.json` next to the tool). | [Bindings](bindings.md) |
 
-Run the tool with no arguments to see the same list from the command line.
+Run `sharpprospero-bindgen --help` for the command list, or `<command> --help` for one command's options.

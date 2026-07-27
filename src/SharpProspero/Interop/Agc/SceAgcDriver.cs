@@ -22,9 +22,12 @@ public static unsafe partial class SceAgcDriver
     [LibraryImport(Lib)]
     public static partial int sceAgcDriverAddEqEvent(void* eq, int eventId, void* udata);
 
-    /// <summary>Submit a draw command buffer through the async-graphics (AGR) ring and return status.</summary>
+    /// <summary>
+    /// Submits one recorded command buffer through the async-graphics ring. Takes the same description
+    /// as <see cref="sceAgcDriverSubmitDcb"/>.
+    /// </summary>
     [LibraryImport(Lib)]
-    public static partial int sceAgcDriverAgrSubmitDcb(void* dcb);
+    public static partial int sceAgcDriverAgrSubmitDcb(void* submitDescription);
 
     /// <summary>Submit multiple draw command buffers through the async-graphics (AGR) ring and return status.</summary>
     [LibraryImport(Lib)]
@@ -162,7 +165,7 @@ public static unsafe partial class SceAgcDriver
     [LibraryImport(Lib)]
     public static partial int sceAgcDriverModuleRegistration(ulong moduleIndex, void* interfacePtr);
 
-    /// <summary>Registers three default register-segment arrays (with their entry counts) with the driver; returns an SCE status code.</summary>
+    /// <summary>Registers three default register-segment arrays (with their entry counts) with the driver; returns a status code.</summary>
     [LibraryImport(Lib)]
     public static partial int sceAgcDriverNotifyDefaultStates(void* segments0, void* segments1, void* segments2, uint count0, uint count1, uint count2);
 
@@ -170,7 +173,7 @@ public static unsafe partial class SceAgcDriver
     [LibraryImport(Lib)]
     public static partial int sceAgcDriverPassInfoDownward(void* infoAddr, uint count);
 
-    /// <summary>Patches clear-state register writes from an array of (register, value) pairs; returns an SCE status code.</summary>
+    /// <summary>Patches clear-state register writes from an array of (register, value) pairs; returns a status code.</summary>
     [LibraryImport(Lib)]
     public static partial int sceAgcDriverPatchClearState(void* registers, uint count);
 
@@ -194,7 +197,7 @@ public static unsafe partial class SceAgcDriver
     [LibraryImport(Lib)]
     public static partial int sceAgcDriverRegisterWorkloadStream(uint streamIndex, void* name);
 
-    /// <summary>Release a previously acquired async compute queue (best-guess: symbol not present in this module).</summary>
+    /// <summary>Releases a previously acquired async compute queue. Not exported by every driver build; check before calling.</summary>
     [LibraryImport(Lib)]
     public static partial int sceAgcDriverReleaseComputeQueue(void* queue);
 
@@ -206,9 +209,15 @@ public static unsafe partial class SceAgcDriver
     [LibraryImport(Lib)]
     public static partial int sceAgcDriverRequestCaptureStop();
 
-    /// <summary>Write a set-flip packet into the command buffer for the given video-out and buffer index.</summary>
+    /// <summary>
+    /// Records a flip so the display shows a buffer once the processor reaches this point. As with the
+    /// wait above, the first argument is not the command buffer but the slot holding its write cursor,
+    /// and the packet size and queue come before the flip's own arguments. It does no bounds checking,
+    /// so the caller checks there is room first.
+    /// </summary>
     [LibraryImport(Lib)]
-    public static partial uint sceAgcDriverSetFlip(void* commandBuffer, int videoOutHandle, int bufferIndex, uint flipMode, uint flipArg, uint flags, ulong userData);
+    public static partial uint sceAgcDriverSetFlip(uint** writeCursorSlot, uint packetSizeInDwords,
+        uint queueType, uint videoOutHandle, int displayBufferIndex, uint flipMode, long flipArg);
 
     /// <summary>Sets the hull-shader off-chip tessellation parameters via an indirect dispatch thunk.</summary>
     [LibraryImport(Lib)]
@@ -222,11 +231,11 @@ public static unsafe partial class SceAgcDriver
     [LibraryImport(Lib)]
     public static partial void sceAgcDriverSetTFRing(ulong ringAddr, uint size);
 
-    /// <summary>Writes a workload-complete packet into the command buffer; returns an SCE status code.</summary>
+    /// <summary>Writes a workload-complete packet into the command buffer; returns a status code.</summary>
     [LibraryImport(Lib)]
     public static partial int sceAgcDriverSetWorkloadComplete(void* commandBuffer, uint queueType, uint streamId, uint workloadIndex);
 
-    /// <summary>Writes a workloads-active packet from an array of workload ids into the command buffer; returns an SCE status code.</summary>
+    /// <summary>Writes a workloads-active packet from an array of workload ids into the command buffer; returns a status code.</summary>
     [LibraryImport(Lib)]
     public static partial int sceAgcDriverSetWorkloadsActive(void* commandBuffer, uint queueType, uint streamId, void* workloadsAddr, uint count);
 
@@ -242,9 +251,12 @@ public static unsafe partial class SceAgcDriver
     [LibraryImport(Lib)]
     public static partial int sceAgcDriverSubmitCommandBuffer(void* context, void* commandBuffer);
 
-    /// <summary>Submit a single draw command buffer (DCB) to the GPU by forwarding it to the driver's default submit context.</summary>
+    /// <summary>
+    /// Submits one recorded command buffer through the driver's default context. The argument describes
+    /// the buffer rather than being it: the driver reads an address, a word count and a flag out of it.
+    /// </summary>
     [LibraryImport(Lib)]
-    public static partial void sceAgcDriverSubmitDcb(void* dcb);
+    public static partial int sceAgcDriverSubmitDcb(void* submitDescription);
 
     /// <summary>Submit multiple async/compute command buffers for the given queue.</summary>
     [LibraryImport(Lib)]
@@ -326,7 +338,13 @@ public static unsafe partial class SceAgcDriver
     [LibraryImport(Lib)]
     public static partial uint sceAgcDriverUserDataWriteSetMarker(void* commandBuffer, uint queueType, void* srcAddr, uint size, uint modifier);
 
-    /// <summary>Write a wait-until-safe-for-rendering (flip sync) packet into the command buffer.</summary>
+    /// <summary>
+    /// Records a wait until the display has released a buffer, so the processor may render into it.
+    /// The first argument is not the command buffer but the slot holding its write cursor: the routine
+    /// reads the cursor out of it, appends the packet there, and writes the advanced cursor back. It
+    /// does no bounds checking, so the caller checks there is room first.
+    /// </summary>
     [LibraryImport(Lib)]
-    public static partial uint sceAgcDriverWaitUntilSafeForRendering(void* commandBuffer, int videoOutHandle, uint bufferIndex, uint flipMode, uint flags);
+    public static partial uint sceAgcDriverWaitUntilSafeForRendering(uint** writeCursorSlot,
+        uint packetSizeInDwords, uint queueType, uint videoOutHandle, int displayBufferIndex);
 }

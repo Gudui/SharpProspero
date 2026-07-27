@@ -44,13 +44,19 @@ public sealed class LinkOptions
 /// <param name="Soname">The module file name the loader loads, e.g. <c>libkernel.prx</c>.</param>
 /// <param name="ModuleVersion">The module version to record, taken from the stub that provides the name.</param>
 /// <param name="LibraryVersion">The library version to record, taken from the same stub.</param>
+/// <param name="PublishedName">
+/// The name the providing module publishes, when the reference reaches it under another one. Null
+/// means the reference and the published name are the same, which is the usual case. See
+/// <see cref="Linker.DeviceAliasPrefix"/> for why the two ever differ.
+/// </param>
 public readonly record struct ImportSymbol(
     string Name,
     string ModuleName,
     string LibraryName,
     string Soname,
     ushort ModuleVersion = StubLibrary.DefaultModuleVersion,
-    ushort LibraryVersion = StubLibrary.DefaultLibraryVersion);
+    ushort LibraryVersion = StubLibrary.DefaultLibraryVersion,
+    string? PublishedName = null);
 
 /// <summary>The resolved symbol graph.</summary>
 public sealed class LinkResolution
@@ -70,6 +76,14 @@ public sealed class LinkResolution
     /// <summary>Archive members the reader could not parse, with the reason. An unexpected entry here
     /// hides the symbols that member would have defined, so it is surfaced rather than passed over.</summary>
     public IReadOnlyList<string> SkippedMembers { get; init; } = [];
+
+    /// <summary>
+    /// Sections left out because another included object carried the same shared group first. Anything
+    /// that lays sections out has to pass over these, and a symbol defined in one is reached through the
+    /// copy that was kept.
+    /// </summary>
+    public IReadOnlySet<(ElfObject Object, int Section)> DroppedSections { get; init; } =
+        new HashSet<(ElfObject, int)>();
 }
 
 /// <summary>The input side of the linker: read objects and archives and resolve the symbol graph.</summary>
@@ -90,11 +104,16 @@ public static class Linker
         // Names referenced by at least one strong (non-weak) undefined symbol. A reference that is only
         // ever weak and stays unsatisfied is a legal binding to address zero, not a link error.
         var strongUndefined = new HashSet<string>(StringComparer.Ordinal);
+        // Signatures already kept, and the sections dropped because another object carried them first.
+        var groupsKept = new HashSet<string>(StringComparer.Ordinal);
+        var dropped = new HashSet<(ElfObject, int)>();
+        // Whether the recorded definition of each name is one that may be replaced.
+        var weakDefinition = new Dictionary<string, bool>(StringComparer.Ordinal);
 
         foreach (string path in options.Objects)
-            Include(ElfObjectReader.Read(File.ReadAllBytes(path), path), included, defined, undefined, strongUndefined);
+            Include(ElfObjectReader.Read(File.ReadAllBytes(path), path), included, defined, undefined, strongUndefined, groupsKept, dropped, weakDefinition);
         foreach (ElfObject extra in options.ExtraObjects)
-            Include(extra, included, defined, undefined, strongUndefined);
+            Include(extra, included, defined, undefined, strongUndefined, groupsKept, dropped, weakDefinition);
 
         // Undefined names the objects the link is built from ask for directly. These always have to
         // resolve. Names an archive member only declares are held to the stricter test below (a
@@ -113,6 +132,15 @@ public static class Linker
                 ElfObject obj;
                 try { obj = ElfObjectReader.Read(member.Data, member.Name); }
                 catch (ElfLinkException ex) { skipped.Add($"{Path.GetFileName(archivePath)}({member.Name}): {ex.Message}"); continue; }
+                // A file that is an object rather than an archive is named on the command line, and a
+                // named object is taken whatever else is in the link. Leaving it to the rule below
+                // drops an object whose only reason to be there is a constructor list, because nothing
+                // asks for a name it defines.
+                if (member.IsWholeFile)
+                {
+                    Include(obj, included, defined, undefined, strongUndefined, groupsKept, dropped, weakDefinition);
+                    continue;
+                }
                 var defines = new HashSet<string>(StringComparer.Ordinal);
                 foreach (ElfSymbol s in obj.Symbols)
                     if (s.IsGlobalOrWeak && !s.IsUndefined && s.Name.Length > 0)
@@ -132,11 +160,15 @@ public static class Linker
                 bool needed = false;
                 foreach (string name in defines)
                 {
-                    if (undefined.Contains(name)) { needed = true; break; }
+                    // Only a reference that must be satisfied pulls a member in. A reference marked as
+                    // one that may go unsatisfied is usually there to ask whether something is present,
+                    // and pulling the member in to answer it makes the answer yes every time - the
+                    // opposite of what the reference is for.
+                    if (strongUndefined.Contains(name)) { needed = true; break; }
                 }
                 if (!needed)
                     continue;
-                Include(obj, included, defined, undefined, strongUndefined);
+                Include(obj, included, defined, undefined, strongUndefined, groupsKept, dropped, weakDefinition);
                 pending.RemoveAt(i);
                 i--;
                 changed = true;
@@ -185,7 +217,17 @@ public static class Linker
         {
             if (defined.ContainsKey(name) || !(referenced.Contains(name) || primaryUndefined.Contains(name)))
                 continue;
-            if (providedBy.TryGetValue(name, out StubLibrary? stub))
+            // A reference under the alias prefix reaches a published name while keeping a name of its
+            // own, so an object can define a name the platform also publishes and still reach the
+            // platform's. Without it, a definition shadows the published name for every reference in
+            // the module including its own, and a routine that stood in front of one would call itself.
+            if (name.StartsWith(DeviceAliasPrefix, StringComparison.Ordinal)
+                && providedBy.TryGetValue(name[DeviceAliasPrefix.Length..], out StubLibrary? aliased))
+                imports.Add(new ImportSymbol(
+                    name, aliased.ModuleName, aliased.LibraryName, aliased.Soname,
+                    aliased.ModuleVersion, aliased.LibraryVersion,
+                    PublishedName: name[DeviceAliasPrefix.Length..]));
+            else if (providedBy.TryGetValue(name, out StubLibrary? stub))
                 imports.Add(new ImportSymbol(
                     name, stub.ModuleName, stub.LibraryName, stub.Soname, stub.ModuleVersion, stub.LibraryVersion));
             else if (IsEncapsulationSymbol(name, sectionNames, out _, out _))
@@ -206,28 +248,32 @@ public static class Linker
             Imports = imports,
             Unresolved = unresolved,
             SkippedMembers = skipped,
+            DroppedSections = dropped,
         };
     }
 
     /// <summary>
-    /// Recognizes a section-boundary symbol: <c>__start_&lt;section&gt;</c> or <c>__stop_&lt;section&gt;</c>
-    /// naming a section that is present. These are defined by the linker at the section's start and end,
-    /// the way the system linker does, so code can walk a named section without a table of its own.
+    /// The prefix that makes a reference reach a published name under a name of its own. A compat
+    /// routine standing in front of something the platform publishes has to keep the published name for
+    /// itself - every reference in the module binds to the definition, its own included - so it reaches
+    /// the platform's through this instead.
     /// </summary>
+    public const string DeviceAliasPrefix = "__sp_device_";
+
     /// <summary>
     /// The routines the linker writes itself and places with the linkage table, rather than taking from
-    /// an object: the constructor walker the entry calls, and the teardown routine beside it. A
-    /// reference to either resolves at layout time, so neither counts as unresolved.
+    /// an object, and the names the writer settles once the layout is fixed. An object may reach for any
+    /// of them, so the resolver must not call them unresolved. Where the image starts, where its code
+    /// ends, and where its frame index sits: the last two are what lets a module describe itself to
+    /// whatever walks the stack, since its own header table is inside the code group and that group
+    /// cannot be read.
     /// </summary>
-    // Names the writer settles once the layout is fixed, so an object may reach for them and the
-    // resolver must not call them unresolved. Where the image starts, where its code ends, and where
-    // its frame index sits: the last two are what lets a module describe itself to whatever walks the
-    // stack, since its own header table is inside the code group and that group cannot be read.
     internal static readonly IReadOnlySet<string> LinkerProvided =
         new HashSet<string>(StringComparer.Ordinal)
         {
             "_init", "_fini",
             CompatEmitter.ModuleBaseSymbol, CompatEmitter.TextEndSymbol, CompatEmitter.FrameIndexSymbol,
+            CompatEmitter.FrameIndexEndSymbol,
         };
 
     internal static bool IsEncapsulationSymbol(string name, ICollection<string> sectionNames, out string section, out bool isStop)
@@ -242,9 +288,25 @@ public static class Linker
 
     private static void Include(
         ElfObject obj, List<ElfObject> included,
-        Dictionary<string, ElfObject> defined, HashSet<string> undefined, HashSet<string> strongUndefined)
+        Dictionary<string, ElfObject> defined, HashSet<string> undefined, HashSet<string> strongUndefined,
+        HashSet<string> groupsKept, HashSet<(ElfObject, int)> dropped,
+        Dictionary<string, bool> weakDefinition)
     {
         included.Add(obj);
+
+        // A compiler emits an inline function, a template body or a virtual table into every object that
+        // needs it, and names each copy under one signature so a link keeps exactly one. Keeping them
+        // all lays the same thing down repeatedly - which for anything with state is worse than wasteful:
+        // two copies of a lock is two locks, and whichever half of the program holds the other one is
+        // not excluded by it.
+        foreach (ElfSectionGroup group in obj.Groups)
+        {
+            if (!group.KeepOnlyOne) continue;
+            if (groupsKept.Add(group.Signature)) continue;   // the first copy seen is the one kept
+            foreach (int member in group.Members)
+                dropped.Add((obj, member));
+        }
+
         foreach (ElfSymbol s in obj.Symbols)
         {
             if (s.Name.Length == 0 || !s.IsGlobalOrWeak)
@@ -260,7 +322,35 @@ public static class Linker
             }
             else
             {
-                defined.TryAdd(s.Name, obj);
+                // A definition in a dropped copy names nothing in the output; the kept copy defines it.
+                if (dropped.Contains((obj, s.SectionIndex)))
+                    continue;
+                // Which definition wins does not depend on the order they are read in. One marked as
+                // replaceable stands only until a real one is found, and never displaces one already
+                // found; between two real ones the first is kept, which is what lets this toolchain's
+                // own object stand in front of a name the runtime also defines. Recording whichever
+                // arrived first regardless left a replaceable definition in place permanently, so a
+                // name with a real body elsewhere resolved to the placeholder.
+                if (!defined.TryGetValue(s.Name, out ElfObject? already))
+                {
+                    defined[s.Name] = obj;
+                    weakDefinition[s.Name] = s.IsWeak;
+                }
+                else if (!s.IsWeak && weakDefinition.TryGetValue(s.Name, out bool wasWeak) && !wasWeak
+                         && already != obj && !CompatEmitter.DeliberateOverrides.Contains(s.Name))
+                {
+                    // Two full definitions of one name. Only one can be reached, and which one is
+                    // decided by the order the objects happened to be read in, so the other is laid
+                    // into the module and never used. Say so rather than pick.
+                    throw new ElfLinkException(
+                        $"'{s.Name}' is defined in both {already.Origin} and {obj.Origin}. " +
+                        "Only one of the two can be reached, so the link cannot say which was meant.");
+                }
+                else if (!s.IsWeak && weakDefinition.TryGetValue(s.Name, out wasWeak) && wasWeak)
+                {
+                    defined[s.Name] = obj;
+                    weakDefinition[s.Name] = false;
+                }
                 undefined.Remove(s.Name);
                 strongUndefined.Remove(s.Name);
             }

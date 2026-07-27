@@ -60,7 +60,10 @@ public sealed class OptionSelector : UiElement
         int textY = CenterTextY(Bounds, theme.TextScale);
         surface.DrawText(Text, Bounds.X + theme.Padding, textY, theme.TextScale, theme.Text);
 
-        string option = "\x11 " + SelectedOption + " \x10"; // arrows around the option
+        // Drawn with characters the font has. It covers printable text only and folds anything else
+        // to a blank, so the arrows that were here were drawn as two empty cells that still took up
+        // their width.
+        string option = "< " + SelectedOption + " >";
         int optionWidth = Surface.MeasureText(option, theme.TextScale);
         surface.DrawText(option, Bounds.X + Bounds.Width - theme.Padding - optionWidth, textY, theme.TextScale, theme.Text);
     }

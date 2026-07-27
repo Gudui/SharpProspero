@@ -154,8 +154,13 @@ public sealed class MeshData(Vertex[] vertices, uint[] indices)
                 uint i1 = i0 + 1;
                 uint i2 = (uint)((y + 1) * stride + x);
                 uint i3 = i2 + 1;
-                idx.Add(i0); idx.Add(i2); idx.Add(i1);
-                idx.Add(i1); idx.Add(i2); idx.Add(i3);
+                // Wound so the faces look outward. The order these were in turned every one of them
+                // inward: measured over a sphere of eight rings and twelve segments, all 168 faces
+                // that are not degenerate faced inward and none outward. It shows as lighting from the
+                // wrong side, and as the sphere disappearing the moment anything asks for back faces
+                // to be dropped, which is what makes it easy to miss.
+                idx.Add(i0); idx.Add(i1); idx.Add(i2);
+                idx.Add(i1); idx.Add(i3); idx.Add(i2);
             }
         return new MeshData([.. verts], [.. idx]);
     }

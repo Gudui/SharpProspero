@@ -7,8 +7,8 @@ nav_order: 2
 # Numerics and vectors
 
 Small value types and helpers for the arithmetic game and drawing code runs every frame: vectors and
-rectangles, scalar math, overlap tests, seedable randomness, and a spatial index. Everything here lives in
-`SharpProspero.Numerics` and works in single precision.
+rectangles, scalar math, overlap tests, seedable randomness, a spatial index, and the 3D camera, ray and
+bounding-volume set. Everything here lives in `SharpProspero.Numerics` and works in single precision.
 
 <details open markdown="block">
   <summary>On this page</summary>
@@ -50,8 +50,9 @@ RectF overlap = a.Intersection(b);                     // Empty when they miss
 ```
 
 `RectF` has `Contains`, `Intersects`, `Intersection`, `Union`, `Inflate`, `Offset` and `Clamp`, plus the
-`FromEdges` and `FromCenter` constructors and the read-only `Left`/`Top`/`Right`/`Bottom`, `Center`,
-`Size` and `IsEmpty` members. Edges follow the half-open rule — top and left are inside, bottom and right
+`FromEdges` and `FromCenter` constructors, the `Empty` value, and the read-only
+`Left`/`Top`/`Right`/`Bottom`, `Position`, `Center`, `Size` and `IsEmpty` members. Edges follow the
+half-open rule — top and left are inside, bottom and right
 are not — so rectangles that share an edge do not both claim it.
 
 ## Scalar math
@@ -98,8 +99,8 @@ if (Collision.SegmentIntersection(eye, target, wallA, wallB, out Vector2 where))
 ```
 
 The full set is `PointInCircle`, `CirclesOverlap`, `CircleOverlapsRect`, `SegmentsIntersect`,
-`SegmentIntersection` (with the crossing point as an `out`), and `SegmentIntersectsRect` for a ray against
-a box. A segment test reports parallel or collinear lines as no single crossing.
+`SegmentIntersection` (with the crossing point as an `out`), and `SegmentIntersectsRect` for a segment that
+touches or enters a rectangle. A segment test reports parallel or collinear lines as no single crossing.
 
 ## Randomness
 
@@ -117,7 +118,8 @@ var unpredictable = GameRandom.FromEntropy();       // seeded from the system
 ulong token = HardwareEntropy.NextUInt64();         // straight from the entropy source
 ```
 
-`GameRandom` gives `NextUInt64`, `NextUInt32`, `NextDouble` (0 to 1), `Next(min, max)` (max exclusive),
+`GameRandom` gives `NextUInt64`, `NextUInt32`, `NextDouble` (0 to 1), `Next(max)` and `Next(min, max)`
+(max exclusive),
 `NextSingle` (with an optional range), `NextBool`, `Pick` (one item from a set) and `Shuffle` (reorders a
 span in place). `Pick` and `Shuffle` take spans, so they work over an array or a slice without allocating.
 
@@ -201,6 +203,29 @@ twice.
 For curved motion, `Spline` evaluates Bezier and Catmull-Rom curves for a camera path or a projectile arc.
 It lives in `SharpProspero.Animation` and is covered on the [Animation](animation.md) page.
 
+## 3D math
+
+The same namespace carries the 3D set the renderer runs on. `Camera3D` holds a position, a target and the
+projection settings and hands back `View`, `Projection` and `ViewProjection` matrices, with `Perspective`
+and `Orthographic` builders, `WorldToScreen` for placing a marker over an object, and `ScreenToRay` for
+picking under the cursor. `Transform` is a position, rotation and scale with a `Matrix`, the
+`Forward`/`Right`/`Up` axes, `LookAt`, `Rotate` and `TransformPoint`/`TransformDirection`.
+
+```csharp
+var camera = new Camera3D { Position = new Vector3(0, 1.5f, 4.5f), AspectRatio = 1920f / 1080f };
+Ray pick = camera.ScreenToRay(cursorX, cursorY, 1920, 1080);
+if (pick.IntersectSphere(target.Bounds) >= 0f)     // negative means the ray misses
+    Select(target);
+```
+
+`Ray` intersects a plane, a sphere, a box or a triangle and returns the distance along itself to the hit,
+negative for a miss; a ray that starts inside a sphere reports 0. `BoundingBox` builds from a point cloud
+with `FromPoints`, grows with `Encapsulate`, re-fits around a matrix with `Transform(Matrix4x4)`, and
+answers `Contains` and `Intersects`. `BoundingSphere` shares `FromPoints`, `Contains` and `Intersects`, and
+adds `FromBox` for the sphere around a box. `Frustum` builds from a view-projection matrix and tests a
+point, a sphere or a box against the six planes, so only what the camera can see is drawn. See
+[GPU command layer](graphics-gpu.md) for the renderer that consumes them.
+
 ## Packing rectangles
 
 `RectPacker` fits many small rectangles into one larger area without overlap - the job behind building a
@@ -209,13 +234,15 @@ running skyline, which keeps the result tight. Give it a size and an id per piec
 one landed so you can copy the image in and record the region.
 
 ```csharp
+using var atlas = new PixelBuffer(1024, 1024);
+Surface sheet = atlas.AsSurface();
 var packer = new RectPacker(1024, 1024);
 
-foreach (Sprite s in sprites)
+foreach ((int id, Surface image) in sprites)
 {
-    PackedRect? slot = packer.Insert(s.Width, s.Height, s.Id);
+    PackedRect? slot = packer.Insert(image.Width, image.Height, id);
     if (slot is { } r)
-        atlas.Blit(s.Pixels, r.X, r.Y);                // and remember (r.X, r.Y, r.Width, r.Height)
+        sheet.Blit(image, r.X, r.Y);                   // and remember (r.X, r.Y, r.Width, r.Height)
 }
 ```
 

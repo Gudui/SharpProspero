@@ -83,7 +83,9 @@ dotnet run --project tools/SharpProspero.Bindings.Generator -- prx \
 
 The generated `MyLib` loads the module and exposes each named export: a signed entry becomes a
 callable function pointer, an unsigned one exposes its address. The generator verifies each name is
-present in the module and warns about any that are not.
+present in the module and warns about any that are not; add `--strict` to refuse to emit instead, so a
+build script catches a wrapper that would bind a symbol the module cannot resolve. `--module-name` sets
+the file name the wrapper loads at run time when it differs from the file being read.
 
 ```csharp
 using My.App;
@@ -105,6 +107,23 @@ An application project builds an `eboot.bin`. To build a library module instead,
 The link step then produces `<name>.prx` as a shared module rather than an executable. Place the
 result in another application's `sce_module` folder and load it as above.
 
+The module publishes itself, and the library its exports sit under, under the output file name without
+its extension: `MyLib.prx` publishes `MyLib` and puts its exports in a library also called `MyLib`. The
+build names the file after the assembly, so the assembly name is what a consumer resolves against. A
+module publishes one export library.
+
+When a consumer expects a different name, set either one on the link command:
+
+```
+dotnet run --project tools/SharpProspero.Bindings.Generator -- link --kind prx \
+  --self-contained --obj mylib.o --export myLibDoThing \
+  --publish-name libSceMyLib --export-library libSceMyLibCore --out mylib.prx
+```
+
+`--publish-name` sets the name the module publishes itself under. `--export-library` sets the library
+the exports sit in, and takes the published name when left out. The project properties above do not
+carry either; a build that needs them runs the link command itself.
+
 For the module to expose functions, name the symbols it exports through `ProsperoExportSymbol`. These
 are the unmanaged entry points (methods marked `[UnmanagedCallersOnly]`) another module imports:
 
@@ -117,6 +136,22 @@ are the unmanaged entry points (methods marked `[UnmanagedCallersOnly]`) another
 
 The linker records each as an export, so a consumer resolves it by name. Confirm the exports on the
 built module with `elf --file <name>.prx --exports`.
+
+### What a library cannot carry
+
+A library's thread-local block is placed after the blocks already loaded, so the distance from the
+thread pointer is not settled when the module is linked. A library reaches a thread-local through a
+pair of table slots the loader fills, which covers the general-dynamic and local-dynamic sequences.
+The two forms that ask for a fixed distance from the thread pointer, initial-exec and local-exec, have
+no such indirection, so the link refuses them rather than writing an offset that would read and write
+another module's storage:
+
+```
+libfoo.o: a thread-local reference of the form this object uses cannot be written into a library.
+```
+
+Compile any object you add to the link yourself as position-independent code, so the compiler emits a
+general-dynamic sequence rather than a fixed distance.
 
 ## Link against a module at build time
 
@@ -144,11 +179,13 @@ A module records the module and library **version** of everything it imports, an
 import only when that version matches the one the providing module publishes. Get it wrong and the
 symbol does not bind.
 
-`--module` reads the library name and its version out of the module, so the stub and the imports the
-linker writes agree with it by construction. `--lib` instead assumes the usual versions (module 1.1,
-library 1), which is right for most libraries but is an assumption; use `--module` when you have the
-file. Either way, `--module-version` and `--library-version` set them explicitly (hexadecimal, e.g.
-`--library-version 0003`).
+`--module` reads the library name, the module name, the file the loader loads and both versions out of
+the module, so the stub and the imports the linker writes agree with it by construction. `--lib`
+instead assumes the usual versions (module 1.1, library 1) and that all three names are the same,
+which is right for most libraries but is an assumption; use `--module` when you have the file. Either
+way, `--module-version` and `--library-version` set the versions explicitly (hexadecimal, with or
+without a leading `0x`: `--library-version 0003` and `--library-version 0x0003` are the same), and
+`--module-name` and `--soname` set the other two names when they differ from the library.
 
 This only applies to linking against a library. Loading a `.prx` at run time resolves each export by
 its identifier and records no versions, so it binds whatever the library declares.

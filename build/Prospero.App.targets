@@ -37,6 +37,14 @@
 
     <ProsperoModulePath>$(OutputPath)$(ProsperoModuleName)</ProsperoModulePath>
     <_ProsperoIsPrx Condition="'$(ProsperoModuleKind)' == 'Prx'">true</_ProsperoIsPrx>
+
+    <!-- A library module is compiled as a library, which decides which bring-up object the compiler
+         pairs with it: the application object defines main and reaches the run-time initialiser from
+         there, while the library object runs the initialiser from its own constructor list and hands
+         over an entry point the loader can call. A project that names the library kind but is written
+         as an application would otherwise get the application object and export functions that enter
+         a run time nothing has started. -->
+    <NativeLib Condition="'$(_ProsperoIsPrx)' == 'true' and '$(NativeLib)' == ''">Shared</NativeLib>
   </PropertyGroup>
 
   <!-- Stubs for a project's own modules, generated from a .prx by the stub tool. The core modules the
@@ -69,14 +77,16 @@
   <Target Name="ProsperoResolveRuntimePack">
     <ItemGroup Condition="'$(ProsperoRuntimeLibraries)' == ''">
       <ProsperoRuntimeLibrary Include="$(ProsperoRuntimePack)\*.a" />
-      <ProsperoRuntimeLibrary Include="$(ProsperoRuntimePack)\*.o" />
+      <ProsperoRuntimeObject Include="$(ProsperoRuntimePack)\*.o" />
     </ItemGroup>
     <ItemGroup Condition="'$(ProsperoRuntimeLibraries)' != ''">
-      <ProsperoRuntimeLibrary Include="$(ProsperoRuntimeLibraries)" />
+      <_ProsperoRuntimeInput Include="$(ProsperoRuntimeLibraries)" />
+      <ProsperoRuntimeObject Include="@(_ProsperoRuntimeInput)" Condition="'%(Extension)' == '.o'" />
+      <ProsperoRuntimeLibrary Include="@(_ProsperoRuntimeInput)" Condition="'%(Extension)' != '.o'" />
     </ItemGroup>
     <!-- An existing but empty (or misnamed) pack folder would otherwise reach the linker as an empty
          group and fail deep with unresolved runtime symbols. Stop here with a clear message. -->
-    <Error Condition="'@(ProsperoRuntimeLibrary)' == ''"
+    <Error Condition="'@(ProsperoRuntimeLibrary)' == '' And '@(ProsperoRuntimeObject)' == ''"
            Text="The runtime pack '$(ProsperoRuntimePack)' holds no runtime archives. Add the *.a archives compiled for the device ABI, or set ProsperoRuntimeLibraries to the ordered list." />
   </Target>
 
@@ -98,6 +108,10 @@
          switch. -->
     <PropertyGroup>
       <_ProsperoLinkArgs>link --self-contained --obj &quot;$(ProsperoObjectFile)&quot;</_ProsperoLinkArgs>
+      <!-- An archive is drawn from only for the names still wanted, an object is always taken. The
+           run time's bring-up object has to be taken: it defines no name anyone asks for, so leaving
+           it to the archive rule drops it and the module starts nothing. -->
+      <_ProsperoLinkArgs Condition="'@(ProsperoRuntimeObject)' != ''">$(_ProsperoLinkArgs) @(ProsperoRuntimeObject->'--obj &quot;%(FullPath)&quot;', ' ')</_ProsperoLinkArgs>
       <_ProsperoLinkArgs>$(_ProsperoLinkArgs) @(ProsperoRuntimeLibrary->'--lib &quot;%(FullPath)&quot;', ' ')</_ProsperoLinkArgs>
       <_ProsperoLinkArgs Condition="'@(ProsperoStubLibrary)' != ''">$(_ProsperoLinkArgs) @(ProsperoStubLibrary->'--stub &quot;%(FullPath)&quot;', ' ')</_ProsperoLinkArgs>
       <_ProsperoLinkArgs>$(_ProsperoLinkArgs) --out &quot;$(ProsperoModulePath)&quot; --entry $(ProsperoEntrySymbol)</_ProsperoLinkArgs>

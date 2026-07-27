@@ -15,6 +15,9 @@ namespace SampleApp;
 
 internal sealed class Player : ProsperoApp
 {
+    // The rate the main output is opened at. It takes this and one other and refuses everything else.
+    private const uint PortRate = 48000;
+
     private const string MediaPath = "/app0/media.mp4";
 
     private readonly Queue<short> _pending = new();
@@ -63,10 +66,10 @@ internal sealed class Player : ProsperoApp
     {
         // The player returns a video frame when one is ready; otherwise leave a plain background so an
         // audio-only file still shows the time.
-        if (_media!.TryGetVideoFrame(out VideoFrame frame) && frame.Width > 0 && frame.Height > 0)
+        if (_media!.TryGetVideoFrame(out VideoFrame frame) && frame.VisibleWidth > 0 && frame.VisibleHeight > 0)
         {
             surface.Clear(Color.Black);
-            (int x, int y, int w, int h) = Fit(frame.Width, frame.Height, surface.Width, surface.Height);
+            (int x, int y, int w, int h) = Fit(frame.VisibleWidth, frame.VisibleHeight, surface.Width, surface.Height);
             frame.RenderTo(surface, x, y, w, h);
         }
         else
@@ -77,22 +80,37 @@ internal sealed class Player : ProsperoApp
 
     private void PumpAudio()
     {
-        // Gather decoded audio, opening the port at the clip's rate on the first frame and spreading a
-        // mono track across both channels.
+        // Gather decoded audio, spreading a mono track across both channels and stepping through the
+        // clip's samples at the ratio between its rate and the port's.
+        //
+        // The port is opened at one fixed rate. The main output takes that rate and one other and
+        // refuses everything else, so opening it at whatever rate the clip happens to carry failed on
+        // most clips and ended the application on the first frame of sound. Anything else is stepped
+        // through here instead, which is coarse - it picks the nearest sample rather than blending
+        // between them - and is enough for a template.
         while (_media!.TryGetAudioFrame(out AudioFrame frame))
         {
-            _audio ??= AudioOutDevice.OpenStereo(grain: 1024, sampleRate: (uint)Math.Clamp(frame.SampleRate, 8000, 48000));
-            if (frame.ChannelCount == 2)
+            _audio ??= AudioOutDevice.OpenStereo(grain: 1024, sampleRate: PortRate);
+
+            int channels = frame.ChannelCount == 2 ? 2 : 1;
+            int available = frame.Samples.Length / channels;
+            if (available == 0)
+                continue;
+
+            // How many of the clip's samples one of the port's is worth.
+            double step = frame.SampleRate <= 0 ? 1.0 : (double)frame.SampleRate / PortRate;
+            for (double at = 0; at < available; at += step)
             {
-                foreach (short sample in frame.Samples)
-                    _pending.Enqueue(sample);
-            }
-            else
-            {
-                foreach (short sample in frame.Samples)
+                int i = (int)at * channels;
+                if (channels == 2)
                 {
-                    _pending.Enqueue(sample);
-                    _pending.Enqueue(sample);
+                    _pending.Enqueue(frame.Samples[i]);
+                    _pending.Enqueue(frame.Samples[i + 1]);
+                }
+                else
+                {
+                    _pending.Enqueue(frame.Samples[i]);
+                    _pending.Enqueue(frame.Samples[i]);
                 }
             }
         }

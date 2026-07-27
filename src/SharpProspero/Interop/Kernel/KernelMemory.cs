@@ -104,6 +104,15 @@ public static unsafe partial class KernelMemory
     [LibraryImport(Lib)]
     public static partial int sceKernelReleaseFlexibleMemory(void* start, nuint length);
 
+    /// <summary>
+    /// Takes the addresses back. Releasing memory gives up what is behind an address; this gives up the
+    /// address itself, and the two are separate - releasing alone leaves the range occupied for the
+    /// life of the process, so a run that maps and releases repeatedly runs out of address space
+    /// rather than out of memory.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceKernelMunmap(void* address, nuint length);
+
     /// <summary>Changes the protection of an existing mapping to <paramref name="protection"/>.</summary>
     [LibraryImport(Lib)]
     public static partial int sceKernelMprotect(void* address, nuint length, int protection);

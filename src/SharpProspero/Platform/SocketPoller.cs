@@ -85,9 +85,10 @@ public sealed unsafe class SocketPoller : IDisposable
     public void Remove(int socket)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        SceNetEpollEvent ev = default;
+        // Removing a socket describes nothing about it, so nothing is passed. Handing over an empty
+        // record instead of none is refused: there is no event to register and the call says so.
         SocketError.Check(
-            Socket.sceNetEpollControl(_epoll, Socket.EpollCtlDel, socket, &ev), nameof(Socket.sceNetEpollControl));
+            Socket.sceNetEpollControl(_epoll, Socket.EpollCtlDel, socket, null), nameof(Socket.sceNetEpollControl));
     }
 
     private void Control(int op, int socket, PollEvents events, uint token)

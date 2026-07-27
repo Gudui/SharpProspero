@@ -98,11 +98,11 @@ public readonly record struct ElfInfo(
         0x01 => "Relocatable object",
         0x02 => "Executable",
         0x03 => "Shared object",
-        0xFE00 => "SCE executable",
-        0xFE04 => "SCE relocatable executable",
-        0xFE0C => "SCE stub library",
-        0xFE10 => "SCE dynamic executable",
-        0xFE18 => "SCE dynamic module",
+        0xFE00 => "Module executable",
+        0xFE04 => "Module relocatable executable",
+        0xFE0C => "Module stub library",
+        0xFE10 => "Dynamic executable",
+        0xFE18 => "Dynamic module",
         _ => $"0x{Type:X4}",
     };
 }

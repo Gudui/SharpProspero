@@ -509,9 +509,13 @@ public static unsafe partial class SceAgc
     [LibraryImport(Lib)]
     public static partial uint sceAgcDcbSetCxRegistersIndirectGetSize();
 
-    /// <summary>Appends a flip request packet to the draw command buffer to present a display buffer.</summary>
+    /// <summary>
+    /// Appends a flip request packet to the draw command buffer to present a display buffer. Answers
+    /// where the packets were written. The buffer index is signed because a negative one is a variant
+    /// the processor accepts rather than a mistake.
+    /// </summary>
     [LibraryImport(Lib)]
-    public static partial int sceAgcDcbSetFlip(void* commandBuffer, uint videoOutHandle, uint bufferIndex, uint flipMode, ulong flipArg);
+    public static partial uint* sceAgcDcbSetFlip(void* commandBuffer, uint videoOutHandle, int displayBufferIndex, uint flipMode, long flipArg);
 
     /// <summary>Appends a packet binding the index buffer GPU address; returns the advanced write cursor.</summary>
     [LibraryImport(Lib)]
@@ -617,9 +621,14 @@ public static unsafe partial class SceAgc
     [LibraryImport(Lib)]
     public static partial int sceAgcDcbWaitRegMem(void* commandBuffer, uint engine, byte function, uint operation, byte cachePolicy, ulong pollAddr, ulong reference, ulong mask, uint pollInterval);
 
-    /// <summary>Appends packets that stall the draw command buffer until it is safe to begin rendering.</summary>
+    /// <summary>
+    /// Appends packets that stall the draw command buffer until the display has released the given
+    /// buffer, so the processor may render into it. Answers where the packets were written. The two
+    /// arguments name the display and which of its buffers, not how to wait: with zeros the display
+    /// lookup fails and no wait packet is written at all.
+    /// </summary>
     [LibraryImport(Lib)]
-    public static partial int sceAgcDcbWaitUntilSafeForRendering(void* commandBuffer, uint waitMode, uint cachePolicy);
+    public static partial uint* sceAgcDcbWaitUntilSafeForRendering(void* commandBuffer, uint videoOutHandle, int displayBufferIndex);
 
     /// <summary>Appends a WRITE_DATA packet that copies inline dwords into a GPU memory address.</summary>
     [LibraryImport(Lib)]
@@ -669,9 +678,13 @@ public static unsafe partial class SceAgc
     [LibraryImport(Lib)]
     public static partial void* sceAgcGetRegisterDefaultsInternal();
 
-    /// <summary>Initializes the Agc library/runtime state.</summary>
+    /// <summary>
+    /// Prepares the graphics library. Takes a word of its own to keep state in and the revision of the
+    /// register defaults to start from, and answers a status. The revision selects between distinct
+    /// default tables, so it is not a value to leave unset.
+    /// </summary>
     [LibraryImport(Lib)]
-    public static partial void sceAgcInit(uint flags);
+    public static partial int sceAgcInit(void* state, uint defaultsRevision);
 
     /// <summary>Patches the jump target address and its 20-bit size field of a jump packet.</summary>
     [LibraryImport(Lib)]

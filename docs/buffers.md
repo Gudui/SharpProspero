@@ -31,7 +31,9 @@ int savedLevel = reader.ReadInt32LittleEndian();
 ```
 
 Both cover the 8-, 16-, 32- and 64-bit integers, the 32- and 64-bit floats (little- and big-endian), raw
-byte spans and UTF-8 text. `SpanReader` exposes `Position`, `Length`, `Remaining` and `End`; its
+byte spans and UTF-8 text. `SpanReader` exposes `Position`, `Length`, `Remaining` and `End`, and
+`Skip(count)` steps over reserved fields without reading them; a read past the end throws
+`EndOfStreamException`. Its
 `ReadBytes(count)` returns a view into the buffer without copying, and `ReadUtf8(byteCount)` decodes text.
 `ByteWriter` tracks `Count`, hands back `WrittenSpan` or a fresh `ToArray()`, and `Clear()` resets it while
 keeping the buffer it has grown to, so a per-frame message writer allocates once and refills.
@@ -78,7 +80,9 @@ Span<byte> chunk = stackalloc byte[512];
 int taken = ring.Read(chunk);                     // oldest bytes first; less than 512 once it runs dry
 ```
 
-`FreeSpace` says how much a `Write` can still accept, `Skip(count)` drops the oldest bytes without copying
+`FreeSpace` says how much a `Write` can still accept, `Count` how many bytes are waiting to be read — the
+check a consumer makes before it decides a whole message has arrived — with `Capacity` and `IsEmpty`
+alongside them. `Skip(count)` drops the oldest bytes without copying
 them out, and `Clear` empties the ring.
 
 ## Bit fields
@@ -103,7 +107,9 @@ uint rate = reader.ReadBits(20);
 ```
 
 `WriteBits`/`ReadBits` handle 0 to 32 bits at a time, `WriteBit`/`ReadBit` do one, and `AlignToByte` moves
-to the next whole-byte boundary (padding on write, skipping on read). `BitReader` exposes `BitPosition`,
+to the next whole-byte boundary (padding on write, skipping on read). Both expose `BitLength` — the total
+on a reader, the count written so far on a writer, which is how you learn the exact bit count before
+`ToArray` pads the last byte. `BitReader` also exposes `BitPosition`,
 `BitsRemaining` and `TryReadBits`, which returns false at the end of the buffer instead of throwing.
 
 ## Hex, Base32 and Base64

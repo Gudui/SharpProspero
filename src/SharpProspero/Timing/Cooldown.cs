@@ -44,7 +44,7 @@ public sealed class Cooldown(float durationSeconds)
     /// <summary>Advances by <paramref name="deltaSeconds"/>, cooling the gate down.</summary>
     public void Advance(float deltaSeconds)
     {
-        if (deltaSeconds <= 0f || _remaining <= 0f)
+        if (!float.IsFinite(deltaSeconds) || deltaSeconds <= 0f || _remaining <= 0f)
             return;
         _remaining -= deltaSeconds;
         if (_remaining < 0f)

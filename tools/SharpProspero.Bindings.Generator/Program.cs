@@ -10,7 +10,6 @@ using SharpProspero.Link;
 using SharpProspero.Prx;
 using SharpProspero.Texture;
 using System;
-using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -400,6 +399,8 @@ internal static class Program
             Console.Error.WriteLine("Usage: link --obj <file.o> [--obj ...] [--lib <archive.a> ...] [--stub <stub.o> ...]");
             Console.Error.WriteLine("       [--self-contained] supplies the start object and the core module stubs.");
             Console.Error.WriteLine("       [--export <name> ...] exports the named defined symbols (for a --kind prx library).");
+            Console.Error.WriteLine("       [--publish-name <name>] the name the module publishes itself under (default: the output file name without its extension).");
+            Console.Error.WriteLine("       [--export-library <name>] the library the exports are published under (default: the name above).");
             return 1;
         }
 
@@ -423,7 +424,7 @@ internal static class Program
             // device modules do not publish. It is needed only when the runtime archives are linked, so
             // a bare link (no runtime) does not carry it.
             if (options.Archives.Count > 0)
-                options.ExtraObjects.Add(ElfObjectReader.Read(CompatEmitter.BuildObject(), "sharpprospero_compat.o"));
+                options.ExtraObjects.Add(ElfObjectReader.Read(CompatEmitter.BuildObject(payload ? ModuleKind.Executable : kind), "sharpprospero_compat.o"));
             if (!payload)
                 foreach (StubCatalog.Entry entry in StubCatalog.Core)
                     options.ExtraStubs.Add(StubLibrary.Parse(
@@ -477,7 +478,8 @@ internal static class Program
                         ? CrtEmitter.StartSymbol : "main";
                     string entry = GetOption(args, "--entry") ?? defaultEntry;
                     module = DynamicWriter.Write(result, entry, kind,
-                        exportNames.Count > 0 ? exportNames : null, Path.GetFileName(full));
+                        exportNames.Count > 0 ? exportNames : null, Path.GetFileName(full),
+                        GetOption(args, "--publish-name"), GetOption(args, "--export-library"));
                 }
                 File.WriteAllBytes(full, module);
                 Console.WriteLine($"Wrote {full} ({module.Length} bytes"
@@ -1037,19 +1039,13 @@ internal static class Program
                 // Wrapping a module that is already wrapped would nest one container inside another and
                 // produce a file nothing can load. Report it and leave the input as it is, so running
                 // the step twice - or over a folder that mixes built and supplied modules - is safe.
-                // A module wrapped in the other header shape is the exception: its metadata region is
-                // sized for the other magic, which the loader turns away, so unwrap it and wrap it again
-                // rather than shipping it as it stands.
+                // Both header marks count as wrapped: modules carrying the second one are shipped by
+                // titles that run, and unwrapping and wrapping such a module again would replace a
+                // container that works with one this toolchain happens to write.
                 if (SelfContainer.IsSelf(data))
                 {
-                    if (BinaryPrimitives.ReadUInt32LittleEndian(data) == SelfContainer.Magic)
-                    {
-                        Console.WriteLine($"{file} is already wrapped; left unchanged.");
-                        return 0;
-                    }
-
-                    Console.WriteLine($"{file} is wrapped in the older header shape; wrapping it again.");
-                    data = SelfContainer.ExtractElf(data);
+                    Console.WriteLine($"{file} is already wrapped; left unchanged.");
+                    return 0;
                 }
 
                 // A version or authority given but not a valid hex number is a mistake (a dotted "9.00",
@@ -1455,9 +1451,11 @@ internal static class Program
         {
             Console.Error.WriteLine("Usage: stub --lib <libraryName> --names <file> --out <file.a>");
             Console.Error.WriteLine("       stub --module <file.prx> --names <file> --out <file.a>");
-            Console.Error.WriteLine("  --module takes the library name and its versions from the module, so the");
-            Console.Error.WriteLine("  stub matches what the module publishes. --lib assumes the usual versions.");
+            Console.Error.WriteLine("  --module takes the library name, the module name and both versions from the");
+            Console.Error.WriteLine("  module, so the stub matches what it publishes. --lib assumes the usual ones.");
             Console.Error.WriteLine("  --module-version / --library-version override either way.");
+            Console.Error.WriteLine("  --module-name names the publishing module when it differs from the library.");
+            Console.Error.WriteLine("  --soname names the file the loader loads when it is not <library>.prx.");
             return 1;
         }
         if (!File.Exists(namesPath))
@@ -1478,6 +1476,8 @@ internal static class Program
 
         ushort moduleVersion = PrxStubEmitter.DefaultModuleVersion;
         ushort libraryVersion = PrxStubEmitter.DefaultLibraryVersion;
+        string? moduleName = GetOption(args, "--module-name");
+        string? soname = GetOption(args, "--soname");
 
         if (!string.IsNullOrEmpty(modulePath))
         {
@@ -1494,11 +1494,20 @@ internal static class Program
                 return 2;
             }
 
+            // The library the exports belong to and the module that publishes them are two different
+            // names, and a module where they differ is common. Taking the module's own name as the
+            // library asks the loader for a library nothing publishes.
             if (string.IsNullOrEmpty(library))
-                library = image.ModuleName.Length > 0
-                    ? image.ModuleName
-                    : Path.GetFileNameWithoutExtension(modulePath);
+                library = image.ExportLibraryName.Length > 0
+                    ? image.ExportLibraryName
+                    : image.ModuleName.Length > 0
+                        ? image.ModuleName
+                        : Path.GetFileNameWithoutExtension(modulePath);
+            moduleName ??= image.ModuleName.Length > 0 ? image.ModuleName : null;
+            soname ??= Path.GetFileName(modulePath);
             libraryVersion = image.LibraryVersion;
+            if (image.ModuleVersion != 0)
+                moduleVersion = image.ModuleVersion;
 
             int missing = 0;
             foreach (string name in names)
@@ -1513,16 +1522,29 @@ internal static class Program
                 + $"library version 0x{libraryVersion:X4}, {image.Exports.Count} export(s), {missing} name(s) not found.");
         }
 
-        if (ushort.TryParse(GetOption(args, "--module-version"), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out ushort mv))
-            moduleVersion = mv;
-        if (ushort.TryParse(GetOption(args, "--library-version"), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out ushort lv))
-            libraryVersion = lv;
+        // A version given but unreadable is a mistake worth stopping for: taken as absent, the stub
+        // is written with a version the module does not publish and the import it produces never binds.
+        foreach ((string option, Action<ushort> set) in
+                 ((string, Action<ushort>)[])[("--module-version", v => moduleVersion = v),
+                                               ("--library-version", v => libraryVersion = v)])
+        {
+            string? text = GetOption(args, option);
+            if (string.IsNullOrEmpty(text))
+                continue;
+            if (!TryParseHexUShort(text, out ushort value))
+            {
+                Console.Error.WriteLine($"{option} '{text}' is not a version. Write it in hexadecimal, for example 0x0101 or 0101.");
+                return 1;
+            }
+            set(value);
+        }
 
         string full = Path.GetFullPath(outPath);
         Directory.CreateDirectory(Path.GetDirectoryName(full)!);
-        PrxStubEmitter.WriteStub(library!, names, full, moduleVersion, libraryVersion);
+        PrxStubEmitter.WriteStub(library!, names, full, moduleVersion, libraryVersion, moduleName, soname);
         Console.WriteLine($"Wrote {full} ({names.Count} exports, module version 0x{moduleVersion:X4}, "
-            + $"library version 0x{libraryVersion:X4}).");
+            + $"library version 0x{libraryVersion:X4}, module '{moduleName ?? library}', "
+            + $"file '{soname ?? library + ".prx"}').");
         return 0;
     }
 
@@ -1916,7 +1938,8 @@ internal static class Program
                 break;
             case "link":
                 Console.WriteLine("Usage: link --obj <file.o> [--obj ...] [--lib <archive.a> ...] [--stub <stub.o> ...] [--self-contained]");
-                Console.WriteLine("            [--kind eboot|prx|payload] [--entry <symbol>] [--export <name> ...] --out <module>");
+                Console.WriteLine("            [--kind eboot|prx|payload] [--entry <symbol>] [--export <name> ...]");
+                Console.WriteLine("            [--publish-name <name>] [--export-library <name>] --out <module>");
                 Console.WriteLine("  --self-contained supplies the start object and the core module stubs.");
                 break;
             default:
@@ -1936,6 +1959,9 @@ internal static class Program
         Console.WriteLine("       sharpprospero-bindgen link [--self-contained] --obj <file.o> [--lib <archive.a>] [--kind eboot|prx|payload] [--entry <sym>] [--export <name>] --out <module>");
         Console.WriteLine("       sharpprospero-bindgen elf --file <module> [--exports]");
         Console.WriteLine("       sharpprospero-bindgen diff --a <module> --b <module>");
+        Console.WriteLine("       sharpprospero-bindgen modules --module <eboot.bin> --folder <sce_module folder> [--source <folder>]");
+        Console.WriteLine("       sharpprospero-bindgen shader --file <shader.sb> [--registers]");
+        Console.WriteLine("       sharpprospero-bindgen vag --input <clip.wav|clip.vag> --output <clip.vag|clip.wav> [--name <name>]");
         Console.WriteLine("       sharpprospero-bindgen gnf --input <image.png|.tga|.bmp> --output <file.gnf> [--srgb]");
         Console.WriteLine("       sharpprospero-bindgen payload --send --host <address> [--port 9021] --file <payload.elf>");
         Console.WriteLine("       sharpprospero-bindgen self --inspect --file <file>");

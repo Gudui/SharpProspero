@@ -6,14 +6,23 @@ using SharpProspero.Graphics;
 using SharpProspero.Graphics.Agc;
 using SharpProspero.Input;
 using SharpProspero.Interop.Pad;
+using SharpProspero.Interop.SystemService;
+using SharpProspero.Interop.UserService;
 using SharpProspero.Numerics;
 
 namespace SampleApp;
 
 internal static class Program
 {
-    private static void Main()
+    private static unsafe void Main()
     {
+        // This template drives the renderer directly rather than through the application base, so the
+        // two things that base does before its first frame are done here. Without the first, nothing
+        // drawn is ever seen: the picture the system shows while an application starts stays on top
+        // until it is told the application is ready.
+        int priority = 700;
+        UserService.sceUserServiceInitialize(&priority);
+
         using var display = DisplayDevice.Open(1920, 1080);
         using var renderer = new Renderer3D(display);
         using var cube = MeshBuffer.Upload(MeshData.Cube(1.5f, Color.FromRgb(0x4A, 0x9E, 0xFF)));
@@ -25,6 +34,8 @@ internal static class Program
             Target = Vector3.Zero,
             AspectRatio = 1920f / 1080f,
         };
+
+        SystemService.sceSystemServiceHideSplashScreen();
 
         float angle = 0f;
         while (true)

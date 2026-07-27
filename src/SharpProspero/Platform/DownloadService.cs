@@ -9,9 +9,9 @@ using System.Text;
 namespace SharpProspero.Platform;
 
 /// <summary>
-/// A reading of a transfer's progress, taken from the service's record. Four of the record's fields
-/// were established from the callers that read it; the rest of the 88-byte record is not characterised
-/// and is left out.
+/// A reading of a transfer's progress, taken from the service's record. It covers four of the record's
+/// fields and leaves the rest of the 88-byte record out. Read the whole record with
+/// <see cref="DownloadService.TryGetProgressRecord"/>.
 /// </summary>
 /// <param name="State">
 /// The status word. Its low two bits are the transfer's sub-state (three means finished), and the next
@@ -50,11 +50,9 @@ public readonly record struct TransferProgress(uint State, int ErrorCode, ulong 
 /// <see cref="TryOpen"/> reports a refusal rather than raising. Tasks are addressed by the identifier
 /// the service assigns; <see cref="TryFindTaskByContentId"/> turns a content identifier into one.
 /// <para>
-/// Creating a transfer is deliberately absent, for a settled reason. The register-by-storage call was
-/// traced to its callers and its parameter block is fully mapped (source path, title text, icon path),
-/// but that call is a stub on a retail system — it returns "not supported" — and the live call that
-/// takes a network address uses a different, unrecovered block. So this type controls transfers that
-/// already exist rather than starting new ones.
+/// Creating a transfer is not offered: the call that registers one from storage reports "not
+/// supported" on a retail system, and the call that takes a network address needs a parameter block
+/// this SDK does not describe. This type controls transfers that already exist.
 /// </para>
 /// </remarks>
 public sealed unsafe class DownloadService : IDisposable

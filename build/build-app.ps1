@@ -33,6 +33,11 @@
 
 .PARAMETER SdkRoot
     The SharpProspero SDK folder. Defaults to the folder above this script, then SHARPPROSPERO_ROOT.
+
+.PARAMETER TitleId
+    The title this build carries, when it should differ from the one the project's metadata names.
+    Installers generally treat a title already on the machine as present and decline to replace it, so
+    a build meant to sit beside the last one needs a title of its own. Only the gathered copy changes.
 #>
 param(
     [Parameter(Mandatory = $true)][string]$ProjectPath,
@@ -42,6 +47,7 @@ param(
     [ValidateSet("Match", "Upgrade", "Downgrade", "Keep")][string]$SystemVersionPolicy = "Match",
     [string]$SystemVersion = "",
     [string]$SdkRoot = "",
+    [string]$TitleId = "",
     [switch]$Payload
 )
 
@@ -60,6 +66,14 @@ $SdkRoot = (Resolve-Path $SdkRoot).Path
 
 $projectDir = Split-Path -Parent (Resolve-Path $ProjectPath)
 if (-not $OutputFolder) { $OutputFolder = Join-Path $projectDir "out" }
+# Settled to a full path before anything derives from it. Left relative, it means different places to
+# different steps: the compile and link steps resolve it against the project, everything after against
+# wherever the script was started. A build given a relative folder linked the module into one place and
+# then signed and packaged whatever happened to be in the other, which is silently the wrong artefact.
+if (-not [System.IO.Path]::IsPathRooted($OutputFolder)) {
+    $OutputFolder = Join-Path (Get-Location).Path $OutputFolder
+}
+$OutputFolder = [System.IO.Path]::GetFullPath($OutputFolder)
 $moduleFolder = Join-Path $OutputFolder "module"
 
 $onWindows = [System.Environment]::OSVersion.Platform -eq "Win32NT"
@@ -90,6 +104,11 @@ Write-Host "== Compile =="
 $targetName = (& dotnet msbuild $ProjectPath -getProperty:TargetName `
     -p:Configuration=$Configuration -p:RuntimeIdentifier=$rid "-p:SharpProsperoRoot=$SdkRoot" --nologo | Out-String).Trim()
 if (-not $targetName) { throw "Could not resolve the project's target name." }
+# Which kind of module the project asks for decides which run-time bring-up object is gathered below,
+# so it is read here alongside the name rather than guessed from the file that comes out.
+$moduleKind = (& dotnet msbuild $ProjectPath -getProperty:ProsperoModuleKind `
+    -p:Configuration=$Configuration -p:RuntimeIdentifier=$rid "-p:SharpProsperoRoot=$SdkRoot" --nologo | Out-String).Trim()
+if (-not $moduleKind) { $moduleKind = "Executable" }
 $objectPath = Join-Path $projectDir "obj/$Configuration/net10.0/$rid/native/$targetName.o"
 if (Test-Path $objectPath) { Remove-Item $objectPath -Force }
 
@@ -116,8 +135,13 @@ Write-Host "  Compiled $targetName.o for $rid."
 # NativeAOT runtime pack), so they are found in the package cache rather than assembled by hand. On
 # Windows the cache lives in WSL, so the archives are copied out to the project's obj folder.
 Write-Host "== Runtime support =="
+# An application reaches the run-time initialiser from the main the application bring-up object
+# defines; a library has no main, so it takes the library bring-up object, which runs the initialiser
+# from its own constructor list. Gathering the wrong one leaves the module's exports entering a run
+# time nothing has started.
+$bootstrapper = if ($moduleKind -eq "Prx") { "libbootstrapperdll.o" } else { "libbootstrapper.o" }
 $archiveNames = @(
-    "libbootstrapper.o", "libRuntime.WorkstationGC.a", "libRuntime.VxsortDisabled.a",
+    $bootstrapper, "libRuntime.WorkstationGC.a", "libRuntime.VxsortDisabled.a",
     "libeventpipe-disabled.a", "libstandalonegc-disabled.a", "libaotminipal.a", "libstdc++compat.a",
     "libSystem.Native.a", "libz.a", "libbrotlienc.a", "libbrotlidec.a", "libbrotlicommon.a",
     "libSystem.IO.Compression.Native.a"
@@ -125,22 +149,49 @@ $archiveNames = @(
 $supportDir = Join-Path $projectDir "obj/$Configuration/net10.0/$rid/runtime-support"
 New-Item -ItemType Directory -Force -Path $supportDir | Out-Null
 
-$packGlob = "microsoft.netcore.app.runtime.nativeaot.linux-x64/*/runtimes/linux-x64/native"
-if ($onWindows) {
-    $wslSupport = ConvertTo-WslPath $supportDir
-    $copyScript = "set -e; NAT=`$(ls -d ~/.nuget/packages/$packGlob 2>/dev/null | sort -V | tail -1); " +
-        "if [ -z `"`$NAT`" ]; then echo NONE; exit 0; fi; " +
-        "for n in $($archiveNames -join ' '); do cp `"`$NAT/`$n`" '$wslSupport/' 2>/dev/null || true; done; echo `"`$NAT`""
-    $nativeDir = (& wsl.exe -e bash -lc $copyScript | Out-String).Trim()
-    if ($nativeDir -eq "NONE" -or -not $nativeDir) {
-        throw "The NativeAOT runtime pack was not found in the WSL package cache. Run the compile step once so it is restored."
+# Which runtime pack to gather from is not a guess: the compile step already recorded which one it
+# restored and where the cache is. Reading that beats taking the newest directory in the cache, which
+# is the wrong pack as soon as more than one is present - and was chosen by name order rather than by
+# version, so a 10.0.9 sorts after a 10.0.10 and the older one quietly won. Archives from one pack
+# linked against an object compiled for another is the kind of mismatch that surfaces far from here.
+$assetsPath = Join-Path $projectDir "obj/project.assets.json"
+if (-not (Test-Path $assetsPath)) {
+    throw "No restore record at $assetsPath. Run the compile step once so the runtime pack is restored."
+}
+$assets = Get-Content -Raw $assetsPath | ConvertFrom-Json
+$packName = "Microsoft.NETCore.App.Runtime.NativeAOT.$rid"
+$packVersion = $null
+foreach ($framework in $assets.project.frameworks.PSObject.Properties) {
+    foreach ($dep in $framework.Value.downloadDependencies) {
+        # The range reads "[x.y.z, x.y.z]"; both ends name the same version.
+        if ($dep.name -eq $packName) { $packVersion = ($dep.version -replace '[\[\]\s]', '').Split(',')[0] }
     }
+}
+if (-not $packVersion) { throw "$packName is not named in $assetsPath; the compile step did not restore it." }
+
+# The compile runs where the compiler for the device instruction set runs, and restores into that
+# host's cache - so on Windows the folder the record names is a path only the other host can see, and
+# the copy has to be made from there.
+$packTail = "$($packName.ToLowerInvariant())/$packVersion/runtimes/$rid/native"
+$nativeDir = $null
+$fromOtherHost = $false
+foreach ($folder in $assets.packageFolders.PSObject.Properties.Name) {
+    $candidate = "$($folder.TrimEnd('/','\'))/$packTail"
+    if (Test-Path $candidate) { $nativeDir = $candidate; break }
+    if ($haveWsl -and $folder.StartsWith("/")) {
+        $seen = (& wsl.exe -e bash -lc "test -d '$candidate' && echo yes" | Out-String).Trim()
+        if ($seen -eq "yes") { $nativeDir = $candidate; $fromOtherHost = $true; break }
+    }
+}
+if (-not $nativeDir) {
+    throw "The restore names $packName $packVersion, but its files are in none of the recorded package folders."
+}
+Write-Host "  Runtime pack $packVersion"
+if ($fromOtherHost) {
+    $wslSupport = ConvertTo-WslPath $supportDir
+    $copy = "set -e; for n in $($archiveNames -join ' '); do cp `"$nativeDir/`$n`" '$wslSupport/' 2>/dev/null || true; done"
+    & wsl.exe -e bash -lc $copy
 } else {
-    $userHome = [System.Environment]::GetFolderPath("UserProfile")
-    $nativeDir = Get-ChildItem -Path (Join-Path $userHome ".nuget/packages/microsoft.netcore.app.runtime.nativeaot.linux-x64") `
-        -Directory -ErrorAction SilentlyContinue | Sort-Object Name | Select-Object -Last 1
-    if (-not $nativeDir) { throw "The NativeAOT runtime pack was not found in the package cache." }
-    $nativeDir = Join-Path $nativeDir.FullName "runtimes/linux-x64/native"
     foreach ($n in $archiveNames) {
         $src = Join-Path $nativeDir $n
         if (Test-Path $src) { Copy-Item -Force $src (Join-Path $supportDir $n) }
@@ -188,10 +239,39 @@ if ($LASTEXITCODE -ne 0) { throw "Link failed." }
 # 4. Gather the module's metadata and any modules it ships with.
 foreach ($folder in @("sce_sys", "sce_module")) {
     $source = Join-Path $projectDir $folder
-    if (-not (Test-Path $source)) { continue }
     $destination = Join-Path $moduleFolder $folder
+    # Clear whatever a previous build left before deciding whether there is anything to gather. Doing
+    # it the other way round left a folder the project no longer supplies sitting in the output for
+    # good, so a module gathered once shipped in every later build however old it had become.
     if (Test-Path $destination) { Remove-Item -Recurse -Force $destination }
+    if (-not (Test-Path $source)) { continue }
     Copy-Item -Recurse -Force $source $destination
+}
+
+# The title this build carries, when it is not the one the project's own metadata names. Installers
+# generally treat a title as already present and refuse to replace it, so a run meant to be installed
+# beside the last one needs a title of its own. Only the copy gathered here is changed; the project's
+# own metadata is left alone.
+if ($TitleId) {
+    if ($TitleId -notmatch '^[A-Z]{4}[0-9]{5}$') {
+        throw "TitleId must be four letters and five digits, for example PPSA99098; got '$TitleId'."
+    }
+    $paramPath = Join-Path $moduleFolder "sce_sys/param.json"
+    if (-not (Test-Path $paramPath)) { throw "No sce_sys/param.json was gathered, so the title cannot be set." }
+    $param = Get-Content -Raw $paramPath | ConvertFrom-Json
+    $was = $param.titleId
+    $param.titleId = $TitleId
+    # The content identifier carries the title in its middle field; the rest of it is left as it was.
+    if ($param.contentId -match '^(.{7})[A-Z]{4}[0-9]{5}(.*)$') {
+        $param.contentId = "$($Matches[1])$TitleId$($Matches[2])"
+    }
+    # Written without a byte-order mark. The mark is three bytes the machine's reader has no case for,
+    # so it stops at the first one and abandons the whole file. Asking for this encoding by name adds
+    # the mark on the older host this script still supports, and the name that would not is newer than
+    # that host, so the text is written directly instead.
+    [System.IO.File]::WriteAllText(
+        $paramPath, ($param | ConvertTo-Json -Depth 32), (New-Object System.Text.UTF8Encoding($false)))
+    Write-Host "  Title $was -> $TitleId"
 }
 
 # 4b. Some of the modules an application imports from are not published by the system: the application

@@ -133,7 +133,9 @@ settings.Save("/data/app.ini");
 
 `GetString`, `GetInt` and `GetBool` each take a fallback for a missing value, so a first run with no file
 still gets sensible defaults. `Load` returns an empty store when the file is absent, `Contains` tests a key,
-`Remove` deletes one, and `Sections` lists the section names.
+`Remove` deletes one, and `Sections` lists the section names. Section and key lookups ignore case, so
+`[Audio]` and `[audio]` are one section and `volume` reads back as `Volume`. `Parse` builds a store from
+INI text you already hold, and `ToString` returns the store as INI text — the same text `Save` writes.
 
 ## JSON
 
@@ -160,7 +162,11 @@ string compact = reply.Write();                           // or a compact string
 `Array`, `Object`. `Parse` reads text and throws `JsonException` on bad input, while `TryParse` returns false
 instead. `AsString`, `AsNumber`, `AsInt`, `AsBool` read a value with a fallback, and `GetString`, `GetInt`,
 `GetNumber` and `GetBool` read a named value from an object in one step. `Write(indented: true)` lays the
-output out over several lines.
+output out over several lines. `Count` gives the number of items in an array or named values in an object,
+and `Keys` lists an object's keys in order, so a value of unknown shape can be walked. `ContainsKey` tests
+for a name, `TryGet` reads a named value and reports whether it was there, `AsLong` reads a number too wide
+for an `int`, `Add` appends to an array and returns it so calls chain, and `JsonValue.Of` builds a value
+from a boolean, a number or a string.
 
 ## CSV
 
@@ -198,10 +204,17 @@ foreach (DataRow row in top.Rows)
     Log.Information($"{row["name"]}: {row["score"]}");
 ```
 
-`FromCsv` reads the first row as column names (with blanks and duplicates made unique) unless you pass
-`hasHeader: false`. A `DataRow` reads a cell by column name or index. `SortBy` is stable — equal keys keep
-their order — and takes an `IComparer<string>`, so `TextFormat.NaturalComparer` (in `SharpProspero.Text`)
-puts "9" before "20"; `GroupBy` splits the rows into a table per value; `ToCsv` writes it back out.
+`FromCsv` reads the first row as column names unless you pass `hasHeader: false`. A blank or missing name
+becomes `col0`, `col1`, … by position, and a name that repeats gains a `_2`, `_3`, … suffix, so a file with
+a duplicated header still loads. A `DataRow` reads a cell by column name or index. `SortBy` is stable —
+equal keys keep their order — and takes an `IComparer<string>`, so `TextFormat.NaturalComparer` (in
+`SharpProspero.Text`) puts "9" before "20"; `GroupBy` splits the rows into a table per value; `ToCsv`
+writes it back out.
+
+To build a table from data that is not CSV, construct it with its column names and add rows:
+`new DataTable("name", "score")` then `AddRow("Ada", "42")`. A row with fewer cells than the table has
+columns is padded with empty cells; one with more is rejected. `Columns`, `ColumnCount`, `RowCount`,
+`Row(index)` and `IndexOfColumn(name)` read the shape back.
 
 ## Versioned saves
 
@@ -234,9 +247,12 @@ For the console's own save-data slots — mounting, quotas and the picker — se
 ## Tar archives
 
 `TarArchive` reads a tar file — the common way to bundle many assets into one — into its members as a
-self-contained calculation. It handles the widely used forms (the original layout, the ustar long-path
-prefix, and GNU long names) and returns each regular file and directory; other record kinds, such as links,
-are skipped. A tar is not compressed, so a member's bytes come back as stored.
+self-contained calculation. It handles the widely used forms — the original layout, the ustar long-path
+prefix, GNU long names, and the extended headers that carry a long path or a size the header's own field
+cannot hold — and returns each regular file and directory; other record kinds, such as links, are skipped.
+An extended header applies to the entry that follows it and takes precedence over the shortened name left
+in that entry's own header, so members that differ only past the hundredth character stay separate. A tar
+is not compressed, so a member's bytes come back as stored.
 
 ```csharp
 foreach (TarEntry entry in TarArchive.Read(FileSystem.ReadAllBytes("/data/assets.tar")))
@@ -261,8 +277,8 @@ using var zlib = ZlibDecompressor.Create();
 byte[] plain = zlib.Decompress(compressed);
 ```
 
-Each `Decompress` call produces at most 64 KiB. `Create` takes the work-buffer size (with a usable default)
-and initializes the service.
+Each `Decompress` call produces at most 64 KiB. `Create` takes the work-buffer size, 64 KiB by default, and
+initializes the service.
 
 {: .warning }
 > There is one service instance, so create at most one decompressor at a time and dispose it before making

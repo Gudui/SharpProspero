@@ -67,7 +67,7 @@ A title that ships more than one trophy set selects among them with the `service
 
 ## Posting events
 
-The write side is `UniversalDataSystem`. Initialize the module once with a working memory pool (128 KB by default), open a session for a user, post events, then terminate the module at shutdown.
+The write side is `UniversalDataSystem`. Initialize the module once with a working memory pool (128 KB by default), open a session for a user, post events, then terminate the module at shutdown. `Open` takes the same `serviceLabel` as the read side, so a title with more than one trophy set posts to the set that label selects.
 
 ```csharp
 using SharpProspero.Platform;

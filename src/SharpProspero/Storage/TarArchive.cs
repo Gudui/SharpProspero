@@ -44,6 +44,12 @@ public static class TarArchive
     {
         var entries = new List<TarEntry>();
         string? longName = null;
+        // A name and a length carried by an extended header for the entry that follows it. They take
+        // precedence over the older long-name record and over the header's own fields, which is what
+        // the writer that emits them relies on: it leaves a shortened name in the header for a reader
+        // that does not understand the extended one.
+        string? extendedName = null;
+        long? extendedSize = null;
         int offset = 0;
 
         while (offset + BlockSize <= data.Length)
@@ -74,12 +80,33 @@ public static class TarArchive
                     longName = parsed.Length > 0 ? parsed : null; // an empty payload falls back to the header name
                     break;
 
+                case (byte)'x': // An extended header for the entry that follows it.
+                    ReadExtendedHeader(data.Slice(offset, dataLength), ref extendedName, ref extendedSize);
+                    break;
+
+                case (byte)'g': // The same, for every entry that follows. Read so it cannot be
+                    {           // mistaken for the next entry's own, and then set aside.
+                        string? ignoredName = null;
+                        long? ignoredSize = null;
+                        ReadExtendedHeader(data.Slice(offset, dataLength), ref ignoredName, ref ignoredSize);
+                        break;
+                    }
+
                 case 0:
                 case (byte)'0':
                 case (byte)'7': // A regular (or contiguous) file.
                     {
-                        string name = longName ?? ReadName(header);
+                        string name = extendedName ?? longName ?? ReadName(header);
                         longName = null;
+                        extendedName = null;
+                        if (extendedSize is long carried)
+                        {
+                            if (carried < 0 || carried > data.Length - offset)
+                                throw new ProsperoException("The tar entry runs past the end of the archive.", -1);
+                            dataLength = (int)carried;
+                            paddedLength = RoundUpToBlock(dataLength);
+                            extendedSize = null;
+                        }
                         bool trailingSlash = name.Length > 0 && name[^1] == '/';
                         entries.Add(new TarEntry(name, trailingSlash, trailingSlash ? [] : data.Slice(offset, dataLength).ToArray()));
                         break;
@@ -87,14 +114,18 @@ public static class TarArchive
 
                 case (byte)'5': // A directory.
                     {
-                        string name = longName ?? ReadName(header);
+                        string name = extendedName ?? longName ?? ReadName(header);
                         longName = null;
+                        extendedName = null;
+                        extendedSize = null;
                         entries.Add(new TarEntry(name, true, []));
                         break;
                     }
 
-                default: // Links, device nodes, and extended headers are skipped, but any long name is spent.
+                default: // Links and device nodes are skipped, but any name held for the next entry is spent.
                     longName = null;
+                    extendedName = null;
+                    extendedSize = null;
                     break;
             }
 
@@ -108,12 +139,46 @@ public static class TarArchive
         return entries;
     }
 
+    // An extended header holds a run of records, each "<length> <key>=<value>\n" where the length
+    // counts the whole record including itself and the newline. Only two keys change what the entry
+    // is: the path, which is how a name longer than the header's field is carried, and the size, which
+    // is how a length the header's octal field cannot hold is carried. A record that cannot be read
+    // ends the run rather than being guessed at.
+    private static void ReadExtendedHeader(ReadOnlySpan<byte> payload, ref string? name, ref long? size)
+    {
+        int at = 0;
+        while (at < payload.Length)
+        {
+            int space = payload[at..].IndexOf((byte)' ');
+            if (space <= 0)
+                return;
+            if (!int.TryParse(Encoding.ASCII.GetString(payload.Slice(at, space)), out int length)
+                || length <= space + 1 || length > payload.Length - at)
+                return;
+            ReadOnlySpan<byte> record = payload.Slice(at + space + 1, length - space - 2);
+            at += length;
+
+            int equals = record.IndexOf((byte)'=');
+            if (equals <= 0)
+                continue;
+            string key = Encoding.ASCII.GetString(record[..equals]);
+            ReadOnlySpan<byte> value = record[(equals + 1)..];
+            if (key == "path")
+                name = Encoding.UTF8.GetString(value);
+            else if (key == "size" && long.TryParse(Encoding.ASCII.GetString(value), out long parsed))
+                size = parsed;
+        }
+    }
+
     private static string ReadName(ReadOnlySpan<byte> header)
     {
         string name = ReadString(header[..100]);
 
-        // ustar splits a long path into a 155-byte prefix and the 100-byte name.
-        if (header.Slice(257, 5).SequenceEqual("ustar"u8))
+        // One layout splits a long path into a 155-byte prefix and the 100-byte name. Another writes
+        // the same five letters in that field and puts three timestamps where the prefix would be, so
+        // comparing only the letters read those timestamps as a directory and put one in front of
+        // every name. The character after the letters is what separates the two.
+        if (header.Slice(257, 6).SequenceEqual("ustar "u8))
         {
             string prefix = ReadString(header.Slice(345, 155));
             if (prefix.Length > 0)

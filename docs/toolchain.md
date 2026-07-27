@@ -21,6 +21,7 @@ reach the device services, and the module and package formats.
 | [The param.json fields](param-json.md) | The package metadata a title carries, and the packaging step that assembles it. |
 | [Command reference](commands.md) | Every command the toolchain offers, grouped by what you are trying to do. |
 
-The reader tool, inspector, and packager are all the same command-line program; each page above shows
-the command for its task, and [Command reference](commands.md) lists every one of them in a single
-table.
+The commands that build and read a module belong to one command-line program,
+`sharpprospero-bindgen`; [Command reference](commands.md) lists them grouped by what you are trying to
+do. Packaging is a separate program, `tools/SharpProspero.Packager`, whose command line
+[Build pipeline](build-pipeline.md) gives. Each page above shows the command for its task.

@@ -45,6 +45,9 @@ public static class StubCatalog
         new Entry("libkernel", Kernel),
         // One module, a second library: the same file publishes both.
         new Entry("libScePosix", Posix, ModuleName: "libkernel", Soname: "libkernel.prx"),
+        // A third library out of the same file. The console identifier is published under this name and
+        // not under the kernel's own, so asking the kernel for it asks for something nothing publishes.
+        new Entry("libSceOpenPsId", OpenPsId, ModuleName: "libkernel", Soname: "libkernel.prx"),
         new Entry("libc", C),
         new Entry("libSceVideoOut", VideoOut),
         new Entry("libScePad", Pad),
@@ -57,15 +60,23 @@ public static class StubCatalog
         new Entry("libSceJpegDec", JpegDec),
         new Entry("libSceJpegEnc", JpegEnc),
         new Entry("libSceAudioIn", AudioIn),
-        // The decoder publishes its library under the plain name but the loader loads the file with the dotted one
+        // The decoder publishes its library under the plain name but the loader loads the file with
+        // the dotted one; ten launching titles record exactly this pairing.
         new Entry("libSceAudiodec", Audiodec, Soname: "libSceAudiodec.native.prx"),
         new Entry("libSceM4aacEnc", M4aacEnc),
         new Entry("libSceAt9Enc", At9Enc),
         new Entry("libSceNgs2", Ngs2),
         new Entry("libSceAudio3d", Audio3d),
         // Named the same way as the decoder: library and module libSceAjm, file libSceAjm.native.prx.
+        // Fifty-five launching titles record this pairing.
         new Entry("libSceAjm", Ajm, Soname: "libSceAjm.native.prx"),
-        new Entry("libSceVideoRecording", VideoRecording),
+        // The module publishes these under a library whose name is not the module's, and the file it
+        // lives in is not named after the module either. Naming the module as the library asked the
+        // loader for a library nothing publishes, out of a file that does not exist, and a module
+        // whose imports do not all bind never reaches its first instruction - so any application
+        // touching this area failed at load rather than at the call.
+        new Entry("libSceVideoRecordingP", VideoRecording,
+            ModuleName: "libSceVideoRecording", Soname: "libSceVideoRecording.native.prx"),
         // The character-set converter names all three apart: the file keeps the converter's name, and
         // the library and module are named for the set of them.
         new Entry("libSceCes", Ces, ModuleName: "libSceCes", Soname: "libSceCesCs-module.prx"),
@@ -87,7 +98,7 @@ public static class StubCatalog
         // This library publishes module version 1.0, like the media player and content search.
         new Entry("libScePlayGo", PlayGo, ModuleVersion: 0x0100),
         // The module publishes a library under a shorter name than its own: library libSceAppContent,
-        // module libSceAppContentUtil, file libSceAppContent.prx.
+        // module libSceAppContentUtil, file libSceAppContent.prx. Sixty-six launching titles agree.
         new Entry("libSceAppContent", AppContent, ModuleName: "libSceAppContentUtil"),
         new Entry("libSceNetCtl", NetCtl),
         // The save-data module names its file with a dot but its module and library with an
@@ -108,7 +119,7 @@ public static class StubCatalog
         new Entry("libSceWebBrowserDialog", WebBrowserDialog),
         // This library publishes module version 1.0, the one module in this set that does not use 1.1.
         // This library publishes module version 1.0, the one module in this set that does not use 1.1,
-        // and the loader loads the dotted file.
+        // and the loader loads the dotted file. Thirty-three launching titles record this pairing.
         new Entry("libSceAvPlayer", AvPlayer, ModuleVersion: 0x0100, Soname: "libSceAvPlayer.native.prx"),
         // The font engine calls its library and its module the same thing and its file something else.
         // Both font files carry a name that is not the library's, and each module says so itself: the
@@ -142,11 +153,21 @@ public static class StubCatalog
         new Entry("libSceAvcap2", Avcap2),
     ];
 
+    // The console's own identifier, published by the kernel module under a library of its own.
+    private static readonly string[] OpenPsId =
+    [
+        "sceKernelGetOpenPsId",
+    ];
+
     // Kernel: direct memory, files, timing, module control, and the thread, synchronization, memory,
     // and thread-local primitives the platform layer forwards to.
     private static readonly string[] Kernel =
     [
         "__error", "__stack_chk_fail", "__tls_get_addr", "sceKernelAllocateDirectMemory",
+        // Three the console publishes that the link-time archives leave out. They are here because the
+        // console is what an application binds against; without them the calls that read the system
+        // version and the settings could never be reached at all.
+        "sceKernelGetProsperoSystemSwVersion", "sceKernelGetAllowedSdkVersionOnSystem", "sysctlbyname",
         "sceKernelAvailableDirectMemorySize", "sceKernelAvailableFlexibleMemorySize", "sceKernelCheckReachability", "sceKernelClockGettime",
         "sceKernelClose", "sceKernelDlsym", "sceKernelGetCurrentCpu", "sceKernelGetDirectMemorySize",
         "sceKernelGetProcessTime",
@@ -159,12 +180,17 @@ public static class StubCatalog
         "sceKernelMunmap", "sceKernelOpen", "sceKernelRead", "sceKernelReleaseDirectMemory",
         "sceKernelReleaseFlexibleMemory", "sceKernelRename", "sceKernelRmdir", "sceKernelSendNotificationRequest",
         "sceKernelStopUnloadModule", "sceKernelTruncate", "sceKernelUnlink", "sceKernelUsleep",
-        "sceKernelVirtualQuery", "sceKernelWrite", "scePthreadCondBroadcast", "scePthreadCondDestroy",
+        "sceKernelVirtualQuery", "sceKernelWrite",
+        "scePthreadGetthreadid",
+        "scePthreadCondattrInit", "scePthreadCondattrDestroy",
+        "scePthreadMutexattrInit", "scePthreadMutexattrSettype", "scePthreadMutexattrDestroy",
+        "scePthreadCondBroadcast", "scePthreadCondDestroy",
         "scePthreadCondInit", "scePthreadCondSignal", "scePthreadCondWait", "scePthreadCreate",
         "scePthreadDetach", "scePthreadExit", "scePthreadGetspecific", "scePthreadJoin",
         "scePthreadKeyCreate", "scePthreadKeyDelete", "scePthreadMutexDestroy", "scePthreadMutexInit",
         "scePthreadMutexLock", "scePthreadMutexTrylock", "scePthreadMutexUnlock", "scePthreadRename",
-        "scePthreadGetaffinity", "scePthreadSelf", "scePthreadSetspecific", "scePthreadYield",
+        "scePthreadCondattrSetclock", "scePthreadGetaffinity", "scePthreadSelf", "scePthreadSetspecific",
+        "scePthreadYield",
     ];
 
     // The portable operating-system interface the platform layer forwards to. These are published
@@ -182,6 +208,8 @@ public static class StubCatalog
         "pthread_attr_setdetachstate",
         "pthread_attr_setstacksize", "pthread_cond_broadcast", "pthread_cond_destroy", "pthread_cond_init",
         "pthread_cond_signal", "pthread_cond_timedwait", "pthread_cond_wait", "pthread_condattr_destroy",
+        // The older pair of timestamp routines, which the finer pair the runtime asks for stands on.
+        "utimes", "futimes",
         "pthread_condattr_init", "pthread_condattr_setclock", "pthread_create", "pthread_key_create",
         "pthread_mutex_destroy", "pthread_mutex_init", "pthread_mutex_lock", "pthread_mutex_unlock",
         "pthread_mutexattr_destroy", "pthread_mutexattr_init", "pthread_mutexattr_settype", "pthread_rwlock_rdlock",
@@ -233,6 +261,7 @@ public static class StubCatalog
         "sceVideoOutSetFlipRate",
         "sceVideoOutSubmitFlip",
         "sceVideoOutIsFlipPending",
+        "sceVideoOutGetFlipStatus",
         "sceVideoOutWaitVblank",
     ];
 
@@ -321,6 +350,7 @@ public static class StubCatalog
         "sceFontUnbindRenderer",
         "sceFontSetupRenderScalePixel",
         "sceFontGetRenderCharGlyphMetrics",
+        "sceFontGetHorizontalLayout",
         "sceFontRenderCharGlyphImageHorizontal",
         "sceFontRenderSurfaceInit",
         "sceFontRenderSurfaceSetScissor",
@@ -638,6 +668,15 @@ public static class StubCatalog
         "sceCesEucKrToUtf8",
         "sceCesBig5ToUtf8",
         "sceCesUhcToUtf8",
+        // The conversions take a profile and refuse a null one, so the routines that build a profile
+        // are as necessary as the conversions themselves.
+        "sceCesUcsProfileInitEucJpX0208",
+        "sceCesUcsProfileInitEucJpX0208Ss2",
+        "sceCesUcsProfileInitEucJpX0208Ss2Ss3",
+        "sceCesUcsProfileInitEucJpCp51932",
+        "sceCesUcsProfileInitEucKr",
+        "sceCesUcsProfileInitBig5Cp950",
+        "sceCesUcsProfileInitUhc",
     ];
 
     private static readonly string[] Depth2 =

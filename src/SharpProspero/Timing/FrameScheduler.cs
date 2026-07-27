@@ -36,6 +36,11 @@ public sealed class FrameScheduler
         public bool Cancelled;
     }
 
+    // Set while the callbacks are being walked, so emptying the list waits until the walk is over.
+
+    private bool _updating;
+
+
     private readonly List<Entry> _entries = [];
     private int _nextId = 1;
 
@@ -85,7 +90,22 @@ public sealed class FrameScheduler
     }
 
     /// <summary>Cancels every scheduled callback.</summary>
-    public void Clear() => _entries.Clear();
+    /// <remarks>
+    /// Safe to call from a callback. Emptying the list outright while it is being walked leaves the
+    /// walk indexing past its end, and the exception that follows leaves the frame loop entirely;
+    /// marking instead lets the walk finish and the entries go at the end of the tick, which is also
+    /// what cancelling one at a time already does.
+    /// </remarks>
+    public void Clear()
+    {
+        if (_updating)
+        {
+            foreach (Entry entry in _entries)
+                entry.Cancelled = true;
+            return;
+        }
+        _entries.Clear();
+    }
 
     /// <summary>
     /// Advances every schedule by <paramref name="deltaSeconds"/> and runs the callbacks that come due.
@@ -106,24 +126,32 @@ public sealed class FrameScheduler
         // Collect the entries due at entry to this tick, so a callback that schedules more work does not
         // see its own additions fire this same tick. Iterate by index over the snapshot count.
         int due = _entries.Count;
-        for (int i = 0; i < due; i++)
+        _updating = true;
+        try
         {
-            Entry entry = _entries[i];
-            if (entry.Cancelled || entry.Remaining > 0)
-                continue;
-
-            entry.Callback();
-
-            if (entry.Repeating && !entry.Cancelled)
+            for (int i = 0; i < due; i++)
             {
-                entry.Remaining += entry.Interval;
-                if (entry.Remaining <= 0)
-                    entry.Remaining = entry.Interval;
+                Entry entry = _entries[i];
+                if (entry.Cancelled || entry.Remaining > 0)
+                    continue;
+
+                entry.Callback();
+
+                if (entry.Repeating && !entry.Cancelled)
+                {
+                    entry.Remaining += entry.Interval;
+                    if (entry.Remaining <= 0)
+                        entry.Remaining = entry.Interval;
+                }
+                else
+                {
+                    entry.Cancelled = true;
+                }
             }
-            else
-            {
-                entry.Cancelled = true;
-            }
+        }
+        finally
+        {
+            _updating = false;
         }
 
         _entries.RemoveAll(static e => e.Cancelled);

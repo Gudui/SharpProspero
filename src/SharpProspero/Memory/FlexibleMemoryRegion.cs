@@ -62,7 +62,10 @@ public sealed unsafe class FlexibleMemoryRegion : IDisposable
         _released = true;
         if (_pointer != null)
         {
+            // Give up what is behind the address first, then the address itself. Skipping the second
+            // leaves the range occupied for the life of the process even though nothing is behind it.
             KernelMemory.sceKernelReleaseFlexibleMemory(_pointer, _size);
+            KernelMemory.sceKernelMunmap(_pointer, _size);
             _pointer = null;
         }
         GC.SuppressFinalize(this);

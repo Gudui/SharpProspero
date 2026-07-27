@@ -19,12 +19,3 @@ internal static class Library
     [UnmanagedCallersOnly(EntryPoint = "sampleVersion")]
     public static int Version() => 0x01_00;
 }
-
-// A library module still compiles as an application project, so it needs an entry point. It is never
-// called for a loaded library; the exported functions above are the module's real surface.
-internal static class Program
-{
-    private static void Main()
-    {
-    }
-}

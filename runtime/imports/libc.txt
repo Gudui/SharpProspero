@@ -3,7 +3,6 @@ __cxa_finalize
 abort
 asprintf
 calloc
-closedir
 exit
 fclose
 fflush
@@ -11,19 +10,15 @@ fprintf
 fputs
 free
 fwrite
-getcwd
-getenv
 log
 lrand48
 malloc
 memcpy
 memmove
 memset
-opendir
 snprintf
 srand48
 sscanf
-stderr
 strcasecmp
 strcat
 strcmp

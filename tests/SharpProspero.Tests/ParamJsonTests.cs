@@ -99,7 +99,7 @@ public sealed class ParamJsonTests
     {
         JsonObject document = Complete();
         document["applicationCategoryType"] = category;
-        document["contentBadgeType"] = ApplicationCategories.BadgeFor((ApplicationCategory)category);
+        document["contentBadgeType"] = ApplicationCategories.DefaultBadge((ApplicationCategory)category);
 
         ParamReport report = ParamJson.Check(document);
         Assert.True(report.IsValid);
@@ -153,28 +153,59 @@ public sealed class ParamJsonTests
     [InlineData(ApplicationCategory.RnpsMediaApp, 2)]
     [InlineData(ApplicationCategory.WebMediaApp, 2)]
     [InlineData(ApplicationCategory.ShellApp, 2)]
-    public void BadgeFor_FollowsTheKindOfTitle(ApplicationCategory category, int expected)
-        => Assert.Equal(expected, ApplicationCategories.BadgeFor(category));
+    public void DefaultBadge_StartsFromTheKindOfTitle(ApplicationCategory category, int expected)
+        => Assert.Equal(expected, ApplicationCategories.DefaultBadge(category));
 
     [Fact]
-    public void Check_ReportsABadgeThatDoesNotMatchTheKindOfTitle()
+    public void Check_AcceptsAnyOfTheThreeBadges()
     {
+        // The badge does not follow from the category. A title of any kind may carry any of the three,
+        // so a badge that does not match the category is not a fault and is not something to settle.
         JsonObject document = Complete();
-        document["contentBadgeType"] = 2;
-
-        ParamIssue issue = ParamJson.Check(document).Issues.Single(i => i.Field == "contentBadgeType");
-        Assert.Equal(ParamIssueLevel.Incomplete, issue.Level);
-        Assert.True(issue.CanComplete);
+        foreach (int badge in (int[])[0, 1, 2])
+        {
+            document["contentBadgeType"] = badge;
+            Assert.DoesNotContain(ParamJson.Check(document).Issues, i => i.Field == "contentBadgeType");
+        }
     }
 
     [Fact]
-    public void Complete_SettlesTheBadgeAgainstTheKindOfTitle()
+    public void Check_ReportsABadgeThatIsNotOneOfTheThree()
     {
         JsonObject document = Complete();
-        document["applicationCategoryType"] = (int)ApplicationCategory.MediaApp;
+        document["contentBadgeType"] = 7;
 
-        Assert.Contains("contentBadgeType", ParamJson.Complete(document));
-        Assert.Equal(2, (int)document["contentBadgeType"]!);
+        ParamIssue issue = ParamJson.Check(document).Issues.Single(i => i.Field == "contentBadgeType");
+        Assert.Equal(ParamIssueLevel.Fault, issue.Level);
+        Assert.False(issue.CanComplete);
+    }
+
+    [Fact]
+    public void Complete_LeavesABadgeTheAuthorChose()
+    {
+        // Settling means filling in what is absent, not replacing what is there. Rewriting a chosen
+        // badge to follow the category also rewrote the one that means no badge at all.
+        JsonObject document = Complete();
+        document["applicationCategoryType"] = (int)ApplicationCategory.MediaApp;
+        document["contentBadgeType"] = 0;
+
+        Assert.DoesNotContain("contentBadgeType", ParamJson.Complete(document));
+        Assert.Equal(0, (int)document["contentBadgeType"]!);
+    }
+
+    [Fact]
+    public void Complete_KeepsEveryRegionalRating()
+    {
+        // Only the missing part is filled in. Replacing the whole block threw away every regional
+        // rating an author had set.
+        JsonObject document = Complete();
+        document["ageLevel"] = new JsonObject { ["de"] = 16, ["us"] = 17 };
+
+        Assert.Contains("ageLevel", ParamJson.Complete(document));
+        var age = (JsonObject)document["ageLevel"]!;
+        Assert.Equal(0, (int)age["default"]!);
+        Assert.Equal(16, (int)age["de"]!);
+        Assert.Equal(17, (int)age["us"]!);
     }
 
     // A title that runs its own module names how it may be started; a media application does not.

@@ -32,6 +32,10 @@ public readonly record struct HttpResponse(int StatusCode, byte[] Body)
 /// </example>
 public sealed unsafe class HttpClient : IDisposable
 {
+    // The pool the secure layer works in: its documented floor for up to three connections at once,
+    // with room left for the certificates a real server presents.
+    private const int SslPoolBytes = 304 * 1024;
+
     private readonly int _netMemId;
     private readonly int _sslCtxId;
     private readonly int _httpCtxId;
@@ -58,7 +62,11 @@ public sealed unsafe class HttpClient : IDisposable
         int netMemId = NetPool.sceNetPoolCreate("sharpprospero_http", 0x4000, 0);
         SceResult.ThrowIfFailed(netMemId, nameof(NetPool.sceNetPoolCreate));
 
-        int sslCtxId = Ssl.sceSslInit(0x20000);
+        // The pool the secure layer works in. Its floor is 256 KiB for up to three connections at once,
+        // plus 4 KiB for each certificate loaded, and half that was being asked for. Nothing checks the
+        // figure when it is set: it is rounded up, mapped, and turned into a pool, and the shortfall
+        // surfaces later as an allocation failure inside the layer, on a connection rather than here.
+        int sslCtxId = Ssl.sceSslInit(SslPoolBytes);
         if (sslCtxId < 0)
         {
             NetPool.sceNetPoolDestroy(netMemId);

@@ -34,17 +34,22 @@ sharpprospero-bindgen offsets --file libkernel.sprx --firmware 12.70 --text
 
 ```
 File:       libkernel.sprx
-Container:  unsigned ELF (.elf / .prx)
+Container:  signed (.self / .sprx)
 Firmware:   12.70
 Built for:  12.70
+Module:     libkernel (library version 0x0001)
 Exports:    1635
-  OjWstbIRPUo  0x2E4  func
+  OjWstbIRPUo  0x2E4  func  libkernel
   ...
 ```
 
-The JSON form carries the same facts (`file`, `container`, `firmware`, `builtAgainst`, and an `exports`
-array of `{ nid, library, kind, address }`), so it can be saved and shared. Add `--coverage` to match
-the module against the names the SDK needs and report which are present:
+A `Needs:` line follows `Module:` when the module names dependencies of its own.
+
+The JSON form carries the same facts (`file`, `container`, `firmware`, `builtAgainst`, `exportsReadable`,
+`moduleName`, `libraryVersion`, `neededModules`, and an `exports` array of `{ nid, library, kind, address }`;
+a `note` replaces the exports when they cannot be read), so it can be saved and shared. Add `--coverage` to
+match the module against the names the SDK needs and report which are present, and `--library <name>` to
+measure against one named library instead of the best match:
 
 ```
 sharpprospero-bindgen offsets --file libkernel.sprx --firmware 12.70 --coverage
@@ -53,6 +58,9 @@ sharpprospero-bindgen offsets --file libkernel.sprx --firmware 12.70 --coverage
 The `coverage` block names the matched library, the counts, the missing names, and, for each name, its
 identifier and address. An empty `missing` means the system provides everything the SDK needs from that
 library; a non-empty one is the fact worth contributing.
+
+A coverage run that finds a missing name exits 4. A script that redirects the JSON to a file should read 4
+as the signal worth acting on rather than as a failure.
 
 ## Set: adjust a module's version and tags
 
@@ -80,8 +88,10 @@ are read by the check, so the patch is kept:
 sharpprospero-bindgen retarget --file mylib.sprx --to 09.00 --out mylib.09.sprx
 ```
 
-Rewrite the version a module records for a needed library with `--set-lib-version`, for the case where a
-library publishes a different version on the target system:
+Rewrite the version a module records for one it needs with `--set-lib-version`, for the case where that
+module publishes a different version on the target system. It matches the `needed module` rows above and
+rewrites their version (`0x0101` is v1.1); the `import library` rows are left alone, because the module
+version is the one the loader matches:
 
 ```
 sharpprospero-bindgen retarget --file mylib.sprx --set-lib-version libSceHttp=0x0101 --out mylib.fixed.sprx
@@ -119,12 +129,11 @@ Before a feature that depends on a resolved-by-name service, check that the syst
 it needs, and refuse the feature with a specific reason otherwise:
 
 ```csharp
-FirmwareValidation result = FirmwareSupport.Validate(
-    FirmwareRegistry.FindLibrary("Package installer"));
+FirmwareValidation? result = FirmwareSupport.Validate("Package installer");
 
-if (!result.IsValid)
+if (result is null || !result.IsValid)
 {
-    ShowMessage(result.ToString());   // names the missing exports and the firmware
+    ShowMessage(result?.ToString() ?? "No service is registered under that name.");   // names the missing exports and the firmware
     return;
 }
 ```

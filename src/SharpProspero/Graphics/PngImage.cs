@@ -56,7 +56,16 @@ public sealed unsafe class PngImage : IDisposable
             if (width == 0 || height == 0 || imageBytes > uint.MaxValue)
                 throw new ProsperoException(nameof(PngDec.scePngDecParseHeader), unchecked((int)0x80690020));
 
-            var create = new ScePngDecCreateParam { ThisSize = (uint)sizeof(ScePngDecCreateParam), Attribute = 0, MaxImageWidth = info.ImageWidth };
+            // How deep the samples are, taken from the header that was just read rather than assumed.
+            // The decoder is created for one depth or the other and refuses a file deeper than the one
+            // it was created for, so a picture carrying sixteen bits a channel was refused outright.
+            // The same description sizes the working buffer, so it grows to match on its own.
+            var create = new ScePngDecCreateParam
+            {
+                ThisSize = (uint)sizeof(ScePngDecCreateParam),
+                Attribute = info.BitDepth > 8 ? 1u : 0u,
+                MaxImageWidth = info.ImageWidth,
+            };
             int workSize = PngDec.scePngDecQueryMemorySize(&create);
             SceResult.ThrowIfFailed(workSize, nameof(PngDec.scePngDecQueryMemorySize));
 

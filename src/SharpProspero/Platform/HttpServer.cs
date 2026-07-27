@@ -151,7 +151,7 @@ public sealed class HttpServer : IDisposable
         _poller = poller;
     }
 
-    /// <summary>The largest request body this server reads; requests over it get a 413.</summary>
+    /// <summary>The largest request body this server reads; a request over it gets 400 Bad Request.</summary>
     public int MaxBodyBytes { get; set; } = DefaultMaxBodyBytes;
 
     /// <summary>The port the server listens on.</summary>

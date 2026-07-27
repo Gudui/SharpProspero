@@ -50,6 +50,18 @@
     <!-- Default heap ceiling for an application. Override ProsperoHeapHardLimitBytes per project. -->
     <ProsperoHeapHardLimitBytes Condition="'$(ProsperoHeapHardLimitBytes)' == ''">268435456</ProsperoHeapHardLimitBytes>
 
+    <!-- How much address space the collector holds for its regions. Left unset it holds five times the
+         ceiling above, which for a 256 MB ceiling is 1.25 GB of one unbroken run - more than this
+         platform's pool will hand out, and the collector refuses to start when it cannot get it. The
+         figure is used exactly as given, so it has to be a whole number of pages; a whole number of
+         megabytes is easiest to read and satisfies that. -->
+    <ProsperoHeapRegionRangeBytes Condition="'$(ProsperoHeapRegionRangeBytes)' == ''">402653184</ProsperoHeapRegionRangeBytes>
+
+    <!-- The stack a runtime thread is created with. Left unset, the platform gives a thread 64 KB,
+         which the collector's own threads overrun. This is read as a decimal count of bytes: a value
+         written the other way round reads as zero and is discarded without a word. -->
+    <ProsperoThreadStackBytes Condition="'$(ProsperoThreadStackBytes)' == ''">1048576</ProsperoThreadStackBytes>
+
     <!-- Export any method marked [UnmanagedCallersOnly] as an unmanaged symbol, so a module can
          expose C-callable entry points beyond the standard program entry. -->
     <IlcExportUnmanagedEntryPoints>true</IlcExportUnmanagedEntryPoints>
@@ -70,12 +82,19 @@
                                     Value="$(ProsperoHeapHardLimitBytes)"
                                     Trim="false" />
     <RuntimeHostConfigurationOption Include="System.GC.RetainVM" Value="false" Trim="false" />
+    <RuntimeHostConfigurationOption Include="System.GC.RegionRange"
+                                    Value="$(ProsperoHeapRegionRangeBytes)"
+                                    Trim="false" />
+    <RuntimeHostConfigurationOption Include="System.Threading.DefaultStackSize"
+                                    Value="$(ProsperoThreadStackBytes)"
+                                    Trim="false" />
   </ItemGroup>
 
   <!-- Resolve every interop module as a direct import. The names match the loadable modules on the
        device; the link step supplies the matching stub archives. -->
   <ItemGroup>
     <DirectPInvoke Include="libkernel" />
+    <DirectPInvoke Include="libSceOpenPsId" />
     <DirectPInvoke Include="libc" />
     <DirectPInvoke Include="libSceVideoOut" />
     <DirectPInvoke Include="libScePad" />

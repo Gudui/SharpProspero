@@ -11,7 +11,7 @@ namespace SharpProspero.Platform;
 
 /// <summary>
 /// Captures a screenshot or a video clip of the system-composited output, the application together with
-/// the system overlays, saved to the console's capture gallery. This is the game-DVR capture the share
+/// the system overlays, saved to the console's capture gallery. This is the capture the share
 /// button drives; unlike encoding a drawing surface, it captures the whole finished screen. Start it
 /// once, capture as needed, dispose it. Captures are asynchronous: a call returns a request id and the
 /// image or clip is written in the background.

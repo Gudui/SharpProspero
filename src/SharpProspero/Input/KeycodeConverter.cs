@@ -174,14 +174,22 @@ public sealed unsafe class KeycodeConverter : IDisposable
 
     /// <summary>
     /// The character key <paramref name="keycode"/> produces under <paramref name="layout"/> with
-    /// <paramref name="modifiers"/> held, or the null character when the key makes none (a modifier, a
-    /// function key).
+    /// <paramref name="modifiers"/> held and <paramref name="leds"/> on, or the null character when the
+    /// key makes none (a modifier, a function key).
     /// </summary>
-    public char ToCharacter(ushort keycode, KeyModifier modifiers, KeyboardLayout layout)
+    /// <remarks>
+    /// The two are packed into one word for the call, in the places it reads them: the modifiers eight
+    /// bits up and the lock keys sixteen. Handing it the modifier byte as it stands puts every modifier
+    /// where nothing looks, so shift, the right alt, control, caps lock and num lock all read as off
+    /// and the answer comes back as the unshifted character with nothing reported.
+    /// </remarks>
+    public char ToCharacter(ushort keycode, KeyModifier modifiers, KeyboardLayout layout,
+        KeyboardLed leds = KeyboardLed.None)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        uint status = ((uint)modifiers & 0xFF) << 8 | ((uint)leds & 7) << 16;
         uint character = 0;
-        int result = _getCharacter(keycode, (uint)modifiers, (int)layout, &character);
+        int result = _getCharacter(keycode, status, (int)layout, &character);
         return result == 0 ? (char)character : '\0';
     }
 

@@ -111,6 +111,53 @@ public sealed class LinkTests
         }
     }
 
+    [Fact]
+    public void Resolve_RefusesTwoFullDefinitionsOfOneName()
+    {
+        // The same object twice: both define "main" with a body, and only one of the two can be
+        // reached. Which one is decided by the order they were read in, so the link says so instead of
+        // laying both down and picking silently.
+        string a = Path.Combine(Path.GetTempPath(), "sharpprospero_dup_a.o");
+        string b = Path.Combine(Path.GetTempPath(), "sharpprospero_dup_b.o");
+        File.WriteAllBytes(a, BuildRelocatableObject());
+        File.WriteAllBytes(b, BuildRelocatableObject());
+        try
+        {
+            var options = new LinkOptions();
+            options.Objects.Add(a);
+            options.Objects.Add(b);
+            ElfLinkException ex = Assert.Throws<ElfLinkException>(() => Linker.Resolve(options));
+            Assert.Contains("main", ex.Message);
+        }
+        finally
+        {
+            File.Delete(a);
+            File.Delete(b);
+        }
+    }
+
+    [Fact]
+    public void Resolve_TakesAnObjectHandedOverAsALibrary()
+    {
+        // An object is taken whatever else is in the link, even when it reached the link through the
+        // switch that names archives: nothing asks for a name it defines, and drawing it in on demand
+        // would drop it along with the constructor list that is its whole reason for being there.
+        string path = Path.Combine(Path.GetTempPath(), "sharpprospero_whole_file.o");
+        File.WriteAllBytes(path, BuildRelocatableObject());
+        try
+        {
+            var options = new LinkOptions();
+            options.Archives.Add(path);
+            LinkResolution result = Linker.Resolve(options);
+            Assert.Single(result.Included);
+            Assert.Contains("main", result.Defined.Keys);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
     // Builds a minimal ET_REL object with a defined global "main", a strong undefined "sceKernelFoo",
     // and a weak undefined "__optional__", so the resolver's classification can be checked in memory.
     private static byte[] BuildRelocatableObject()

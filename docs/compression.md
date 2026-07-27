@@ -6,10 +6,10 @@ nav_order: 7
 
 # Compression and archives
 
-`SharpProspero.Compression` decompresses the formats that assets, downloads and network payloads arrive in,
-entirely in managed code. There is no service to open and no size cap, so the same call works on the
-console, in a command-line tool, and in a test. Point it at bytes you already hold in memory and it hands
-back the decompressed bytes.
+`SharpProspero.Compression` compresses and decompresses the formats that assets, downloads and network
+payloads arrive in, and reads and writes ZIP archives. There is no service to open and no size cap, so the
+same call works on the console, in a command-line tool, and in a test. Point it at bytes you already hold
+in memory and it hands back the result.
 
 ## Decompress DEFLATE, zlib and gzip
 
@@ -69,7 +69,10 @@ foreach (ZipEntry entry in zip.Entries)
 `Entries` lists every member with its name, sizes, method, CRC-32 and modification time. `TryGetEntry` finds
 one by name, `Extract` decompresses a member (stored or DEFLATE) and verifies it, and a directory entry
 extracts to an empty array. Members compressed with other methods, and ZIP64 archives, are reported with a
-`CompressionException` rather than a wrong result.
+`CompressionException` rather than a wrong result. `Extract(string name)` does the same for a member looked
+up by name, raising `KeyNotFoundException` when there is none. A name is read as UTF-8 only when the entry
+says it is; otherwise it is read in the format's older single-byte encoding, so a name an outside tool
+wrote comes back with the characters it wrote.
 
 {: .tip }
 > A ZIP is the easy way to ship many assets as one file and pull them out at run time. Read the archive
@@ -97,3 +100,7 @@ FileSystem.WriteAllBytes("/data/export.zip", zip);
 `Add` and `AddText` compress by default and fall back to storing when a member does not shrink; pass
 `compress: false` to store it as-is. `AddDirectory` adds an explicit folder entry. Entries carry a fixed,
 reproducible timestamp, so the same inputs produce the same archive.
+
+`ZipBuilder` writes names as UTF-8 and turns `\` into `/`. It marks an entry whose name holds a character
+above ASCII as UTF-8, so any reader decodes it the same way; an ASCII name goes unmarked and reads back
+unchanged in readers that predate the flag.

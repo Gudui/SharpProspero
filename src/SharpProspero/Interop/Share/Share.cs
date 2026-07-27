@@ -12,7 +12,7 @@ public enum ShareFeature : uint
     /// <summary>No feature.</summary>
     None = 0x00000000,
 
-    /// <summary>Video recording (the game-DVR clip capture).</summary>
+    /// <summary>Video recording (the recent-gameplay clip capture).</summary>
     VideoRecording = 0x00000001,
 
     /// <summary>Screenshots.</summary>

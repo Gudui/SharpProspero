@@ -37,6 +37,34 @@ public sealed record ZipEntry(
 /// </summary>
 public sealed class ZipArchive
 {
+    /// <summary>Set on an entry whose name is UTF-8. Without it the name is in the older encoding.</summary>
+    private const ushort NameIsUtf8 = 0x0800;
+
+    // The encoding the format used before it carried names as UTF-8. Its first half is plain text and
+    // its second half is a fixed set of accented letters and box-drawing characters, so a byte above
+    // the halfway mark maps through this table rather than being taken for UTF-8.
+    private const string LegacyHighHalf =
+        "ÇüéâäàåçêëèïîìÄÅ" +
+        "ÉæÆôöòûùÿÖÜ¢£¥₧ƒ" +
+        "áíóúñÑªº¿⌐¬½¼¡«»" +
+        "░▒▓│┤╡╢╖╕╣║╗╝╜╛┐" +
+        "└┴┬├─┼╞╟╚╔╩╦╠═╬╧" +
+        "╨╤╥╙╘╒╓╫╪┘┌█▄▌▐▀" +
+        "αßΓπΣσµτΦΘΩδ∞φε∩" +
+        "≡±≥≤⌠⌡÷≈°∙·√ⁿ²■ ";
+
+    private static string DecodeLegacyName(byte[] data, int offset, int length)
+    {
+        return string.Create(length, (data, offset), static (chars, state) =>
+        {
+            for (int i = 0; i < chars.Length; i++)
+            {
+                byte b = state.data[state.offset + i];
+                chars[i] = b < 0x80 ? (char)b : LegacyHighHalf[b - 0x80];
+            }
+        });
+    }
+
     private const uint EndOfCentralDirectorySignature = 0x06054B50;
     private const uint CentralDirectorySignature = 0x02014B50;
     private const uint LocalHeaderSignature = 0x04034B50;
@@ -79,6 +107,7 @@ public sealed class ZipArchive
             if (pos + 46 > data.Length || BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(pos)) != CentralDirectorySignature)
                 throw new CompressionException("A central-directory entry is malformed.");
 
+            ushort flags = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(pos + 8));
             ushort method = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(pos + 10));
             ushort modTime = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(pos + 12));
             ushort modDate = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(pos + 14));
@@ -95,7 +124,12 @@ public sealed class ZipArchive
             if (pos + 46 + nameLength > data.Length)
                 throw new CompressionException("A central-directory name is truncated.");
 
-            string name = Encoding.UTF8.GetString(data, pos + 46, nameLength);
+            // A name is UTF-8 only when the entry says so. Reading every name as UTF-8 regardless
+            // happens to round-trip within this SDK and turns a name written by anything else, in the
+            // format's own older encoding, into the wrong characters or none at all.
+            string name = (flags & NameIsUtf8) != 0
+                ? Encoding.UTF8.GetString(data, pos + 46, nameLength)
+                : DecodeLegacyName(data, pos + 46, nameLength);
             bool isDirectory = name.EndsWith('/') || (uncompressed == 0 && compressed == 0 && name.Length > 0 && name[^1] == '/');
             entries.Add(new ZipEntry(name, crc, compressed, uncompressed, method, DosDateTime(modDate, modTime), isDirectory)
             {

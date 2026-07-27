@@ -1,6 +1,7 @@
 // SharpProspero - a C# SDK for on-device application modules.
 // Copyright (C) 2026 SvenGDK
 
+using SharpProspero.Graphics.Agc;
 using SharpProspero.Interop;
 using SharpProspero.Interop.VideoOut;
 using SharpProspero.Memory;
@@ -17,20 +18,43 @@ public sealed unsafe class DisplayDevice : IDisposable
 {
     private const int BytesPerPixel = 4;
     private const nuint Alignment = 2 * 1024 * 1024;
+    /// <summary>What the display answers when it will not take the layout it was offered.</summary>
+    private const int VideoOutInvalidTilingMode = unchecked((int)0x80290007);
+
+    // The answer to a size the output does not take, and to one it takes only on a console set up for
+    // it. The two are told apart by the check below, which knows the list.
+    private const int VideoOutInvalidResolution = unchecked((int)0x80290005);
+
+    // The output takes only so many flips at once; asked for one more it says so, and the answer is to
+    // wait rather than to give up.
+    private const int VideoOutFlipQueueFull = unchecked((int)0x80290012);
 
     private readonly int _handle;
     private readonly DirectMemoryRegion[] _regions;
+    // Only when the scan-out buffers are tiled. A tiled buffer has no rows to write along, so anything
+    // drawn a pixel at a time is drawn here, in row order, and rearranged into the scan-out buffer as
+    // the frame is presented. Empty when the scan-out buffers are row-major and can be written directly.
+    private readonly DirectMemoryRegion[] _staging;
+    private readonly AgcSurfaceDescription _layout;
+    private readonly int _stagingBytes;
     private int _index;
     private long _frame;
     private bool _disposed;
 
-    private DisplayDevice(int handle, int width, int height, DirectMemoryRegion[] regions)
+    private DisplayDevice(int handle, int width, int height, DirectMemoryRegion[] regions,
+        DirectMemoryRegion[] staging, AgcSurfaceDescription layout, int stagingBytes)
     {
         _handle = handle;
         Width = width;
         Height = height;
         _regions = regions;
+        _staging = staging;
+        _layout = layout;
+        _stagingBytes = stagingBytes;
     }
+
+    /// <summary>How the scan-out buffers are laid out in memory.</summary>
+    public VideoOutTilingMode Tiling => _staging.Length == 0 ? VideoOutTilingMode.Linear : VideoOutTilingMode.Tiled;
 
     /// <summary>Width in pixels.</summary>
     public int Width { get; }
@@ -41,8 +65,13 @@ public sealed unsafe class DisplayDevice : IDisposable
     /// <summary>Number of framebuffers in the swap chain.</summary>
     public int BufferCount => _regions.Length;
 
-    /// <summary>The framebuffer to draw the next frame into.</summary>
-    public Surface BackBuffer => _regions[_index].AsSurface(Width, Height);
+    /// <summary>
+    /// The framebuffer to draw the next frame into, a pixel at a time. When the scan-out buffers are
+    /// tiled this is a row-major surface of its own, rearranged into the scan-out buffer by
+    /// <see cref="Present"/>; a tiled buffer has no rows, so writing one directly scatters the image.
+    /// </summary>
+    public Surface BackBuffer =>
+        (_staging.Length == 0 ? _regions[_index] : _staging[_index]).AsSurface(Width, Height);
 
     /// <summary>
     /// The graphics-visible address of the framebuffer to draw the next frame into. The 3D renderer
@@ -58,84 +87,194 @@ public sealed unsafe class DisplayDevice : IDisposable
 
     /// <summary>
     /// Opens the main output and builds a swap chain of <paramref name="bufferCount"/> framebuffers.
-    /// The row stride equals <paramref name="width"/>, so use a width that is a multiple of 64 to
-    /// match the linear pitch the output derives; the standard 1920 and 1280 widths already are.
     /// </summary>
+    /// <param name="width">Width in pixels, from the sizes the output accepts (see the remarks).</param>
+    /// <param name="height">Height in pixels, from the sizes the output accepts (see the remarks).</param>
+    /// <param name="bufferCount">How many framebuffers the swap chain holds. Two or more.</param>
+    /// <param name="userId">The user the output is opened for.</param>
+    /// <param name="tiling">
+    /// How the scan-out buffers are laid out. Tiled is the layout the output accepts unconditionally
+    /// and is what the graphics processor draws into; row-major is accepted only while the machine's
+    /// debug settings allow it, and is worth asking for when frames are drawn a pixel at a time,
+    /// because it is then written straight into the scan-out buffer with nothing to rearrange.
+    /// </param>
+    /// <remarks>
+    /// The output takes a fixed set of sizes and refuses anything else: 1920x1080, 3840x2160, 720x480
+    /// and 720x576, or a width that is a multiple of 32 from 1280 to 1888 with a height sixteen-ninths
+    /// narrower than it, which is the widescreen ladder below 1080. Of those only 1920x1080 is accepted
+    /// on any machine; the rest need the console set up for them, and are refused with the same answer
+    /// as a size that is not on the list at all.
+    /// </remarks>
+    /// <exception cref="ArgumentOutOfRangeException">The size is not one the output takes.</exception>
     /// <exception cref="ProsperoException">Opening the output or registering the buffers failed.</exception>
-    public static DisplayDevice Open(int width = 1920, int height = 1080, int bufferCount = 2, int userId = SceUser.System)
+    public static DisplayDevice Open(int width = 1920, int height = 1080, int bufferCount = 2,
+        int userId = SceUser.System, VideoOutTilingMode tiling = VideoOutTilingMode.Tiled)
     {
         if (bufferCount < 2)
             throw new ArgumentOutOfRangeException(nameof(bufferCount), "At least two buffers are required.");
-        if (width <= 0 || (width & 63) != 0)
-            throw new ArgumentOutOfRangeException(nameof(width), "Width must be a positive multiple of 64 so the row pitch matches the allocated framebuffer.");
-        if (height <= 0)
-            throw new ArgumentOutOfRangeException(nameof(height), "Height must be positive.");
+        // A size the output does not take is refused when the buffers are registered, by which point
+        // the output is open and the memory is allocated, and the answer says only that the size was
+        // wrong. Checking here says which sizes there are.
+        if (!IsSizeTheOutputTakes(width, height))
+            throw new ArgumentOutOfRangeException(nameof(width),
+                $"{width}x{height} is not a size the output takes. It takes 1920x1080, 3840x2160, " +
+                "720x480 and 720x576, or a width that is a multiple of 32 from 1280 to 1888 with a " +
+                "height of that width times nine sixteenths.");
 
         int handle = VideoOut.sceVideoOutOpen(userId, (int)VideoOutBusType.Main, 0, null);
         SceResult.ThrowIfFailed(handle, nameof(VideoOut.sceVideoOutOpen));
         VideoOut.sceVideoOutSetFlipRate(handle, 0);
 
+        bool tiled = tiling == VideoOutTilingMode.Tiled;
+        // The one arrangement the output scans out. Its size is not width times height times four: the
+        // buffer is carried in blocks and the last row of blocks is whole, so it reaches past the last
+        // visible row. Asking the layout for the size is what keeps the two agreeing.
+        var desc = new AgcSurfaceDescription(
+            tiled ? AgcTileMode.RenderTarget : AgcTileMode.Linear,
+            AgcSurfaceDimension.TwoD, (uint)width, (uint)height, BytesPerPixel);
+        AgcSurfaceLayout layout = AgcSurface.Compute(desc);
+
         var regions = new DirectMemoryRegion[bufferCount];
+        var staging = new DirectMemoryRegion[tiled ? bufferCount : 0];
+        int stagingBytes = width * height * BytesPerPixel;
         try
         {
-            nuint frameBytes = (nuint)((long)width * height * BytesPerPixel);
+            nuint frameBytes = (nuint)layout.TotalSizeBytes;
+            nuint align = Math.Max((nuint)layout.BaseAlignBytes, Alignment);
             SceVideoOutBuffers* addresses = stackalloc SceVideoOutBuffers[bufferCount];
             for (int i = 0; i < bufferCount; i++)
             {
-                regions[i] = DirectMemoryRegion.Allocate(frameBytes, Alignment);
+                regions[i] = DirectMemoryRegion.Allocate(frameBytes, align);
+                if (tiled)
+                    staging[i] = DirectMemoryRegion.Allocate((nuint)stagingBytes, Alignment);
                 addresses[i] = default;
                 addresses[i].Data = regions[i].Pointer;
             }
 
             SceVideoOutBufferAttribute2 attribute = default;
             VideoOut.sceVideoOutSetBufferAttribute2(
-                &attribute, VideoOutPixelFormat.Bgra8Srgb, (uint)VideoOutTilingMode.Linear,
+                &attribute, VideoOutPixelFormat.Bgra8Srgb, (uint)tiling,
                 (uint)width, (uint)height, VideoOutBufferAttributeOption.None, 0, 0);
-            // Pin the row pitch to the width so the registered pitch, the allocation, and the drawing
-            // stride all agree. A width that is a multiple of 64 is a valid linear pitch.
-            attribute.PitchInPixel = (uint)width;
-
+            // The row pitch is left as the call above leaves it, which is zero. It is the one field of
+            // the description that call does not write - it clears the whole thing and then fills in
+            // every other field - and registering a description that names a pitch is refused outright,
+            // whatever the number. Naming the width looked reasonable and cost a build: the display
+            // opened, the buffers were refused, and the application ended before it drew a frame.
             int rc = VideoOut.sceVideoOutRegisterBuffers2(
                 handle, 0, 0, addresses, bufferCount, &attribute, (int)VideoOutBufferCategory.Uncompressed, null);
+            // A row-major buffer is a development-only layout for the display, and the machine keeps it
+            // behind a setting rather than a capability the application can ask for. Refused, it says so
+            // on the machine's own output and nowhere the application can read, so the failure arrives
+            // here as a bare number and the application ends without ever saying what was wrong. Name it.
+            if (rc == VideoOutInvalidTilingMode)
+                throw new ProsperoException(
+                    nameof(VideoOut.sceVideoOutRegisterBuffers2) +
+                    " refused a row-major buffer. That layout is only accepted while " +
+                    "\"Enhanced Display Buffer Attribute\" is turned on in the machine's debug settings. " +
+                    "Turn it on, or open the display tiled, which is accepted either way", rc);
+            // A size on the list that this console is not set up for is refused with the same answer
+            // as one that is not on the list, and the console says why only on its own output.
+            if (rc == VideoOutInvalidResolution)
+                throw new ProsperoException(
+                    nameof(VideoOut.sceVideoOutRegisterBuffers2) +
+                    $" refused {width}x{height}. Every size except 1920x1080 needs the console set up " +
+                    "for it; open the display at 1920x1080, which is accepted either way", rc);
             SceResult.ThrowIfFailed(rc, nameof(VideoOut.sceVideoOutRegisterBuffers2));
         }
         catch
         {
             foreach (DirectMemoryRegion? region in regions)
                 region?.Dispose();
+            foreach (DirectMemoryRegion? region in staging)
+                region?.Dispose();
             VideoOut.sceVideoOutClose(handle);
             throw;
         }
 
-        return new DisplayDevice(handle, width, height, regions);
+        return new DisplayDevice(handle, width, height, regions, staging, desc, stagingBytes);
     }
 
+    // The sizes the output takes: four named ones, and the widescreen ladder below 1080, which is any
+    // width that is a multiple of 32 from 1280 to 1888 with a height of nine sixteenths of it.
+    private static bool IsSizeTheOutputTakes(int width, int height) =>
+        (width, height) is (1920, 1080) or (3840, 2160) or (720, 480) or (720, 576)
+        || ((width % 32) == 0 && width is >= 1280 and <= 1888 && height == width / 32 * 18);
+
     /// <summary>
-    /// Presents <see cref="BackBuffer"/>, waits for the vertical blank, and advances to the next
-    /// framebuffer. Returns the presented frame index.
+    /// Presents <see cref="BackBuffer"/>, waits until it is actually on screen, and advances to the
+    /// next framebuffer. Returns the presented frame index.
     /// </summary>
+    /// <remarks>
+    /// The wait is on the output's own account of which flip is showing, not on a vertical blank: a
+    /// blank happens whether or not a flip retired, so waiting one and moving on hands the next frame
+    /// to a buffer the output may still be reading. When the flip queue is full the submission is
+    /// retried rather than treated as a failure, which is what a full queue means.
+    /// </remarks>
+    /// <exception cref="ProsperoException">The flip could not be submitted.</exception>
     public long Present(VideoOutFlipMode mode = VideoOutFlipMode.VSync)
     {
-        int rc = VideoOut.sceVideoOutSubmitFlip(_handle, _index, (uint)mode, _frame);
+        RearrangeIfDrawnInRows();
+        int rc;
+        while ((rc = VideoOut.sceVideoOutSubmitFlip(_handle, _index, (uint)mode, _frame)) == VideoOutFlipQueueFull)
+            SceResult.ThrowIfFailed(VideoOut.sceVideoOutWaitVblank(_handle), nameof(VideoOut.sceVideoOutWaitVblank));
         SceResult.ThrowIfFailed(rc, nameof(VideoOut.sceVideoOutSubmitFlip));
-        VideoOut.sceVideoOutWaitVblank(_handle);
+        WaitUntilOnScreen(_frame);
         long presented = _frame;
         _index = (_index + 1) % _regions.Length;
         _frame++;
         return presented;
     }
 
+    /// <summary>The output's account of how far it has got through the flips submitted to it.</summary>
+    public SceVideoOutFlipStatus FlipStatus
+    {
+        get
+        {
+            SceVideoOutFlipStatus status;
+            SceResult.ThrowIfFailed(
+                VideoOut.sceVideoOutGetFlipStatus(_handle, &status), nameof(VideoOut.sceVideoOutGetFlipStatus));
+            return status;
+        }
+    }
+
+    // Waits until the output says the flip carrying this frame number is the one showing. Frames are
+    // numbered upwards and never reused, so a later number means this one has already been passed.
+    private void WaitUntilOnScreen(long frame)
+    {
+        while (FlipStatus.FlipArg < frame)
+            SceResult.ThrowIfFailed(VideoOut.sceVideoOutWaitVblank(_handle), nameof(VideoOut.sceVideoOutWaitVblank));
+    }
+
+    /// <summary>
+    /// Moves what was drawn in rows into the arrangement the output scans out, when the two differ.
+    /// Nothing to do when the scan-out buffer is itself row-major, or when the frame was drawn by the
+    /// graphics processor straight into the scan-out buffer, which leaves the row-major one untouched.
+    /// </summary>
+    /// <remarks>
+    /// This walks every pixel of the frame on the processor, so a frame drawn a pixel at a time costs
+    /// the drawing and this pass on top. Where that is too slow, ask for a row-major display and turn
+    /// the matching debug setting on, or draw through the graphics processor and skip both.
+    /// </remarks>
+    private void RearrangeIfDrawnInRows()
+    {
+        if (_staging.Length == 0) return;
+        AgcTiler.Tile(
+            new Span<byte>(_regions[_index].Pointer, checked((int)_regions[_index].Size)),
+            new ReadOnlySpan<byte>(_staging[_index].Pointer, _stagingBytes),
+            _layout);
+    }
+
     /// <summary>The running frame counter, used as a flip argument.</summary>
     public long FrameIndex => _frame;
 
     /// <summary>
-    /// Waits for the vertical blank and advances to the next framebuffer, for a caller that recorded the
-    /// flip on the graphics timeline itself (rather than through <see cref="Present"/>). Returns the
-    /// presented frame index.
+    /// Waits until the frame just recorded is on screen and advances to the next framebuffer, for a
+    /// caller that recorded the flip on the graphics timeline itself rather than through
+    /// <see cref="Present"/>. Returns the presented frame index.
     /// </summary>
     public long AdvanceFrame()
     {
-        VideoOut.sceVideoOutWaitVblank(_handle);
+        WaitUntilOnScreen(_frame);
         long presented = _frame;
         _index = (_index + 1) % _regions.Length;
         _frame++;
@@ -149,8 +288,15 @@ public sealed unsafe class DisplayDevice : IDisposable
             return;
         _disposed = true;
 
+        // A flip still in the queue is one the output is about to read these buffers for, so the
+        // buffers are not taken away until it has finished with them.
+        while (VideoOut.sceVideoOutIsFlipPending(_handle) > 0)
+            VideoOut.sceVideoOutWaitVblank(_handle);
+
         VideoOut.sceVideoOutUnregisterBuffers(_handle, 0);
         foreach (DirectMemoryRegion region in _regions)
+            region.Dispose();
+        foreach (DirectMemoryRegion region in _staging)
             region.Dispose();
         VideoOut.sceVideoOutClose(_handle);
     }

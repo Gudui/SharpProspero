@@ -28,10 +28,11 @@ The application is compiled ahead of time into an **ELF x86-64 object** (the con
 ahead-of-time compiler emits an object only for the operating system it runs on, so the compile step
 runs on Linux:
 
-- **Linux (x64)** produces the object natively — the simplest host, and the whole pipeline runs there.
-- **Windows** runs the link and pack steps natively (they are plain .NET); for the compile step,
+- **Linux (x64)** produces the object directly — the simplest host, and the whole pipeline runs there.
+- **Windows** runs the link and pack steps on the host (they are plain .NET); for the compile step,
   `build.ps1` uses **WSL** automatically, so you build in place without switching hosts.
-- **macOS** runs the compile in a Linux container; the link and pack steps run natively.
+- **macOS** cannot run the compile: the ahead-of-time compiler does not cross-compile to Linux and
+  there is no WSL, so the whole build runs inside a Linux container.
 
 ## Windows (x64)
 
@@ -77,7 +78,7 @@ runs on Linux:
    export SHARPPROSPERO_ROOT="$HOME/SharpProspero"
    ```
 
-3. Nothing more — Linux x64 produces the console object natively, so the whole `publish → link → pack`
+3. Nothing more — Linux x64 produces the console object directly, so the whole `publish → link → pack`
    pipeline runs on this host with no extra setup.
 
 ## macOS (x64 and Apple Silicon)
@@ -95,16 +96,21 @@ runs on Linux:
    export SHARPPROSPERO_ROOT="$HOME/SharpProspero"
    ```
 
-3. **The compile step.** The ahead-of-time compiler does not cross-compile to Linux from macOS, and
-   there is no WSL, so run the compile in a Linux container (Docker Desktop, Colima or Lima), then run
-   the link and pack on the host:
+3. **The build runs in a Linux container.** The ahead-of-time compiler emits an object only for the
+   operating system it runs on, and `build-app.ps1` always runs that compile step itself — it takes no
+   object built elsewhere, and deletes any object left in the project's `obj` folder before compiling.
+   So there is no split where a container compiles and the host links and packs. Run the whole build in
+   the container (Docker Desktop, Colima or Lima), with the project and the SDK both mounted:
 
    ```
-   docker run --rm -v "$PWD":/src -w /src mcr.microsoft.com/dotnet/sdk:10.0 \
-     dotnet publish -c Release -r linux-x64 MyGame/MyGame.csproj
+   docker run --rm -v "$PWD":/src -v "$SHARPPROSPERO_ROOT":/sdk -w /src \
+     mcr.microsoft.com/dotnet/sdk:10.0 \
+     pwsh /sdk/build/build-app.ps1 -ProjectPath MyGame/MyGame.csproj -SdkRoot /sdk
    ```
 
-   The simplest alternative is to run the whole build inside a Linux container or on a Linux host.
+   The output lands in the project's `out` folder on the host through the mount. Steps 1 and 2 still
+   apply: the host SDK builds and tests managed code, and `SHARPPROSPERO_ROOT` is what the mount above
+   points at. A Linux host runs the same build without the container.
 
 ## Confirm the setup
 
@@ -126,9 +132,14 @@ A `*.pkg` appears under the sample's `out` folder.
 The same pipeline produces both; the project's `ProsperoModuleKind` decides which:
 
 - **Application** (the default) → an `eboot.bin` the console launches. Templates: `prospero-app`,
-  `prospero-game`, `prospero-ui`, `prospero-launcher`, `prospero-filemanager`, `prospero-tool`, `prospero-media`, `prospero-server`.
+  `prospero-game`, `prospero-3d`, `prospero-scene`, `prospero-ui`, `prospero-launcher`, `prospero-filemanager`,
+  `prospero-dashboard`, `prospero-tool`, `prospero-media`, `prospero-synth`, `prospero-input`, `prospero-savedata`,
+  `prospero-dialog`, `prospero-server`.
 - **Library** → a relocatable `.prx` another module loads at run time. Template: `prospero-prx`. Set
-  `<ProsperoModuleKind>Prx</ProsperoModuleKind>`; the module is named `<AssemblyName>.prx`.
+  both `<OutputType>Library</OutputType>` and `<ProsperoModuleKind>Prx</ProsperoModuleKind>`; the module
+  is named `<AssemblyName>.prx`. The kind alone is not enough: it asks the compiler for a shared
+  library, which only a library project produces. A project left as `Exe` stops at the compile step
+  with an error asking for `OutputType=Library`, before it writes an object.
 
 See [Templates](templates.md) for each, and [Modules and libraries](modules.md) for how a module loads a
 `.prx` you supply.

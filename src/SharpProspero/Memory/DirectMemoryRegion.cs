@@ -83,6 +83,9 @@ public sealed unsafe class DirectMemoryRegion : IDisposable
         _released = true;
         if (_pointer != null)
         {
+            // Give up the address before the memory behind it: the release frees what the machine had
+            // set aside, and without the first the range stays occupied for the life of the process.
+            KernelMemory.sceKernelMunmap(_pointer, _size);
             KernelMemory.sceKernelReleaseDirectMemory(_physicalOffset, _size);
             _pointer = null;
         }

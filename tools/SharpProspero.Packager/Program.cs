@@ -107,9 +107,11 @@ internal static class Program
     /// <summary>How a gathered module is stored, read from its first bytes.</summary>
     private enum ModuleForm { Unknown, PlainElf, Wrapped, WrappedSealed }
 
-    // Container magic, then the ELF magic. Whether a wrapped module can be read is a per-segment
-    // property (bit 1 of each segment's flags word), not a different header.
+    // The two container marks, then the ELF magic. Both marks are wrapped modules - titles that run
+    // ship each - and whether a wrapped module can be read is a per-segment property (bit 1 of each
+    // segment's flags word), not a different header.
     private const uint ContainerMagic = 0xEEF51454;
+    private const uint AlternateContainerMagic = 0x1D3D154F;
     private const uint ElfMagic = 0x464C457F;
 
     private static ModuleForm ReadModuleForm(string modulePath)
@@ -124,7 +126,7 @@ internal static class Program
         uint magic = BinaryPrimitives.ReadUInt32LittleEndian(data);
         if (magic == ElfMagic)
             return ModuleForm.PlainElf;
-        if (magic != ContainerMagic)
+        if (magic != ContainerMagic && magic != AlternateContainerMagic)
             return ModuleForm.Unknown;
 
         int segCount = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(0x18));

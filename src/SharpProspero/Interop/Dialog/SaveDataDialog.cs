@@ -213,9 +213,13 @@ public static unsafe partial class SaveDataDialog
 
     private const ulong MagicNumber = 0xC0D1A109;
 
-    /// <summary>Sets the sizes and the check value the service requires on a zeroed parameter block.</summary>
+    /// <summary>Sets the sizes and the check value the service requires, on a block cleared first.</summary>
     public static void InitializeParam(SceSaveDataDialogParam* param)
     {
+        // Cleared here rather than left to the caller, as the sibling dialogs do. The service checks
+        // that the reserved span of the block is entirely zero and refuses the whole call otherwise,
+        // so a block holding anything from before is refused for a reason that names none of this.
+        *param = default;
         param->BaseParam.Size = (ulong)sizeof(CommonDialogBaseParam);
         param->BaseParam.Magic = unchecked((uint)(MagicNumber + (ulong)&param->BaseParam));
         param->Size = sizeof(SceSaveDataDialogParam);

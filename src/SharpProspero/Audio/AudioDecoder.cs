@@ -217,7 +217,6 @@ public sealed unsafe class AudioDecoder : IDisposable
     private static int BytesPerSample(AudiodecWordSize wordSize) => wordSize switch
     {
         AudiodecWordSize.Signed16 => 2,
-        AudiodecWordSize.Signed24 => 3,
         _ => 4,
     };
 

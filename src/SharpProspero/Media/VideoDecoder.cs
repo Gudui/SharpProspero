@@ -34,8 +34,7 @@ public readonly record struct DecodedPicture(
 /// The service provides nothing itself: it is asked how much memory it needs and every region is
 /// supplied by this type, each of the kind the service expects. The picture buffer is supplied per
 /// call and the picture is written into it, so a caller keeps as many buffers as it needs frames in
-/// flight. Load the system module before creating a decoder and dispose it when finished; it is not
-/// thread-safe.
+/// flight. Dispose the decoder when finished; it is not thread-safe.
 /// </remarks>
 public sealed unsafe class VideoDecoder : IDisposable
 {

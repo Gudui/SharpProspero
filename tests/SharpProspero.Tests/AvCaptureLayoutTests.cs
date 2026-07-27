@@ -15,9 +15,15 @@ public sealed class AvCaptureLayoutTests
     [Fact]
     public void VideoConfig_MatchesTheService()
     {
-        Assert.Equal(0x190, Marshal.SizeOf<Avcap2VideoConfig>());
+        // The whole block is sent to the service as configuration, so its length is part of the
+        // contract: a shorter one ships whatever follows it in the caller's frame.
+        Assert.Equal(0x2B8, Marshal.SizeOf<Avcap2VideoConfig>());
         Assert.Equal(0x10, (int)Marshal.OffsetOf<Avcap2VideoConfig>(nameof(Avcap2VideoConfig.Kind)));
         Assert.Equal(0x188, (int)Marshal.OffsetOf<Avcap2VideoConfig>(nameof(Avcap2VideoConfig.Mode)));
+        Assert.Equal(0x1A0, (int)Marshal.OffsetOf<Avcap2VideoConfig>(nameof(Avcap2VideoConfig.AreaLength)));
+        Assert.Equal(0x1A8, (int)Marshal.OffsetOf<Avcap2VideoConfig>(nameof(Avcap2VideoConfig.AreaAddress)));
+        Assert.Equal(0x1C0, (int)Marshal.OffsetOf<Avcap2VideoConfig>(nameof(Avcap2VideoConfig.FrameAreaLength)));
+        Assert.Equal(0x1C8, (int)Marshal.OffsetOf<Avcap2VideoConfig>(nameof(Avcap2VideoConfig.FrameAreaAddress)));
     }
 
     [Fact]

@@ -31,13 +31,18 @@ if (slideIn.IsComplete) { /* settled */ }
 it where it is. The frame delta comes from `FrameContext.DeltaSeconds` (see [Application](application.md)),
 which is a `double`, so cast it to `float` on the way in.
 
-Read state through three properties:
+`durationSeconds` must be positive; zero or a negative value throws `ArgumentOutOfRangeException` from
+the constructor, not on the first update.
+
+Read the running state through three properties:
 
 | Member | Meaning |
 | --- | --- |
 | `Value` | The current value, shaped by the easing curve, between `From` and `To`. |
 | `Progress` | How far through the current run, 0 to 1, before the curve is applied. |
 | `IsComplete` | True once a `Once` tween has reached the end; a looping tween never completes. |
+
+`From`, `To`, `Ease` and `Mode` are readable too, and return what the constructor was given.
 
 `Restart()` moves the tween back to its start so it runs again from the beginning.
 
@@ -105,7 +110,7 @@ Vector2 cubic = Spline.Bezier(start, controlA, controlB, end, t);
 
 A Catmull-Rom spline passes through a list of waypoints. Give it the points and a `t` from 0 (the
 first point) to 1 (the last); the ends are clamped so the curve does not overshoot past the first and
-last point:
+last point. An empty list throws `ArgumentException`; a list of one returns that point:
 
 ```csharp
 var waypoints = new[]

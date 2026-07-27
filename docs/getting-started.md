@@ -91,8 +91,8 @@ pwsh MyGame/build.ps1
 ```
 
 It produces an installable `*.pkg` under `MyGame/out`. To get the loose files instead of a package
-(handy while iterating), pass `-Output Folder`, which leaves `eboot.bin`, `sce_sys` and any `sce_module`
-libraries together in one folder.
+(handy while iterating), pass `-Output Folder`; `eboot.bin`, `sce_sys` and any `sce_module` libraries
+land together in `MyGame/out/module`. Copy or archive that whole folder, not `eboot.bin` alone.
 
 ## 4. Run it on the console
 

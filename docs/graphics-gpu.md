@@ -24,7 +24,7 @@ The GPU is exposed as two layers. The lower one is the complete command interfac
 
 The higher layer wraps that for everyday use:
 
-- `DrawCommandBuffer` records commands into GPU-readable memory. `Allocate` hands back a ready buffer; the record calls cover register writes, index state, draws, synchronization, and the present calls.
+- `DrawCommandBuffer` records commands into GPU-readable memory. `Allocate` hands back a ready buffer; `Reset` clears the recording for the next frame; the record calls cover register writes, index state, draws, synchronization, and the present calls. `SubmitSizeDwords` is what a submit sends, `RemainingDwords` what is left of `CapacityDwords`. A record call that will not fit returns a null packet address instead of overrunning, and `WaitUntilSafeForDisplay` throws `InvalidOperationException` when there is no room for its packet - size the buffer for a whole frame.
 - `AgcShader` builds a shader from its compiled binary. Shaders are compiled ahead of time; the runtime only loads them.
 - `AgcDevice` does the one-time `Initialize`, submits a buffer with `Submit`, and closes the frame with `SuspendPoint`.
 - `AgcFormats` holds the surface-format and channel-select enumerations.
@@ -32,19 +32,21 @@ The higher layer wraps that for everyday use:
 A frame waits for the display to release a buffer, records state and draws, queues the flip, submits, and closes:
 
 ```csharp
-int videoOutHandle = 0;   // from the display device
-uint backBuffer = 0;      // the buffer index being rendered this frame
+using var display = DisplayDevice.Open(1920, 1080);
+int videoOutHandle = display.OutputHandle;   // a handle of zero matches no display, and the wait is then left out of the recording
 
 AgcDevice.Initialize();
 using var dcb = DrawCommandBuffer.Allocate(1 << 20);
 
 // ... per frame:
+uint backBuffer = (uint)display.CurrentBufferIndex;   // rotates with every frame
 dcb.Reset();
 dcb.WaitUntilSafeForDisplay(videoOutHandle, backBuffer);
 // record register blocks and draws (see below)
 dcb.SetFlip(videoOutHandle, (int)backBuffer);
 AgcDevice.Submit(dcb);
 AgcDevice.SuspendPoint();
+display.AdvanceFrame();
 ```
 
 ## Register blocks
@@ -60,6 +62,11 @@ public struct CxRegister
 ```
 
 The typed blocks (`CxRenderTarget`, `CxBlendControl`, and the rest) group the registers for one piece of state and give you a setter per field, so you never pack bits by hand. They all follow the same rhythm. The register offsets and reset values are not baked into the SDK - they come from the graphics driver at runtime - so you load them into the block with `Init` first, then apply setters, then write the block's `Registers` into the command buffer, one `SetContextRegister` call per entry.
+
+`RegisterDefaults` produces those values. `RenderTargetBlock()` returns the sixteen-entry color
+render-target block ready for `CxRenderTarget.Init`. For the one-register blocks, `GetContextValue(offset)`
+returns the reset value of a single context register; pair it with that register's offset in a `CxRegister`
+to hand to `Init`.
 
 ```mermaid
 flowchart LR
@@ -84,18 +91,21 @@ Blocks that address one of the eight hardware render-target slots expose `SetSlo
 `CxRenderTarget` is the sixteen-register color-target block, with typed setters and getters for every field - format, channel type and order, dimensions, tiling, the color and metadata addresses, and the blend and rounding behavior. You rarely set those one at a time. `AgcRenderTargetSetup.Initialize` fills the whole block from a `RenderTargetSpec`, applying the same setup the graphics core does, including the blend, clamp, and rounding modes it derives from the channel type:
 
 ```csharp
-// defaults: sixteen CxRegister values loaded from the driver for a color target.
+// The sixteen driver reset values for a color target, ready for Init.
+CxRegister[] defaults = RegisterDefaults.RenderTargetBlock();
 var rt = new CxRenderTarget().Init(defaults);
 AgcRenderTargetSetup.Initialize(rt, new RenderTargetSpec(
     CxRenderTarget.Format.k8_8_8_8,
     CxRenderTarget.ChannelType.kUNorm,
-    CxRenderTarget.ChannelOrder.kStandard,
+    CxRenderTarget.ChannelOrder.kAlt,   // a display framebuffer carries blue first
     width: 1920, height: 1080,
     dataAddress: gpuColorAddress));
 
 foreach (CxRegister reg in rt.Registers)
     dcb.SetContextRegister(reg.Offset, reg.Value);
 ```
+
+The channel order has to match the byte order of the buffer the target points at. A display framebuffer carries blue first, so it takes `kAlt`; `kStandard` puts what the shader exported as red into the byte the output reads as blue, exchanging the two with nothing reporting a fault. `kReversed` and `kAltReversed` are those same two orders read back to front. `Renderer3D` sets `kAlt` for this reason.
 
 `CxDepthRenderTarget` is the companion sixteen-register block for a depth and stencil buffer: the same shape, with setters for the depth and stencil formats, dimensions, clear values, HTILE acceleration, and the read, write, and HTILE addresses, loaded from the driver defaults with `Init`.
 
@@ -169,6 +179,19 @@ Span<uint> imageWords = stackalloc uint[AgcTextureDescriptor.WordCount];
 tex.WriteTo(imageWords);
 ```
 
+`SetMipRange` only narrows which levels a shader may sample. `SetMipLevelCount` is what tells the
+processor how far the chain runs, and it has no default worth relying on: leave it unset and the surface
+reads as holding one level, which puts the address of every level below the first in the wrong place.
+
+```csharp
+tex.SetMipLevelCount(mipCount);          // one to fifteen
+tex.SetMipRange(baseLevel, lastLevel);   // which of them the shader may read
+```
+
+A multi-sampled surface uses `SetFragmentCount` instead of a mip chain; an array or volume texture adds
+`SetDepthOrSlices` and `SetArrayRange`; and a compressed surface adds `SetMetadataAddress` (which must be
+a multiple of 256) together with `SetMetadataEnabled`.
+
 `AgcSamplerDescriptor` builds the four-word sampler descriptor (an "S#"): how coordinates wrap, which filters apply for magnification, minification, and between mip levels, the level-of-detail range and bias, anisotropy, an optional depth comparison for shadows, and the border color. A default (all-zero) descriptor wraps, points, and samples the base level, so you only set what you need:
 
 ```csharp
@@ -181,7 +204,29 @@ Span<uint> samplerWords = stackalloc uint[AgcSamplerDescriptor.WordCount];
 samp.WriteTo(samplerWords);
 ```
 
-Both descriptors address memory in 256-byte units, and the setters pack each field into the exact bits the hardware reads. They are value types - copy the written words to where the shader can reach them.
+The texture descriptor addresses memory in 256-byte units - both its pixel address and its compression address are stored shifted right by eight - and the sampler descriptor's level-of-detail values are fixed point, which the float setters convert for you. Both pack each field into the exact bits the hardware reads, and both are value types: copy the written words to where the shader can reach them.
+
+## Buffer descriptors
+
+A shader reaches a buffer through `AgcBufferDescriptor`, four words carrying the address, the record size, and the record count. `Constant(address, sizeInBytes)` describes a constant buffer, where a vertex program reads its transform matrices; `Structured(address, strideInBytes, elementCount)` describes an array the program indexes, usually vertices. The stride must be under 16384 bytes.
+
+The words go into the shader's user data at the slot the program declares. `TryGetResourceSlot` reports that slot as a dword offset from `AgcShader.GsUserDataBaseOffset`, and the four words occupy four consecutive shader registers from there:
+
+```csharp
+AgcBufferDescriptor constants = AgcBufferDescriptor.Constant(gpuConstantAddress, 128);
+AgcBufferDescriptor vertices = AgcBufferDescriptor.Structured(gpuVertexAddress, stride, vertexCount);
+
+Span<uint> words = stackalloc uint[4];
+constants.WriteTo(words);
+
+if (vs.TryGetResourceSlot(ShaderResourceKind.ConstantBuffer, 0, out int dword, out _))
+{
+    for (uint i = 0; i < 4; i++)
+        dcb.SetShaderRegister(AgcShader.GsUserDataBaseOffset + (uint)dword + i, words[(int)i]);
+}
+```
+
+`Renderer3D` binds its constants and vertices this way each frame, so the 3D path needs none of this; it is for a custom shader.
 
 ## Surface layout
 
@@ -243,7 +288,11 @@ with the toolchain.
 ## Drawing a 3D mesh
 
 Above the register layer there is a high-level path for geometry. `Renderer3D` draws a mesh with the
-built-in mesh shaders: give it a display, then each frame a mesh and a model-view-projection matrix.
+built-in mesh shaders: give it a display, then each frame a mesh, a model-view-projection matrix, and the
+model matrix that orients its normals. `DrawMesh` records the draw, queues the flip, and advances the
+display, so it presents the frame as well - call it once per frame, and do not also call the display's
+`Present`. This path covers one mesh per frame; drawing more means recording your own command buffer. The
+constructor's `commandBufferBytes` sizes the per-frame recording buffer, 256 KB by default.
 
 ```csharp
 using System.Numerics;
@@ -271,8 +320,12 @@ view and projection matrices, with `Transform`, `Ray`, `BoundingBox`, `BoundingS
 alongside it for placing, picking, and culling. The `prospero-3d` template is a running example.
 
 {: .note }
-> The built-in mesh shaders are compiled ahead of time and embedded, so a 3D application needs no shader
-> tooling of its own. A custom shader is a compiled shader binary loaded through `ShaderBinary`.
+> The built-in mesh shaders are compiled ahead of time and embedded; `BuiltInShaders.MeshVertex()` and
+> `MeshPixel()` return them, so a 3D application needs no shader tooling of its own. For a shader of your
+> own, `ShaderBinary.Load(bytes)` reads the header and microcode out of the compiled container,
+> `Prepare()` places the code in graphics-readable memory and returns a `PreparedShader`, and its
+> `Shader` property is the `AgcShader` the command buffer binds. Dispose the `PreparedShader` once no
+> frame in flight still uses it.
 
 ## Inspecting a shader binary
 

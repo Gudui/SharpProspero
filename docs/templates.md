@@ -27,6 +27,8 @@ dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-dialog
 dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-dashboard
 dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-3d
 dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-payload
+dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-payload-httpd
+dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-payload-beacon
 dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-prx
 ```
 
@@ -70,7 +72,10 @@ dotnet new prospero-tool -n MyToolbox --title "My Toolbox"   --titleId PPSA99097
 | `--title` | The display title. | My Application |
 | `--titleId` | The nine-character title id. | PPSA99099 |
 | `--conceptId` | The concept id. | 99099 |
-| `--contentId` | The 36-character content id. | UP9000-PPSA99099_00-PROSPERO00000000 |
+| `--contentIdOverride` | A whole 36-character content id. Left empty, one is built from the title id. | (derived) |
+
+The content id carries the title id: the two have to agree or the build stops, so it is derived rather
+than asked for, and the override is there for the case where a particular label is wanted.
 
 The library template takes only a name:
 
@@ -111,6 +116,12 @@ An application writes an installable `*.pkg` (or a folder with `-Output Folder`)
 
 ## Uninstall
 
+Each install line put one template package on the machine, so removing them means naming each path.
+`dotnet new uninstall` takes as many as you pass:
+
 ```
-dotnet new uninstall $SHARPPROSPERO_ROOT/templates/prospero-app
+dotnet new uninstall $SHARPPROSPERO_ROOT/templates/prospero-app $SHARPPROSPERO_ROOT/templates/prospero-game
 ```
+
+Run `dotnet new uninstall` with no arguments to list the installed packages, each with the command that
+removes it.

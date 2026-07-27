@@ -68,7 +68,9 @@ use it to measure an elapsed duration.
 ## Frame timers
 
 For game logic there are three small timers driven by the frame's delta, not by a clock. Advance each one
-per frame with the time since the last frame — `(float)context.DeltaSeconds` — and read the result.
+per frame with the time since the last frame — `(float)context.DeltaSeconds` — and read the result. Each
+timer ignores a step that is zero, negative or not finite instead of folding it in, so a stalled or
+mis-measured frame cannot poison a timer.
 
 - `Cooldown` is a gate that is ready, then cold for a set time: a weapon on a recharge, an ability, a
   button that ignores a second press.
@@ -96,8 +98,11 @@ if (respawn.Advance(dt))
 `Cooldown.TryUse` returns true only when the gate is ready and starts the cooldown; `IsReady` and
 `Remaining` report its state, and `Start`/`Reset` force it cold or ready. `Interval.Advance` returns how
 many whole periods elapsed since the last call, so a long frame fires the right number of times rather than
-dropping beats. `Countdown.Advance` returns true on the single frame it reaches zero, then stays elapsed
-until you `Restart` it.
+dropping beats, and `Interval.Reset` clears the progress toward the next fire. `Countdown.Advance` returns
+true on the single frame it reaches zero, then stays elapsed until you `Restart` it; `IsRunning` and
+`IsElapsed` read that state without advancing. Assign `Cooldown.Duration` or `Interval.Period` while the
+timer runs — a weapon that fires faster, a spawner that speeds up. A negative duration, or a period of zero
+or less, throws `ArgumentOutOfRangeException`.
 
 {: .tip }
 > `Cooldown.Fraction` (1 down to 0) and `Countdown.Progress` (0 up to 1) give a 0..1 value ready to drive a
@@ -149,8 +154,10 @@ scheduler.Cancel(spawn);
 
 `After` returns a handle for `Cancel`; `Every` repeats until cancelled and, after a long pause, fires once
 and re-arms rather than firing once per missed interval. Work scheduled from inside a callback waits for the
-next `Update`, so a callback that re-schedules itself cannot spin. `Count` reports how many callbacks are
-pending, and `Clear` cancels everything.
+next `Update`, so a callback that re-schedules itself cannot spin. `Count` reports how many callbacks the
+scheduler is holding. `Cancel` marks an entry instead of removing it, so `Count` still includes it until the
+next `Update` sweeps it out. `Clear` cancels everything and empties the list right away; called from inside
+a callback it marks the entries instead, and that `Update` sweeps them out.
 
 For the per-frame delta these timers consume, see the frame loop on [Application](application.md); for
 measuring and graphing frame times, see [Diagnostics](diagnostics.md).

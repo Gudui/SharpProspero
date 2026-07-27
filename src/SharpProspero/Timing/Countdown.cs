@@ -41,7 +41,7 @@ public sealed class Countdown(float durationSeconds)
     /// </summary>
     public bool Advance(float deltaSeconds)
     {
-        if (_remaining <= 0f || deltaSeconds <= 0f)
+        if (_remaining <= 0f || !float.IsFinite(deltaSeconds) || deltaSeconds <= 0f)
             return false;
         _remaining -= deltaSeconds;
         if (_remaining <= 0f)

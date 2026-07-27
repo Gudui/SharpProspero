@@ -123,19 +123,26 @@ public static class ParamJson
             written.Add("applicationCategoryType");
         }
 
-        if (category is not null)
+        // The badge is the author's to choose. Only an absent one is settled here, and only to a
+        // sensible starting point; one already chosen is left alone even where it does not follow from
+        // the category, because it does not have to. Rewriting it replaced a deliberate choice with a
+        // guess, including replacing the one that means no badge at all.
+        if (ReadInt(document, "contentBadgeType") is not int existing || existing is < 0 or > 2)
         {
-            int badge = ApplicationCategories.BadgeFor(category.Value);
-            if (ReadInt(document, "contentBadgeType") != badge)
-            {
-                document["contentBadgeType"] = badge;
-                written.Add("contentBadgeType");
-            }
+            document["contentBadgeType"] = ApplicationCategories.DefaultBadge(category);
+            written.Add("contentBadgeType");
         }
 
-        if (document["ageLevel"] is not JsonObject age || age["default"] is null)
+        // Only the missing part is filled in. Replacing the whole block threw away every regional
+        // rating an author had set, which is the opposite of settling what is absent.
+        if (document["ageLevel"] is not JsonObject age)
         {
             document["ageLevel"] = new JsonObject { ["default"] = 0 };
+            written.Add("ageLevel");
+        }
+        else if (age["default"] is null)
+        {
+            age["default"] = 0;
             written.Add("ageLevel");
         }
 
@@ -231,13 +238,23 @@ public static class ParamJson
             issues.Add(new ParamIssue(ParamIssueLevel.Fault, "contentId",
                 $"'{contentId}' does not carry the title id '{titleId}'. The two have to agree.", false));
 
-        CheckVersionField(document, "contentVersion", 3, issues);
-        CheckVersionField(document, "masterVersion", 2, issues);
+        CheckVersionField(document, "contentVersion", ContentVersionWidths, issues);
+        CheckVersionField(document, "masterVersion", MasterVersionWidths, issues);
+        // Two more carry a content version and were never checked at all.
+        if (document["originContentVersion"] is not null)
+            CheckVersionField(document, "originContentVersion", ContentVersionWidths, issues);
+        if (document["targetContentVersion"] is not null)
+            CheckVersionField(document, "targetContentVersion", ContentVersionWidths, issues);
     }
 
-    // A version is a fixed number of dot-separated digit groups: NN.NN for the master version, and
-    // NN.NNN.NNN for the content version. Anything else is read as a lower version than intended.
-    private static void CheckVersionField(JsonObject document, string field, int parts, List<ParamIssue> issues)
+    // Each group of a version is a fixed width, not merely some digits. A reader takes each group from
+    // a fixed position and stops at the end of it, so a group written narrower than its width shifts
+    // everything after it and the version reads as a different one - lower, usually - with nothing
+    // reporting a problem. Counting the groups alone accepted exactly that.
+    private static readonly int[] ContentVersionWidths = [2, 3, 3];
+    private static readonly int[] MasterVersionWidths = [2, 2];
+
+    private static void CheckVersionField(JsonObject document, string field, int[] widths, List<ParamIssue> issues)
     {
         string? text = ReadString(document, field);
         if (text is null)
@@ -246,10 +263,12 @@ public static class ParamJson
             return;
         }
 
+        string shape = string.Join(".", widths.Select(w => new string('N', w)));
         string[] groups = text.Split('.');
-        if (groups.Length != parts || groups.Any(g => g.Length == 0 || !g.All(char.IsAsciiDigit)))
+        if (groups.Length != widths.Length
+            || groups.Where((g, i) => g.Length != widths[i] || !g.All(char.IsAsciiDigit)).Any())
             issues.Add(new ParamIssue(ParamIssueLevel.Fault, field,
-                $"'{text}' is not a version. Use {string.Join(".", Enumerable.Repeat("NN", parts))}.", false));
+                $"'{text}' is not a version. Use {shape}.", false));
     }
 
     private static void CheckDrmType(JsonObject document, List<ParamIssue> issues)
@@ -296,13 +315,9 @@ public static class ParamJson
             return;
         }
 
-        if (category is null)
-            return;
-
-        int expected = ApplicationCategories.BadgeFor(category.Value);
-        if (badge != expected)
-            issues.Add(new ParamIssue(ParamIssueLevel.Incomplete, "contentBadgeType",
-                $"{badge} does not match the category. A {category} title is badged {expected}.", true));
+        if (badge is < 0 or > 2)
+            issues.Add(new ParamIssue(ParamIssueLevel.Fault, "contentBadgeType",
+                $"{badge} is not a badge. It is none, a game, or an application.", false));
     }
 
     private static void CheckAgeLevel(JsonObject document, List<ParamIssue> issues)

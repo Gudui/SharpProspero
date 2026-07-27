@@ -57,11 +57,7 @@ public enum AgcChannelSource : uint
 /// </remarks>
 public struct AgcTextureDescriptor
 {
-    // Word 5 (mip count, low-detail warning, and sampler-modulation fields) has no setter yet, so it
-    // keeps its zero default; the other words are written by the setters below.
-#pragma warning disable CS0649
     private uint _w0, _w1, _w2, _w3, _w4, _w5, _w6, _w7;
-#pragma warning restore CS0649
 
     /// <summary>The number of 32-bit words in the descriptor.</summary>
     public const int WordCount = 8;
@@ -146,6 +142,32 @@ public struct AgcTextureDescriptor
         Set(ref _w3, 16, 4, (uint)lastLevel);
     }
 
+    /// <summary>
+    /// How many mip levels the surface holds, from one to fifteen. This is what tells the processor how
+    /// far the chain runs; the range above only narrows which of them a shader may sample. Left unset
+    /// the surface reads as holding one level, so the address of every level below the first is wrong.
+    /// Not for a multi-sampled surface, which uses <see cref="SetFragmentCount"/> instead.
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="levelCount"/> is outside one to fifteen.</exception>
+    public void SetMipLevelCount(int levelCount)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(levelCount, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(levelCount, 15);
+        Set(ref _w5, 4, 4, (uint)(levelCount - 1));
+    }
+
+    /// <summary>
+    /// How many samples each texel of a multi-sampled surface holds, as the power of two: one for two
+    /// samples, two for four, three for eight. The count goes in the place the chain length occupies
+    /// for an ordinary surface and in the last-level field as well, which is what a multi-sampled
+    /// surface reads instead of a mip chain.
+    /// </summary>
+    public void SetFragmentCount(int log2Samples)
+    {
+        Set(ref _w3, 16, 4, (uint)log2Samples);
+        Set(ref _w5, 4, 4, (uint)log2Samples);
+    }
+
     /// <summary>The first and last array slice the shader may sample.</summary>
     public void SetArrayRange(int baseSlice, int lastSlice)
     {
@@ -160,8 +182,22 @@ public struct AgcTextureDescriptor
     /// <summary>The texture's dimensionality.</summary>
     public void SetType(AgcImageType type) => Set(ref _w3, 28, 4, (uint)type);
 
-    /// <summary>The base address of the compression/metadata surface, in 256-byte units.</summary>
-    public void SetMetadataAddress(ulong gpuByteAddress) => _w7 = (uint)(gpuByteAddress >> 8);
+    /// <summary>
+    /// The base address of the compression surface, which has to be a multiple of 256 bytes. The
+    /// address is split: its lowest byte above those 256 goes in the top byte of word six and the rest
+    /// in word seven. Putting the whole thing in word seven made the address 256 times too large.
+    /// </summary>
+    /// <exception cref="ArgumentException"><paramref name="gpuByteAddress"/> is not a multiple of 256.</exception>
+    public void SetMetadataAddress(ulong gpuByteAddress)
+    {
+        if ((gpuByteAddress & 0xFF) != 0)
+            throw new ArgumentException("The compression surface starts on a 256-byte boundary.", nameof(gpuByteAddress));
+        Set(ref _w6, 24, 8, (uint)((gpuByteAddress >> 8) & 0xFF));
+        _w7 = (uint)(gpuByteAddress >> 16);
+    }
+
+    /// <summary>The base address of the compression surface, as written.</summary>
+    public readonly ulong MetadataAddress => (((ulong)(_w6 >> 24) & 0xFF) << 8) | ((ulong)_w7 << 16);
 
     /// <summary>Whether the surface carries compression metadata.</summary>
     public void SetMetadataEnabled(bool enabled) => Set(ref _w6, 21, 1, enabled ? 1u : 0u);

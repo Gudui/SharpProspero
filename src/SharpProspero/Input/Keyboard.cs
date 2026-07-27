@@ -13,10 +13,11 @@ public readonly ref struct KeyboardState
 {
     private readonly ReadOnlySpan<ushort> _keys;
 
-    internal KeyboardState(bool connected, KeyModifier modifiers, ReadOnlySpan<ushort> keys)
+    internal KeyboardState(bool connected, KeyModifier modifiers, KeyboardLed leds, ReadOnlySpan<ushort> keys)
     {
         Connected = connected;
         Modifiers = modifiers;
+        Leds = leds;
         _keys = keys;
     }
 
@@ -26,12 +27,21 @@ public readonly ref struct KeyboardState
     /// <summary>The modifier keys held.</summary>
     public KeyModifier Modifiers { get; }
 
+    /// <summary>
+    /// The lock keys that are on. Turning a key press into a character needs these as well as the
+    /// modifiers: caps lock decides the case of a letter and num lock decides what the number pad
+    /// produces, and neither is a key that is held.
+    /// </summary>
+    public KeyboardLed Leds { get; }
+
     /// <summary>The USB HID usage codes of the keys held, newest last. Empty when none are held.</summary>
     public ReadOnlySpan<ushort> Keys => _keys;
 
-    /// <summary>True when <paramref name="usageCode"/> is among the keys held.</summary>
+    /// <summary>True when <paramref name="usageCode"/> is among the keys held. Zero is not a key.</summary>
     public bool IsKeyDown(int usageCode)
     {
+        if (usageCode == 0)
+            return false;
         foreach (ushort key in _keys)
         {
             if (key == usageCode)
@@ -79,13 +89,23 @@ public sealed unsafe class Keyboard : IDisposable
         ObjectDisposedException.ThrowIf(_disposed, this);
         SceKeyboardData data;
         if (SceResult.Failed(Native.sceKeyboardReadState(_handle, &data)))
-            return new KeyboardState(false, KeyModifier.None, []);
+            return new KeyboardState(false, KeyModifier.None, KeyboardLed.None, []);
 
+        // The count that comes back is never less than one, even with nothing held and even with no
+        // keyboard there, and the entry it counts is then a code of zero - which is not a key. Copying
+        // it verbatim meant the set of held keys was never empty and asking whether key zero was held
+        // always answered yes. Only real codes are carried.
         int count = Math.Clamp(data.Length, 0, Native.MaxKeyCodes);
-        var keys = new ushort[count];
+        int held = 0;
         for (int i = 0; i < count; i++)
-            keys[i] = data.KeyCode[i];
-        return new KeyboardState(data.Connected, data.ModifierKey, keys);
+            if (data.KeyCode[i] != 0)
+                held++;
+
+        var keys = new ushort[held];
+        for (int i = 0, k = 0; i < count; i++)
+            if (data.KeyCode[i] != 0)
+                keys[k++] = data.KeyCode[i];
+        return new KeyboardState(data.Connected, data.ModifierKey, data.Led, keys);
     }
 
     /// <summary>Closes the keyboard.</summary>

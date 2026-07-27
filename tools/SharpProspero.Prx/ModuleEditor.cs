@@ -37,14 +37,19 @@ public sealed class ModuleEditor
     private const uint PtDynamic = 0x00000002;
     private const uint PtSceDynlibData = 0x61000000;
     private const uint PtSceModuleParam = 0x61000002;
+    private const uint PtSceProcParam = 0x61000001;
 
+    // What marks the block as one this reader understands: the first for a library, the second for an
+    // application. Both carry the version in the same place.
     private const uint ModuleParamMagic = 0x3C13F4BF;
+    private const uint ProcParamMagic = 0x4942524F;
 
     private const long DtNull = 0;
     private const long DtStrTab = 5;
     private const long DtStrSz = 10;
     private const long DtSceModuleInfo = 0x61000043;
-    private const long DtSceExportLib = 0x61000013;
+    private const long DtSceExportLib = 0x61000047;
+    private const long DtSceExportLibLegacy = 0x61000013;
     private const long DtSceNeededModule = 0x61000045;
     private const long DtSceImportLib = 0x61000049;
     private const long DtSceStrTab = 0x61000035;
@@ -85,7 +90,8 @@ public sealed class ModuleEditor
         long size = layout.ParamSize;
         if (offset < 0 || size < 0x18 || offset > elf.Length - 0x18)
             return false;
-        if (BinaryPrimitives.ReadUInt32LittleEndian(elf.AsSpan((int)offset + 8)) != ModuleParamMagic)
+        uint magic = BinaryPrimitives.ReadUInt32LittleEndian(elf.AsSpan((int)offset + 8));
+        if (magic != ModuleParamMagic && magic != ProcParamMagic)
             return false;
         // A block older than version 2 carries no version field at +0x14; ReadSdkVersion reports such a
         // block as recording no version, so rewriting +0x14 here would corrupt an unrelated field and
@@ -162,7 +168,7 @@ public sealed class ModuleEditor
             ulong pFilesz = BinaryPrimitives.ReadUInt64LittleEndian(data.AsSpan((int)ph + 0x20));
             if (pType == PtDynamic) { dynOffset = (long)pOffset; dynSize = (long)pFilesz; }
             else if (pType == PtSceDynlibData) { dynlibOffset = (long)pOffset; }
-            else if (pType == PtSceModuleParam) { paramOffset = (long)pOffset; paramSize = (long)pFilesz; }
+            else if (pType is PtSceModuleParam or PtSceProcParam) { paramOffset = (long)pOffset; paramSize = (long)pFilesz; }
             else if (pType == PtLoad) { loads.Add(new LoadSegment(pVaddr, pOffset, pFilesz)); }
         }
         return new Layout(dynOffset, dynSize, dynlibOffset, paramOffset, paramSize, loads);
@@ -172,7 +178,8 @@ public sealed class ModuleEditor
     {
         if (offset < 0 || size < 0x18 || offset > data.Length - 0x18)
             return 0;
-        if (BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan((int)offset + 8)) != ModuleParamMagic)
+        uint magic = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan((int)offset + 8));
+        if (magic != ModuleParamMagic && magic != ProcParamMagic)
             return 0;
         if (BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan((int)offset + 12)) < 2)
             return 0;
@@ -222,7 +229,7 @@ public sealed class ModuleEditor
             string? kind = tag switch
             {
                 DtSceModuleInfo => "module info",
-                DtSceExportLib => "export library",
+                DtSceExportLib or DtSceExportLibLegacy => "export library",
                 DtSceNeededModule => "needed module",
                 DtSceImportLib => "import library",
                 _ => null,

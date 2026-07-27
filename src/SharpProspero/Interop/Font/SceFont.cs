@@ -176,11 +176,28 @@ public struct SceFontGlyphImageMetrics
     public uint Height;
 }
 
-/// <summary>What a glyph render produced: the coverage image, the target write, and the metrics.</summary>
+/// <summary>How a line of a font stacks: where its baseline sits and how tall a line is.</summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct SceFontHorizontalLayout
+{
+    /// <summary>How far below the top of a line its baseline sits, in pixels.</summary>
+    public float BaseLineY;
+
+    /// <summary>The distance from one line to the next, in pixels.</summary>
+    public float LineHeight;
+
+    /// <summary>How much taller a line becomes once the font's effects are applied.</summary>
+    public float EffectHeight;
+}
+
+/// <summary>What a glyph render produced: where it wrote, the region it changed, and the metrics.</summary>
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct SceFontRenderResult
 {
-    /// <summary>The 8-bit coverage image (a <see cref="SceFontTransImage"/>), or null when none.</summary>
+    /// <summary>
+    /// Always null. The render draws into the surface it was handed and reports where through
+    /// <see cref="SurfaceImage"/> and the changed region below; nothing ever fills this in.
+    /// </summary>
     public SceFontTransImage* TransImage;
 
     /// <summary>The write into the target surface.</summary>
@@ -201,6 +218,33 @@ public unsafe struct SceFontRenderResult
     /// <summary>The rendered glyph's placement and advance.</summary>
     public SceFontGlyphImageMetrics ImageMetrics;
 }
+/// <summary>
+/// The routines the font engine allocates and releases through. The engine calls these rather than
+/// managing a block itself, and a library or renderer refuses to be created unless at least the first
+/// two are present.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct SceFontMemoryInterface
+{
+    /// <summary>Allocate, taking the caller's object and a size.</summary>
+    public delegate* unmanaged[Cdecl]<void*, uint, void*> Malloc;
+
+    /// <summary>Release, taking the caller's object and a block.</summary>
+    public delegate* unmanaged[Cdecl]<void*, void*, void> Free;
+
+    /// <summary>Resize, taking the caller's object, a block and a size.</summary>
+    public delegate* unmanaged[Cdecl]<void*, void*, uint, void*> Realloc;
+
+    /// <summary>Allocate and clear, taking the caller's object, a count and a size.</summary>
+    public delegate* unmanaged[Cdecl]<void*, uint, uint, void*> Calloc;
+
+    /// <summary>Optional; left unset when the engine is not asked to manage a sub-pool.</summary>
+    public void* MspaceCreate;
+
+    /// <summary>Optional; the counterpart to <see cref="MspaceCreate"/>.</summary>
+    public void* MspaceDestroy;
+}
+
 
 /// <summary>
 /// Font-engine bindings (libSceFont). The engine loads a scalable font, scales it, and renders each
@@ -222,14 +266,19 @@ public static unsafe partial class SceFont
     /// <summary>OpenType with TrueType outlines.</summary>
     public const uint FormatOpenTypeTt = 0x0050;
 
+
     /// <summary>OpenType with CFF outlines.</summary>
     public const uint FormatOpenTypeCff = 0x0042;
 
-    /// <summary>Prepares a memory block the engine manages. A null <paramref name="memInterface"/> lets
-    /// the engine allocate within <paramref name="address"/> itself.</summary>
+    /// <summary>
+    /// Prepares the memory the engine works in. The engine keeps whatever it is given here and hands it
+    /// on: a library or a renderer created against it reads the routines out of it and refuses to be
+    /// created at all unless at least the two that allocate and release are there. Passing none is
+    /// accepted here and fails later, at the creation, which is what makes it worth stating.
+    /// </summary>
     [LibraryImport(Lib)]
     public static partial int sceFontMemoryInit(SceFontMemory* fontMemory, void* address, uint sizeByte,
-        void* memInterface, void* mspaceObject, void* destroyCallback, void* destroyObject);
+        SceFontMemoryInterface* memInterface, void* mspaceObject, void* destroyCallback, void* destroyObject);
 
     /// <summary>Releases a memory block prepared with <see cref="sceFontMemoryInit"/>.</summary>
     [LibraryImport(Lib)]
@@ -288,6 +337,10 @@ public static unsafe partial class SceFont
     /// <summary>Initializes a render surface over a pixel buffer.</summary>
     [LibraryImport(Lib)]
     public static partial void sceFontRenderSurfaceInit(SceFontRenderSurface* surf, void* buffer, int bufWidthByte, int pixelSizeByte, int w, int h);
+
+    /// <summary>Reads how a line of this font stacks: where its baseline sits and how tall a line is.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceFontGetHorizontalLayout(void* fontHandle, SceFontHorizontalLayout* layout);
 
     /// <summary>Sets the clip rectangle a render surface draws within.</summary>
     [LibraryImport(Lib)]

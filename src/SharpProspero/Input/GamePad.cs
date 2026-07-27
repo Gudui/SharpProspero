@@ -111,9 +111,19 @@ public readonly struct GamePadState
         if (sample.Length < 0x58)
             return Neutral;
 
+        // The system sets one bit to say it has taken the controller for itself - while it is showing
+        // something of its own, say. The rest of the sample then describes what the system is doing
+        // with it rather than what the player is pressing, so the whole sample is dropped. Reading it
+        // anyway hands the application presses nobody made, and an application that leaves on one of
+        // them leaves by itself. What replaces it is the neutral reading rather than an empty one: the
+        // sticks rest at the middle of their range, so zeroed sticks read as held to a corner.
+        uint buttons = BinaryPrimitives.ReadUInt32LittleEndian(sample);
+        if ((buttons & (uint)ScePadButton.Intercepted) != 0)
+            return Neutral;
+
         return new GamePadState
         {
-            Buttons = (ScePadButton)BinaryPrimitives.ReadUInt32LittleEndian(sample),
+            Buttons = (ScePadButton)buttons,
             LeftStickX = sample[4],
             LeftStickY = sample[5],
             RightStickX = sample[6],

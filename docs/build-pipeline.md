@@ -6,19 +6,22 @@ parent: Toolchain
 
 # Build pipeline
 
-An application goes through three steps to become a package: compile the C# to an object, link the
-object into an ELF module, and pack the module. The first two are driven by MSBuild files in
-`build/`; the third is the packager. `src/SharpProspero.Sample/build.ps1` runs all three.
+An application goes through a fixed sequence to become a package: compile the C# to an object, link the
+object into an ELF module, gather and check what travels with it, settle the system version, wrap the
+module, and write the output. The compile and the link are driven by MSBuild files in `build/`; the
+steps after them are toolchain commands, and the last hands the folder to the packager.
+`build/build-app.ps1` runs the whole sequence. The sample and every project generated from a template
+ship a `build.ps1` that forwards to it.
 
 ## Inputs
 
-Nothing outside the .NET SDK is set up. `build.ps1` gathers the ahead-of-time runtime from the .NET
-SDK's own NativeAOT runtime pack (restored by the compile step) and links through the SDK's own linker,
+Nothing outside the .NET SDK is set up. `build-app.ps1` gathers the ahead-of-time runtime from the .NET
+SDK's own runtime pack (restored by the compile step) and links through the SDK's own linker,
 which supplies its own start object, a compat object for the C-library names the runtime needs that the
 device does not publish, and stubs for the service modules. So there is no runtime pack to assemble, no
 `PROSPERO_RUNTIME_PACK` to set, and no separate linker, start file, or stub library.
 
-The one host requirement is that the compile step runs on Linux (see step 1). On Windows `build.ps1`
+The one host requirement is that the compile step runs on Linux (see step 1). On Windows `build-app.ps1`
 runs that step through WSL automatically, so a Windows user builds in place.
 
 ## Step 1: compile
@@ -44,7 +47,7 @@ The compiler writes an object under `obj/Release/net10.0/linux-x64/native`. It t
 instruction set; the runtime it links against (below) matches the device ABI.
 
 One constraint on this step: the ahead-of-time compiler emits an object only for the operating system
-it runs on, so it does not cross-compile to Linux from a Windows host. `build.ps1` therefore runs the
+it runs on, so it does not cross-compile to Linux from a Windows host. `build-app.ps1` therefore runs the
 publish through WSL on Windows — the object still lands in the project's `obj` folder, which both sides
 share — and runs it directly on Linux. The link and pack steps below are the toolchain itself and run
 wherever the script is started.
@@ -52,7 +55,7 @@ wherever the script is started.
 ## Step 2: link
 
 `build/Prospero.App.targets` defines the `ProsperoLink` target. It is not part of a normal build, so
-`dotnet build` never touches it; run it directly or through `build.ps1`. The target:
+`dotnet build` never touches it; run it directly or through `build-app.ps1`. The target:
 
 1. Checks the runtime archives and the compiled object exist, stopping with a specific message if one
    is missing.
@@ -68,11 +71,19 @@ directly like this:
 
 ```
 dotnet msbuild src/SharpProspero.Sample/SharpProspero.Sample.csproj /t:ProsperoLink ^
-  /p:ProsperoObjectFile=<path-to-object> /p:OutputPath=<module-folder>/
+  /p:ProsperoObjectFile=<path-to-object> /p:ProsperoRuntimePack=<runtime-archive-folder> ^
+  /p:OutputPath=<module-folder>/
 ```
 
-Override the runtime archive list and its order with `ProsperoRuntimeLibraries` (semicolon-separated)
-when the default folder scan is not the order you want.
+`ProsperoRuntimePack` names the folder holding the gathered runtime archives. The target stops with a
+message when neither it nor `ProsperoRuntimeLibraries` is set, so a manual link has to pass one of them.
+
+Override the runtime input list and its order with `ProsperoRuntimeLibraries` (semicolon-separated)
+when the default folder scan is not the order you want. The list holds both forms: an entry ending in
+`.o` reaches the linker as an object, everything else as an archive. The linker takes an object whole
+and draws from an archive only for the names still wanted. Setting the property replaces the folder
+scan, so name the runtime's bring-up object in the list too: nothing asks for a name it defines, and
+a list of archives alone leaves the module with nothing to start.
 
 ### What the linker lays out
 
@@ -125,30 +136,27 @@ its prefix (`.text`). The order within each segment is the one a built module us
 |---|---|
 | Code | `.init`, `.text`, `.fini`, then the rest, then the linkage table |
 | Read-only | `.rodata`, `.eh_frame`, then the rest, then the frame index |
-| Bound-then-constant | `.data.rel.ro`, `.got`, `.init_array`, `.fini_array`, `.sce_process_param`, `__modules`, then the thread-local template aligned to 32 |
-| Writable | `.data`, `.bss`, then the rest — what it stores before what it only reserves |
+| Bound-then-constant | `.data.rel.ro`, `.got`, `.got.plt`, `.ctors`, `.dtors`, `.init_array`, `.fini_array`, `.sce_process_param`, `__modules`, then the thread-local template aligned to 32 |
+| Writable | `.shader_header`, `.data`, `.bss`, then the rest — what it stores before what it only reserves |
 
 Gathering by name is what makes a name a contiguous run, which two things depend on: the call-frame
 records are read as one chain, and the constructor array is named by one address and one length.
 
-Where the linking segment goes is fixed too, and by measurement rather than by rule. Across seventy
-installed titles that start, without exception: its address is where the writable segment's memory
-ends, so it falls inside the pages that segment is mapped over, and its file offset is never
-page-aligned — it carries the same page offset as its address, at the first such offset past the
-writable segment's stored bytes. Rounding it up to its own page instead is a shape no module that
-starts has.
+Where the linking segment goes is fixed too. Its address is where the writable segment's memory ends,
+so it falls inside the pages that segment is mapped over, and its file offset is never page-aligned —
+it carries the same page offset as its address, at the first such offset past the writable segment's
+stored bytes. Rounding it up to its own page instead produces a module that does not start.
 
 Every mapped segment stores something. A segment that stores nothing is carried by the container as a
-pair of zero-length entries sharing one file offset with whatever follows, and none of the seventy
-containers measured that start carries a zero-length entry. A module with no writable data of its own is
-where this happens: the group is still there, and it still has to store a word. The container refuses
-such a segment as well, so it cannot be reached from either direction.
+pair of zero-length entries sharing one file offset with whatever follows, which the loader turns away.
+A module with no writable data of its own is where this happens: the group is still there, and it still
+has to store a word. The container refuses such a segment as well, so it cannot be reached from either
+direction.
 
 The linking group's tables come in one order: the **string table at the group's base address**, then the
 symbol table, the binding records, the relocation table, the hash, the note, and the dynamic table last.
-Sixty-nine of the seventy modules measured lay them out this way and the seventieth names no tables to
-read; the modules the SDK ships agree. Each table begins where the one before it ends, rounded up to
-eight — four for the note — with no padding beyond that.
+Any other order leaves the module unable to start. Each table begins where the one before it ends,
+rounded up to eight — four for the note — with no padding beyond that.
 
 Three more things the linker writes that are easy to leave out, and that only show up much later:
 
@@ -244,8 +252,8 @@ Check a built module yourself at any time:
 sharpprospero-bindgen modules --module eboot.bin --folder sce_module
 ```
 
-A module the application carries also raises the system version the application requires, which the
-next step settles.
+A module the application carries also raises the system version the application requires, which Step 3c
+settles.
 
 ## Step 3b: check the application's metadata
 
@@ -257,23 +265,45 @@ yours does not:
 == Metadata ==
   kind                           Game (0)
 
-  contentBadgeType               incomplete 2 does not match the category. A Game title is badged 1.
-  gameIntent                     incomplete Absent. It names the ways the title may be started.
+  Nothing missing.
 
 Wrote out/module/sce_sys/param.json (contentBadgeType, gameIntent)
 ```
 
+Run the command without `--apply` to see what is missing before it is filled in:
+
+```
+  contentBadgeType               incomplete Absent. It settles the badge drawn on the icon.
+  gameIntent                     incomplete Absent. It names the ways the title may be started.
+```
+
 A field carrying a value the system does not recognise — a kind of title outside the ten it knows, a
-malformed content id, a rights model that is not one of the four — stops the build instead. None of it
+malformed content id, a rights model that is not one of the five — stops the build instead. None of it
 reports itself on the console: the home screen simply draws the title wrongly, or a service it expected
 to reach is never offered to it.
 
 The fields, the kinds of title, and what the checks are looking for are described in
-[the param.json fields](param-json.html). Check a folder yourself at any time:
+[the param.json fields](param-json.md). Check a folder yourself at any time:
 
 ```
 sharpprospero-bindgen param --folder out/module
 ```
+
+## Step 3c: settle the system version
+
+A module records the system it was built against, and the application has to require at least as much or
+the system installs it and then fails to load the module. The build reads every module it gathered and,
+by default, raises the requirement to the highest:
+
+```
+sharpprospero-bindgen sysver --folder out/module --policy match --apply
+```
+
+`-SystemVersionPolicy` on `build-app.ps1` picks between the four policies, which [Modules and
+libraries](modules.md) describes; `--version` supplies the version `upgrade` and `downgrade` move to.
+The command exits 4 when a module is left needing more than the result, which the build reports rather
+than treats as a failure. The result is written to `sce_sys/param.json`, so a library module with no
+metadata of its own skips the step.
 
 ## Step 4: wrap the module
 
@@ -303,11 +333,11 @@ A module's **version records** live in a segment nothing maps, so no container s
 They follow the last stored segment instead, past the size the header declares, and reading a container
 back puts them where the program header places them.
 
-A module already wrapped in the other header shape is re-wrapped rather than left alone, so a library
-carried over from an earlier build cannot ship with a mismatched header:
+A module already wrapped in either header shape is left alone. Modules carrying either mark load, so
+re-wrapping one would replace a container that works:
 
 ```
-sce_module/libc.prx is wrapped in the older header shape; wrapping it again.
+sce_module/libc.prx is already wrapped; left unchanged.
 ```
 
 The packager reports the result as part of its launch-readiness summary:
@@ -330,21 +360,49 @@ pwsh build/build-app.ps1 -ProjectPath MyApp.csproj                    # Package 
 pwsh build/build-app.ps1 -ProjectPath MyApp.csproj -Output Folder     # every file in one folder
 ```
 
+| Parameter | What it does | Default |
+|---|---|---|
+| `-ProjectPath` | The application project to build. | required |
+| `-Output` | `Package` writes an installable file; `Folder` leaves every file in one folder. | `Package` |
+| `-OutputFolder` | Where the result is written. | an `out` folder next to the project |
+| `-Configuration` | Build configuration. | `Release` |
+| `-TitleId` | The title this build carries, when it should differ from the one the project's metadata names. Four letters and five digits, for example `PPSA99098`. | the project's own |
+| `-SdkRoot` | The SDK folder. | the folder above the script, then `SHARPPROSPERO_ROOT` |
+| `-Payload` | Link a payload instead of a module and stop there. See [Payloads](#payloads). | off |
+| `-SystemVersionPolicy` | How the system version the application requires is settled. See [Modules and libraries](modules.md). | `Match` |
+| `-SystemVersion` | The version `Upgrade` and `Downgrade` move to, as NN.NN. | none |
+
+`-TitleId` changes the gathered copy only; the project's own metadata is left alone. An installer treats
+a title already on the machine as present and declines to replace it, so a build meant to sit beside the
+last one needs a title of its own.
+
 **Package** hands the folder to the packager and writes an installable `*.pkg`:
 
 ```
 dotnet run --project tools/SharpProspero.Packager -- --in <module-folder> --out <output-folder>
 ```
 
+`build-app.ps1` passes `--in` and `--out`. Running the packager directly takes six more options:
+
+| Option | What it sets | Default |
+|---|---|---|
+| `--in`, `--out` | The gathered module folder, and the folder the package is written to. | required |
+| `--module` | The module file to take from the input folder. It is always packed as `eboot.bin`. | `eboot.bin` |
+| `--content-id` | The 36-character content id the package is built for. | the `contentId` in `sce_sys/param.json`; the build stops when neither supplies one |
+| `--passcode` | The 32-character passcode the package is built with. | thirty-two zeros |
+| `--title` | The display name written into a `param.json` the packager generates because the folder carries none. A `param.json` already in the folder keeps its own title, and this option then changes nothing. | the title id taken from the content id |
+| `--version` | The content version, `NN.NN`, which also names the output file. | the `masterVersion` in `sce_sys/param.json`, otherwise `01.00` |
+| `--keep-staging` | Keeps the assembled working tree beside the output instead of deleting it. | off |
+
 **Folder** stops after gathering, leaving `eboot.bin`, `sce_sys` and `sce_module` together in one
-folder ready to copy or inspect. Nothing is packed, so there is no content id or passcode to set.
+folder ready to copy or inspect. Nothing is packed, so none of the packaging options above apply.
 
 ## Where the runtime comes from
 
 The linked module needs the ahead-of-time runtime — the garbage collector, exception handling, and the
-bootstrap that runs before the managed entry. These are the standard NativeAOT runtime archives, and
+bootstrap that runs before the managed entry. These are the standard runtime archives, and
 the `dotnet publish` compile step restores them into the .NET SDK's package cache as its own runtime
-pack. `build.ps1` gathers those archives from the cache and hands them to the linker, so nothing is
+pack. `build-app.ps1` gathers those archives from the cache and hands them to the linker, so nothing is
 assembled or downloaded separately.
 
 The runtime archives call a set of C-library and operating-system functions. The device's own C and
@@ -366,14 +424,15 @@ Two of the forwarders in the compat object are worth knowing about, because they
 
 - **Memory** comes from the flexible pool. The device publishes the calls that change protection and
   release memory, but not the one that takes it, so a module brings its own — and its own protection
-  change too, because the two have to agree. Asking for no access reserves address room without
-  spending the pool. The protection change then takes the memory: it asks the pool first, at that exact
-  address and refusing rather than replacing anything already there, and only falls back to a plain
-  protection change when the range already holds memory. That order matters. A protection change over a
-  reserved range *succeeds* without attaching anything to it, so asking for it first would leave the
-  memory untaken, tell the caller the range is his, and fault on the first write. Both round to whole
-  pages, because the pool refuses any length that is not a multiple of one, while the ordinary call
-  answers a request for a few hundred bytes with a page.
+  change too, because the two have to agree. Asking for no access holds address room without spending
+  the pool. The protection change then asks the device what is behind that address before it does
+  anything: a range carrying no protection at all, and none of the kinds that already hold memory, gets
+  memory mapped over it pinned to the addresses it already holds; every other range, and any range the
+  query cannot report on, gets a plain protection change. Trying one call and watching it fail does not
+  separate the two cases — a protection change over a held-but-empty range *succeeds* and attaches
+  nothing, and a pinned mapping over a live range throws away what it held. Both round to whole pages,
+  because the pool refuses any length that is not a multiple of one, while the ordinary call answers a
+  request for a few hundred bytes with a page.
 - **The module's own address** is reported by reading the image start instruction-relative, which is
   the only way a module can learn where it was placed. The runtime uses that as the handle identifying
   the module, so answering "not found" would register it under a handle no address matches.
@@ -418,7 +477,14 @@ The loader reads the whole file, maps it, applies the relocations, and runs it. 
 
 ## Keeping the heap in bounds
 
-Memory maps are limited, so the heap ceiling matters. Set `ProsperoHeapHardLimitBytes` to the largest
-managed heap the module should use; the value is written into the image through `System.GC.HeapHardLimit`.
+Memory maps are limited, so the heap ceiling matters. `build/Prospero.App.props` sets three properties
+that go into the image as runtime configuration; override any of them per project.
+
+| Property | What it sets | Default |
+|---|---|---|
+| `ProsperoHeapHardLimitBytes` | The managed heap ceiling (`System.GC.HeapHardLimit`). | 268435456 (256 MiB) |
+| `ProsperoHeapRegionRangeBytes` | The address space the collector holds for its regions (`System.GC.RegionRange`). Left unset it asks for five times the ceiling in one unbroken run, which the pool will not hand out, and the collector refuses to start. The figure is used exactly as given, so it has to be a whole number of pages. | 402653184 (384 MiB) |
+| `ProsperoThreadStackBytes` | The stack a runtime thread is created with (`System.Threading.DefaultStackSize`), read as a decimal count of bytes. Left unset a thread gets 64 KiB, which the collector's own threads overrun. | 1048576 (1 MiB) |
+
 Read usage at runtime with `SharpProspero.Memory.HeapMonitor`, and prefer drawing into pre-allocated
 framebuffers and reusing buffers over allocating each frame.

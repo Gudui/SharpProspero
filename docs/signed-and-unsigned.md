@@ -42,8 +42,8 @@ area `0x100` bytes smaller. The tools read a container carrying either one and w
 
 Modules carrying either pairing run, so neither magic is better than the other; what does not appear on
 any module measured is one magic with the other's region length. The tools therefore write the two
-together and never separately, and the build re-wraps a module found in the other shape rather than
-passing it through.
+together and never separately, and the build leaves a module already wrapped in either shape alone rather than
+re-wrapping it.
 
 ### Records the container keeps outside its segments
 
@@ -97,7 +97,8 @@ The `elf` command prints the container line so the form is clear:
 File:      mylib.sprx
 Container: signed (.self / .sprx)
 Class:     ELF64
-Type:      SCE dynamic module
+OS/ABI:    9
+Type:      Dynamic module
 ```
 
 `self --inspect` reports which of the forms a file is, including a retail encrypted container it

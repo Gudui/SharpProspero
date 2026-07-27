@@ -169,6 +169,14 @@ public sealed class XmlWriter(bool indent = false, string indentUnit = "  ")
     {
         foreach (char c in text)
         {
+            // A document cannot carry these at all, escaped or not: the numeric reference for one is as
+            // illegal as the character itself. Writing them produced a document no conforming reader
+            // will load, and the reader here accepted them, so it round-tripped within this SDK and
+            // only came apart somewhere else. Refuse at the point of writing, naming the character.
+            if (char.IsControl(c) && c is not ('\t' or '\n' or '\r'))
+                throw new ArgumentException(
+                    $"A document cannot carry the character U+{(int)c:X4}.", nameof(text));
+
             switch (c)
             {
                 case '&': _sb.Append("&amp;"); break;

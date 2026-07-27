@@ -23,8 +23,9 @@ it once per frame while you keep presenting, then read the result and dispose it
 Every overlay dialog on this page follows the same shape. Opening it brings the shared dialog subsystem
 up, loads the dialog's own module, and starts the dialog, in that order. From there you call `Update`
 once per frame and keep presenting the display, because the dialog only advances when you pump it. When
-`Update` reports the dialog has closed, you read its outcome. Disposing closes the dialog if it is still
-open, shuts it down, and unloads the module.
+`Update` reports the dialog has closed, you read its outcome. Disposing shuts the dialog down and unloads
+its module, except the browser, which leaves its module loaded. The message, error, keyboard and browser
+overlays close the dialog first when it is still open; the save picker leaves that to its shutdown.
 
 ```mermaid
 flowchart LR
@@ -51,7 +52,11 @@ Drive a progress bar with `SetProgress` (0 to 100), and change its caption at an
 ```csharp
 using var progress = MessageDialog.ShowProgress("Installing...");
 while (installing)
+{
     progress.SetProgress(percentDone);
+    progress.Update();
+    display.Present();
+}
 ```
 
 Ask a question with `ShowMessage` and a `MessageDialogButtons` value — `Ok`, `YesNo`, or `OkCancel`.
@@ -106,9 +111,11 @@ if (input.EndStatus == ImeDialogEndStatus.Ok)
     Use(input.Text);
 ```
 
-`Open` centres the keyboard on screen. `maxLength` runs from 1 to 2048 characters. Pass an `ImeType`
-to choose the layout (`Url` for a web address, and so on), a `placeholder` hint, an `initialText`
-value, or `ImeOption.Password` to mask the field. Poll `Update` until it returns
+`Open` centres the keyboard on screen. `maxLength` runs from 1 to 2048 characters and defaults to 128.
+Pass an `ImeType` to choose the layout (`Url` for a web address, and so on), a `placeholder` hint, an
+`initialText` value, or an `ImeOption` — `Password` masks the field, and `Multiline`,
+`NoAutoCapitalization`, `ExternalKeyboard`, `NoLearning`, `FixedPosition` and `DisableCopyPaste` shape
+the rest of its behaviour. Poll `Update` until it returns
 `TextInputState.Finished`, then check `EndStatus`: `ImeDialogEndStatus.Ok` means the user accepted the
 text, which `Text` then returns. `Text` is empty until the keyboard finishes and empty when the user
 cancelled. Defaulting `userId` picks the signed-in user.
@@ -131,7 +138,9 @@ int result = browser.Result();
 ```
 
 `Update` returns `WebBrowserState.Running` or `WebBrowserState.Closed`. Once closed, `Result` reads the
-browser's result code. `Open` takes the URL and an optional user id.
+browser's result code and throws when it cannot be read. `Open` takes the URL and an optional user id;
+left unnamed, it opens for the user the console started with. The browser matches the id against the
+signed-in users, so the system profile is refused — pass a real user id or none at all.
 
 ## The save picker
 
@@ -162,9 +171,11 @@ report a finished install, or show a short message. It is a static call with no 
 Notification.Show("Installed successfully.");
 ```
 
-The message is trimmed to what a single request holds (1023 characters). It also drives the persistent
-banner shown beside the system button. That banner stays up until you take it down, so it suits a
-background task that should stay visible while it runs:
+The message has to fit what a single request holds: 1023 bytes of UTF-8, which is fewer than 1023
+characters for anything outside ASCII. Text that does not fit raises `ArgumentException`, and a refused
+request raises `ProsperoException`. `Notification` also drives the persistent banner shown beside the
+system button. That banner stays up until you take it down, so it suits a background task that should
+stay visible while it runs:
 
 ```csharp
 Notification.ShowPsButtonBanner();   // optional JSON config: ShowPsButtonBanner("{...}")

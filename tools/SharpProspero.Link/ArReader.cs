@@ -8,8 +8,12 @@ using System.Text;
 
 namespace SharpProspero.Link;
 
-/// <summary>One object member of an archive.</summary>
-public readonly record struct ArMember(string Name, byte[] Data);
+/// <summary>
+/// One object member of an archive. <paramref name="IsWholeFile"/> is set when the file handed over was
+/// a bare object rather than an archive, because an object is always taken while a member of an archive
+/// is taken only when something still wants a name it defines.
+/// </summary>
+public readonly record struct ArMember(string Name, byte[] Data, bool IsWholeFile = false);
 
 /// <summary>
 /// Reads a System V <c>ar</c> archive into its object members. It skips the symbol index and resolves
@@ -26,9 +30,9 @@ public static class ArReader
     {
         ArgumentNullException.ThrowIfNull(data);
 
-        // A bare ELF object (some stub libraries) is a single member.
+        // A bare ELF object (some stub libraries) is a single member, and is the whole file.
         if (data.Length >= 4 && System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(data) == ElfMagic)
-            return [new ArMember(origin, data)];
+            return [new ArMember(origin, data, IsWholeFile: true)];
 
         if (data.Length < 8 || Encoding.ASCII.GetString(data, 0, 8) != Magic)
             throw new ElfLinkException($"{origin}: not an archive.");

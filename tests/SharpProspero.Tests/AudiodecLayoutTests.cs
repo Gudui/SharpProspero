@@ -76,7 +76,8 @@ public sealed unsafe class AudiodecLayoutTests
         Assert.Equal(2u, (uint)AudiodecCodecType.Mp3);
         Assert.Equal(3u, (uint)AudiodecCodecType.M4Aac);
 
-        Assert.Equal(0, (int)AudiodecWordSize.Signed24);
+        // Two forms, not three. A third was offered under the value that means none at all, and every
+        // decoder refuses it - the form is the one field they each check first.
         Assert.Equal(1, (int)AudiodecWordSize.Signed16);
         Assert.Equal(2, (int)AudiodecWordSize.Float);
 

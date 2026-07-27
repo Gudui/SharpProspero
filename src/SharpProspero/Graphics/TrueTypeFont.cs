@@ -4,6 +4,7 @@
 using SharpProspero.Interop;
 using SharpProspero.Interop.Font;
 using System;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
 namespace SharpProspero.Graphics;
@@ -31,7 +32,7 @@ public sealed unsafe class TrueTypeFont : IDisposable, ITextFont
 
     // A scratch buffer the renderer draws each glyph into; its output is discarded, since the coverage
     // image the render returns is what gets composited.
-    private uint* _scratch;
+    private byte* _scratch;
     private int _scratchDim;
 
     // A ceiling on the render size, so the scratch dimension and its allocation cannot overflow. It is
@@ -64,6 +65,29 @@ public sealed unsafe class TrueTypeFont : IDisposable, ITextFont
         }
     }
 
+
+    // What the font engine allocates through. It is held in one place for the life of the process
+    // because the engine keeps the address it is given and calls back through it later.
+    private static SceFontMemoryInterface _allocator = new()
+    {
+        Malloc = &FontMalloc,
+        Free = &FontFree,
+        Realloc = &FontRealloc,
+        Calloc = &FontCalloc,
+    };
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static void* FontMalloc(void* _, uint size) => NativeMemory.Alloc(size);
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static void FontFree(void* _, void* block) => NativeMemory.Free(block);
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static void* FontRealloc(void* _, void* block, uint size) => NativeMemory.Realloc(block, size);
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static void* FontCalloc(void* _, uint count, uint size) => NativeMemory.AllocZeroed(count, size);
+
     /// <summary>
     /// Loads a font from the bytes of a <c>.ttf</c> or <c>.otf</c> file and sets its pixel size.
     /// </summary>
@@ -77,7 +101,7 @@ public sealed unsafe class TrueTypeFont : IDisposable, ITextFont
             throw new ArgumentException("The font file is empty.", nameof(fontFile));
         ArgumentOutOfRangeException.ThrowIfLessThan(memoryBudgetBytes, 256 * 1024);
 
-        // Allocate the three native buffers up front. The block is allocated first; if either of the
+        // Allocate the three unmanaged buffers up front. The block is allocated first; if either of the
         // others fails, everything allocated so far is freed here, since the object that would own them
         // in its Dispose has not been created yet.
         void* block = NativeMemory.Alloc((nuint)memoryBudgetBytes);
@@ -102,9 +126,15 @@ public sealed unsafe class TrueTypeFont : IDisposable, ITextFont
         var font = new TrueTypeFont(block, memory, fontData);
         try
         {
-            SceResult.ThrowIfFailed(
-                SceFont.sceFontMemoryInit(memory, block, (uint)memoryBudgetBytes, null, null, null, null),
-                nameof(SceFont.sceFontMemoryInit));
+            // The engine allocates through the routines it is handed rather than out of a block, and a
+            // renderer or library created against it refuses to be created at all unless at least the
+            // two that allocate and release are there. Handing it none was accepted here and refused at
+            // the creation, so the font could never be opened. The block goes unused, as it does in the
+            // reference: the size is given as nothing and the routines do the allocating.
+            fixed (SceFontMemoryInterface* allocator = &_allocator)
+                SceResult.ThrowIfFailed(
+                    SceFont.sceFontMemoryInit(memory, null, 0, allocator, null, null, null),
+                    nameof(SceFont.sceFontMemoryInit));
 
             void* rendererSelection = SceFontFt.sceFontSelectRendererFt(0);
             void* renderer;
@@ -145,10 +175,27 @@ public sealed unsafe class TrueTypeFont : IDisposable, ITextFont
     }
 
     /// <summary>
-    /// The distance, in pixels, from one line of text to the next. This leaves the usual gap above and
-    /// below the glyphs so wrapped paragraphs do not touch.
+    /// The distance, in pixels, from one line of text to the next, as the font itself gives it.
     /// </summary>
-    public int LineHeight => (int)((_pixelSize * 1.2f) + 0.5f);
+    public int LineHeight => (int)(Layout().LineHeight + 0.5f);
+
+    /// <summary>
+    /// The distance, in pixels, from the top of a line down to its baseline, as the font itself gives
+    /// it. <see cref="DrawText"/> adds this so a caller works in line tops; <see cref="DrawTextOnBaseline"/>
+    /// does not.
+    /// </summary>
+    public int BaselineOffset => (int)(Layout().BaseLineY + 0.5f);
+
+    // What the font says about how its lines stack. Read each time rather than kept, because setting a
+    // new size changes it.
+    private SceFontHorizontalLayout Layout()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        SceFontHorizontalLayout layout = default;
+        SceResult.ThrowIfFailed(
+            SceFont.sceFontGetHorizontalLayout(_fontHandle, &layout), nameof(SceFont.sceFontGetHorizontalLayout));
+        return layout;
+    }
 
     /// <summary>The width, in pixels, that <paramref name="text"/> occupies at the current size.</summary>
     /// <exception cref="ProsperoException">A glyph's metrics could not be read.</exception>
@@ -167,10 +214,20 @@ public sealed unsafe class TrueTypeFont : IDisposable, ITextFont
 
     /// <summary>
     /// Draws <paramref name="text"/> onto <paramref name="surface"/> in <paramref name="color"/>, with
-    /// (<paramref name="x"/>, <paramref name="y"/>) at the left end of the text baseline.
+    /// (<paramref name="x"/>, <paramref name="y"/>) at the top-left of the line, which is where every
+    /// other font here puts it and what the layout helpers assume.
     /// </summary>
     /// <exception cref="ProsperoException">A glyph could not be rendered.</exception>
     public void DrawText(Surface surface, ReadOnlySpan<char> text, int x, int y, Color color)
+        => DrawTextOnBaseline(surface, text, x, y + BaselineOffset, color);
+
+    /// <summary>
+    /// Draws <paramref name="text"/> onto <paramref name="surface"/> in <paramref name="color"/>, with
+    /// (<paramref name="x"/>, <paramref name="y"/>) at the left end of the text baseline, which is how
+    /// the font engine itself places text.
+    /// </summary>
+    /// <exception cref="ProsperoException">A glyph could not be rendered.</exception>
+    public void DrawTextOnBaseline(Surface surface, ReadOnlySpan<char> text, int x, int y, Color color)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         float penX = x;
@@ -179,37 +236,41 @@ public sealed unsafe class TrueTypeFont : IDisposable, ITextFont
             SceFontGlyphMetrics metrics = default;
             SceFontRenderResult result = default;
             SceFontRenderSurface renderSurface = default;
-            SceFont.sceFontRenderSurfaceInit(&renderSurface, _scratch, _scratchDim * 4, 4, _scratchDim, _scratchDim);
+            // One byte per pixel: the render writes coverage, not colour. The scratch is cleared first
+            // because the render touches only the pixels the glyph covers.
+            new Span<byte>(_scratch, _scratchDim * _scratchDim).Clear();
+            SceFont.sceFontRenderSurfaceInit(&renderSurface, _scratch, _scratchDim, 1, _scratchDim, _scratchDim);
             SceFont.sceFontRenderSurfaceSetScissor(&renderSurface, 0, 0, (uint)_scratchDim, (uint)_scratchDim);
 
-            // The pen sits inside the scratch surface with room above the baseline for the ascent; the
-            // coverage image the render returns is what is composited, so the scratch draw is discarded.
+            // The pen sits inside the scratch surface with room above the baseline for the ascent and
+            // to the left for a glyph that leans back over it.
+            float scratchPenX = _scratchDim * 0.25f, scratchPenY = _scratchDim * 0.75f;
             int rc = SceFont.sceFontRenderCharGlyphImageHorizontal(
-                _fontHandle, c, &renderSurface, _scratchDim * 0.25f, _scratchDim * 0.75f, &metrics, &result);
+                _fontHandle, c, &renderSurface, scratchPenX, scratchPenY, &metrics, &result);
             if (SceResult.Failed(rc))
                 continue;
 
-            if (result.TransImage != null && result.TransImage->Address != null)
-                CompositeCoverage(surface, result, color, (int)(penX + 0.5f), y);
+            CompositeCoverage(surface, result, color,
+                (int)(penX + 0.5f) - (int)scratchPenX, y - (int)scratchPenY);
 
             penX += result.ImageMetrics.Advance != 0f ? result.ImageMetrics.Advance : metrics.HorizontalAdvance;
         }
     }
 
-    // Blends one glyph's 8-bit coverage over the surface in the chosen color, placed relative to the
-    // pen and baseline by the glyph's bearings.
-    private static void CompositeCoverage(Surface surface, SceFontRenderResult result, Color color, int penX, int baselineY)
+    // Blends one glyph's coverage over the surface in the chosen color. The render reports where in the
+    // scratch it wrote, as a pointer to the first covered pixel and the size of the region, so the
+    // placement is that position carried across to the target - the bearings are already in it.
+    private static void CompositeCoverage(Surface surface, SceFontRenderResult result, Color color, int originX, int originY)
     {
-        SceFontTransImage* image = result.TransImage;
-        int width = (int)image->ImageWidth;
-        int height = (int)image->ImageHeight;
-        if (width <= 0 || height <= 0)
+        int width = (int)result.UpdateW;
+        int height = (int)result.UpdateH;
+        byte* coverage = result.SurfaceImage.Address;
+        if (width <= 0 || height <= 0 || coverage == null)
             return;
 
-        int pitch = (int)image->WidthByte;
-        byte* coverage = image->Address;
-        int left = penX + (int)(result.ImageMetrics.BearingX + 0.5f);
-        int top = baselineY - (int)(result.ImageMetrics.BearingY + 0.5f);
+        int pitch = (int)result.SurfaceImage.WidthByte;
+        int left = originX + (int)result.UpdateX;
+        int top = originY + (int)result.UpdateY;
         uint rgb = color.Value & 0x00FFFFFFu;
 
         for (int row = 0; row < height; row++)
@@ -237,8 +298,8 @@ public sealed unsafe class TrueTypeFont : IDisposable, ITextFont
         if (dim <= _scratchDim && _scratch != null)
             return;
         // Allocate the new buffer before freeing the old one, so a failed allocation leaves the current
-        // buffer intact rather than dangling.
-        var buffer = (uint*)NativeMemory.Alloc((nuint)((long)dim * dim * 4));
+        // buffer intact rather than dangling. One byte per pixel: what is rendered here is coverage.
+        var buffer = (byte*)NativeMemory.Alloc((nuint)((long)dim * dim));
         if (_scratch != null)
             NativeMemory.Free(_scratch);
         _scratch = buffer;

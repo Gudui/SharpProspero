@@ -6,8 +6,9 @@ using System;
 namespace SharpProspero.Buffers;
 
 /// <summary>
-/// A fixed-capacity byte queue for staging a stream: audio samples between a producer and the audio port,
-/// bytes read off a socket before a whole message has arrived, a decoder's output waiting to be consumed.
+/// A fixed-capacity byte queue that holds a stream in transit: audio samples between a producer and
+/// the audio port, bytes read off a socket before a whole message has arrived, a decoder's output
+/// waiting to be consumed.
 /// Unlike <see cref="RingBuffer{T}"/> it does not overwrite; a write stores only what fits and reports how
 /// much it took, so a caller can apply back-pressure.
 /// </summary>

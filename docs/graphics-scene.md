@@ -59,11 +59,13 @@ level.Draw(surface, sheet, camera);
 ```
 
 `Draw` reads `VisibleWorldBounds` from the camera and only touches the cells inside it, so the cost follows
-the size of the screen, not the size of the map. Empty cells, and any cell whose value falls outside the
-sheet, are skipped.
+the size of the screen, not the size of the map. It scales each tile to the camera's `Zoom` as it draws:
+zooming in makes tiles larger and shows less of the map, zooming out shows more of it at a smaller size.
+Empty cells, and any cell whose value falls outside the sheet, are skipped.
 
-What counts as solid is your call, passed to `Collides` as a test on the tile number. The same map drives
-both the look and the collision:
+What counts as solid is your call, passed to `Collides` as a test on the tile number. Empty cells never
+reach the test — they are always open — so the test only has to answer for tiles that are actually there.
+The same map drives both the look and the collision:
 
 ```csharp
 // tiles numbered 16 and up are walls:

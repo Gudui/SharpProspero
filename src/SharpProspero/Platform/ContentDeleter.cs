@@ -29,17 +29,21 @@ public sealed unsafe class ContentDeleter : IDisposable
     private ContentDeleter() { }
 
     /// <summary>
-    /// Starts the content-delete service. <paramref name="heapSize"/> is the working heap the service
-    /// uses; the default suits ordinary deletion.
+    /// The working heap the service is started with. It is not a size to choose: the service compares
+    /// what it is given against this exact figure and refuses anything else, then allocates this much
+    /// regardless. Asking for more was refused every time, so the service could never be started.
     /// </summary>
+    public const int HeapSize = 16 * 1024;
+
+    /// <summary>Starts the content-delete service.</summary>
     /// <exception cref="ProsperoException">The service could not be started.</exception>
-    public static ContentDeleter Open(int heapSize = 256 * 1024)
+    public static ContentDeleter Open()
     {
         SceResult.ThrowIfFailed(
             Sysmodule.sceSysmoduleLoadModule((ushort)SystemModuleId.ContentDelete),
             "sceSysmoduleLoadModule(ContentDelete)");
 
-        var param = new SceContentDeleteInitParam { HeapSize = (nuint)heapSize };
+        var param = new SceContentDeleteInitParam { HeapSize = HeapSize };
         SceResult.ThrowIfFailed(Native.sceContentDeleteInitialize(&param), nameof(Native.sceContentDeleteInitialize));
         return new ContentDeleter();
     }

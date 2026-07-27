@@ -66,11 +66,21 @@ public sealed class CompatEmitterTests
 
         // Both memory answers must reach the pool rather than report a number of their own, and they
         // are different questions: how much this module may have, and how much of it is still free.
-        // The free one was left unanswered, so the caller took the refusal for a count and sized itself
-        // against sixteen million million pages.
+        // Neither may answer -1. The caller asking how much memory there is compares the answer against
+        // -1 and refuses to start the runtime at all when it matches - which surfaces only as the module
+        // reporting a non-zero result from its entry, with nothing to say why. The caller asking how
+        // much is free does not check at all and reads -1 as sixteen million million pages.
         Assert.Equal(
             ["sceKernelConfiguredFlexibleMemorySize", "sceKernelAvailableFlexibleMemorySize"],
             CallsOf(obj, "sysconf"));
+        // The figure used when neither can answer is a fixed cautious one, deliberately not the
+        // machine's own memory size: the pages the collector gets come from the pool this module maps
+        // out of, a small fraction of what the machine has, so the larger figure would size every
+        // decision above it against memory the module can never reach.
+        Assert.DoesNotContain("sceKernelGetDirectMemorySize", CallsOf(obj, "sysconf"));
+        ElfSymbol sysconfSym = Assert.Single(obj.Symbols, s => s.Name == "sysconf" && !s.IsUndefined);
+        Assert.False(Holds(obj, sysconfSym, [0x48, 0xC7, 0xC0, 0xFF, 0xFF, 0xFF, 0xFF, 0xC9]),
+            "sysconf still refuses a memory question, which stops the runtime from starting");
     }
 
     [Fact]
@@ -115,7 +125,9 @@ public sealed class CompatEmitterTests
         var calls = obj.Relocations[f.SectionIndex]
             .Where(r => r.Offset > f.Value && r.Offset < f.Value + f.Size)
             .Select(r => obj.Symbols[(int)r.SymbolIndex].Name).ToList();
-        Assert.Equal(["nanosleep", "clock_gettime", "nanosleep", "__error"], calls);
+        // The reason is read through the translating thunk, not the device's own place, so what comes
+        // back is the number the caller was compiled to compare against.
+        Assert.Equal(["nanosleep", "clock_gettime", "nanosleep", "__errno_location"], calls);
 
         // The flag is tested in the low byte of the second argument, which needs the wider encoding -
         // without it the byte tested belongs to a different register entirely.
@@ -165,9 +177,7 @@ public sealed class CompatEmitterTests
     {
         // No library the toolchain links against publishes the call that takes memory, so this object
         // brings its own; it hands back address space with nothing behind it, and the protection change
-        // is what puts memory there. Two things decide whether that works. Room has to be held as pool
-        // room - the other way of holding addresses marks the range as holding nothing, and no memory
-        // can ever be put behind it. And the protection change cannot pick its call by trying one and
+        // is what puts memory there. The protection change cannot pick its call by trying one and
         // watching it fail: a protection change over a held-but-empty range succeeds and attaches
         // nothing. So the range is asked about first, and its answer picks the call.
         ElfObject obj = Read();
@@ -177,49 +187,260 @@ public sealed class CompatEmitterTests
         var mmapCalls = obj.Relocations[mmap.SectionIndex]
             .Where(r => r.Offset > mmap.Value && r.Offset < mmap.Value + mmap.Size)
             .Select(r => obj.Symbols[(int)r.SymbolIndex].Name).ToList();
-        // Three calls, because asking for no access is two different requests. Pinned to an address the
-        // caller already holds it is a release, and answering that with a reservation releases nothing
-        // and cannot succeed either, since those addresses are taken - so the memory would stay held for
-        // as long as the module ran. Unpinned it is a request for room, whether or not an address is
-        // suggested. With access asked for it is an ordinary mapping.
-        Assert.Equal(
-            ["sceKernelMemoryPoolDecommit", "sceKernelMemoryPoolReserve", "sceKernelMapFlexibleMemory"],
-            mmapCalls);
+        // Two calls, chosen by whether any access was asked for. None means addresses are wanted and
+        // nothing behind them, which is one call and covers both holding a fresh range and giving the
+        // memory behind one back - mapping room over a range pinned releases what was there and leaves
+        // the addresses held. Access asked for means memory out of the flexible budget.
+        Assert.Equal(["sceKernelReserveVirtualRange", "sceKernelMapFlexibleMemory"], mmapCalls);
+        // The pool answers neither: it hands out room carved from memory already put into it, and it
+        // starts empty, so the collector's first reservation - larger than anything the module had
+        // asked for - was refused before the runtime could start.
+        Assert.DoesNotContain("sceKernelMemoryPoolReserve", mmapCalls);
 
         var protCalls = obj.Relocations[mprotect.SectionIndex]
             .Where(r => r.Offset > mprotect.Value && r.Offset < mprotect.Value + mprotect.Size)
             .Select(r => obj.Symbols[(int)r.SymbolIndex].Name).ToList();
         Assert.Equal([
             "sceKernelVirtualQuery",          // what is behind this address?
-            "sceKernelMemoryPoolCommit",      // nothing: put memory behind it
-            "sceKernelGetDirectMemorySize",   // refused: the pool may simply be empty
-            "sceKernelMemoryPoolExpand",      // so grow it
-            "sceKernelMemoryPoolCommit",      // and commit again
-            "sceKernelMapFlexibleMemory",     // never held as pool room: take it outright
-            "sceKernelMprotect",              // memory is there: protection only
+            "sceKernelMapFlexibleMemory",     // nothing yet: put memory behind it, pinned
+            "sceKernelMprotect",              // anything else: protection only, nothing moves
         ], protCalls);
 
-        // Two bits of the report decide this, not one. The filled bit alone does not mean memory is
-        // behind the address: for a range that is neither pool room nor machine memory it reports
-        // whether the range is pinned, and ordinary memory never is. Reading it alone calls a live
-        // range empty, and placing memory over a live range loses what it held. Only pool room that is
-        // not yet filled - the fourth bit set and the fifth clear - takes that step.
-        Assert.True(Holds(obj, mprotect, [0x0F, 0xB6, 0x45, 0xC0]), "mprotect does not read the report");
-        Assert.True(Holds(obj, mprotect, [0x83, 0xE0, 0x18]), "mprotect does not mask both bits");
-        Assert.True(Holds(obj, mprotect, [0x83, 0xF8, 0x08]), "mprotect does not require pool room");
-        // A reserved range is filled by committing to it, as processor-visible memory.
-        Assert.True(Holds(obj, mprotect, [0xBA, 0x0B, 0x00, 0x00, 0x00]),
-            "mprotect does not commit the range as processor memory");
-        // A range that was never reserved is taken from the pool, held at that exact address.
-        Assert.True(Holds(obj, mprotect, [0xB9, 0x10, 0x00, 0x00, 0x00]),
-            "mprotect does not take the memory at the address it was given");
-
-        // Both round the length to whole pages, and the change also moves back to a page boundary.
-        byte[] roundLength = [0x48, 0x81, 0xE6, 0x00, 0xC0, 0xFF, 0xFF];    // and rsi, -16384
+        // The mapping call reads two registers past the ones it takes and refuses the request outright
+        // when the first of them holds anything above three. Reached from the ordinary call that
+        // register still holds the caller's file - which is -1 where no file backs the mapping - so
+        // every request for memory was turned away before it arrived, and nothing said so. Both places
+        // that ask for memory clear it first.
         foreach (ElfSymbol f in (ElfSymbol[])[mmap, mprotect])
-            Assert.True(Holds(obj, f, roundLength), $"{f.Name} does not round its length to whole pages");
+            Assert.True(Holds(obj, f, [0x45, 0x31, 0xC0]),          // xor r8d, r8d
+                $"{f.Name} does not clear the register the mapping call reads past its arguments");
+        // The second of the two is read whenever no address was named, which is every request that lets
+        // the system choose, and one range of values moves the mapping into a region kept for the
+        // system. Only the call that can be reached without an address has to clear it.
+        Assert.True(Holds(obj, mmap, [0x45, 0x31, 0xC9]),           // xor r9d, r9d
+            "mmap does not clear the second register the mapping call reads past its arguments");
+
+        // Two things have to agree before memory is placed over a range, because placing it replaces
+        // whatever was there: a range whose addresses are merely held carries no protection at all, and
+        // is none of the kinds that already have something behind them. Either one alone would call a
+        // live range empty - this module's own data, say, whose protection the runtime changes while it
+        // starts - and placing memory over that loses what it held.
+        Assert.True(Holds(obj, mprotect, [0x8B, 0x45, 0xB8]),       // mov eax, [rbp-72]
+            "mprotect does not read the protection out of the report");
+        Assert.True(Holds(obj, mprotect, [0x0F, 0xB6, 0x45, 0xC0]), // movzbl [rbp-64], eax
+            "mprotect does not read what kind of range the report describes");
+        Assert.True(Holds(obj, mprotect, [0xA8, 0x0F]),             // test al, 15
+            "mprotect does not rule out every kind of range that is already backed");
+
+        // A range nothing could report on must never have memory placed over it either. Asking for the
+        // protection change is the safe answer: the platform refuses it if the range is not real, and
+        // nothing is lost either way. The report is asked for before anything else happens.
+        Assert.Equal("sceKernelVirtualQuery", protCalls[0]);
+
+        // Whole pages are enough for both. Rounding to the larger unit the pool is carved in was only
+        // ever needed because memory came from the pool, and it made the smallest request the collector
+        // makes four times larger than it asked for.
+        byte[] roundToBlock = [0x48, 0x81, 0xE6, 0x00, 0x00, 0xFF, 0xFF];   // and rsi, -65536
+        foreach (ElfSymbol f in (ElfSymbol[])[mmap, mprotect])
+            Assert.False(Holds(obj, f, roundToBlock), $"{f.Name} still rounds to whole blocks");
+        Assert.True(Holds(obj, mmap, [0x48, 0x81, 0xE6, 0x00, 0xC0, 0xFF, 0xFF]),
+            "mmap does not round the length to whole pages");
+        Assert.True(Holds(obj, mprotect, [0x48, 0x81, 0xE6, 0x00, 0xC0, 0xFF, 0xFF]),
+            "mprotect no longer rounds to whole pages for the protection change");
         Assert.True(Holds(obj, mprotect, [0x48, 0x81, 0xE7, 0x00, 0xC0, 0xFF, 0xFF]),
             "mprotect does not move back to a page boundary");
+    }
+
+    [Fact]
+    public void ThreadAttributesStayInsideTheFourBytesTheCallerReserved()
+    {
+        // An attribute object is a single word on this platform and four bytes to the runtime, so it
+        // is the one object of its kind where the platform writes MORE than was reserved. Letting the
+        // platform fill one put the upper half of an address it owns onto whatever the compiler had
+        // placed next, which was the value guarding the return address; the routine then ran to the
+        // end and died reporting a damaged frame, several calls away from the write that did it.
+        //
+        // So an attribute object never reaches the platform. It holds the setting itself, written four
+        // bytes at a time, and the routines that consume it build the platform's own on their frame.
+        ElfObject obj = Read();
+
+        foreach (string name in (string[])["pthread_condattr_init", "pthread_mutexattr_init"])
+        {
+            ElfSymbol f = Assert.Single(obj.Symbols, s => s.Name == name && !s.IsUndefined);
+            // mov dword [rdi], setting - four bytes wide, not eight
+            Assert.True(Holds(obj, f, [0xC7, 0x07]), $"{name} does not write the setting as four bytes");
+            Assert.False(Holds(obj, f, [0x48, 0xC7, 0x07]), $"{name} writes eight bytes over four");
+        }
+        foreach (string name in (string[])["pthread_condattr_setclock", "pthread_mutexattr_settype"])
+        {
+            ElfSymbol f = Assert.Single(obj.Symbols, s => s.Name == name && !s.IsUndefined);
+            Assert.True(Holds(obj, f, [0x89, 0x37]), $"{name} does not keep the setting as four bytes");
+            Assert.False(Holds(obj, f, [0x48, 0x89, 0x37]), $"{name} writes eight bytes over four");
+        }
+
+        // None of the four hands the caller's object to the platform, which is the whole point.
+        foreach (string name in (string[])["pthread_condattr_init", "pthread_condattr_setclock",
+                                           "pthread_condattr_destroy", "pthread_mutexattr_init",
+                                           "pthread_mutexattr_settype", "pthread_mutexattr_destroy"])
+        {
+            ElfSymbol f = Assert.Single(obj.Symbols, s => s.Name == name && !s.IsUndefined);
+            Assert.DoesNotContain(obj.Relocations[f.SectionIndex],
+                r => r.Offset >= f.Value && r.Offset < f.Value + f.Size);
+        }
+
+        // The two that consume the attributes build the platform's own, apply the setting, use it and
+        // release it - so the setting still arrives without the caller's four bytes ever holding one.
+        ElfSymbol cond = Assert.Single(obj.Symbols, s => s.Name == "pthread_cond_init" && !s.IsUndefined);
+        Assert.Equal([
+            "scePthreadCondattrInit",
+            "scePthreadCondattrSetclock",   // the clock, translated to this platform's numbering
+            "scePthreadCondInit",
+            "scePthreadCondattrDestroy",
+        ], obj.Relocations[cond.SectionIndex]
+            .Where(r => r.Offset > cond.Value && r.Offset < cond.Value + cond.Size)
+            .Select(r => obj.Symbols[(int)r.SymbolIndex].Name)
+            .Where(n => n.StartsWith("scePthread")).ToList());
+
+        ElfSymbol mutex = Assert.Single(obj.Symbols, s => s.Name == "pthread_mutex_init" && !s.IsUndefined);
+        Assert.Equal([
+            "scePthreadMutexattrInit",
+            "scePthreadMutexattrSettype",
+            "scePthreadMutexInit",
+            "scePthreadMutexattrDestroy",
+        ], obj.Relocations[mutex.SectionIndex]
+            .Where(r => r.Offset > mutex.Value && r.Offset < mutex.Value + mutex.Size)
+            .Select(r => obj.Symbols[(int)r.SymbolIndex].Name)
+            .Where(n => n.StartsWith("scePthread")).ToList());
+
+        // Both read the caller's setting four bytes at a time, and both name the object they build
+        // rather than leaving the platform to read an address out of a register it was not given.
+        foreach (ElfSymbol f in (ElfSymbol[])[cond, mutex])
+        {
+            Assert.True(Holds(obj, f, [0x44, 0x8B, 0x26]), $"{f.Name} does not read the setting as four bytes");
+            Assert.True(Holds(obj, f, [0x48, 0x8D, 0x7D, 0xE8]), $"{f.Name} does not build attributes on its own frame");
+        }
+
+        // The kinds of mutex run the other way round here, so one is the other subtracted from three.
+        // Passing the caller's numbering straight through would have asked for a re-entrant mutex
+        // where an ordinary one was wanted, and a checked one where a re-entrant one was.
+        Assert.True(Holds(obj, mutex, [0xBE, 0x03, 0x00, 0x00, 0x00]), "mutex kinds are not mirrored");
+        Assert.True(Holds(obj, mutex, [0x44, 0x29, 0xE6]), "mutex kinds are not mirrored");
+    }
+
+    [Fact]
+    public void ARefusalSaysWhyItRefused()
+    {
+        // A refusal that only answers -1 inherits whatever number the last call to anything left where
+        // the runtime reads its errors. That matters because callers do not merely test the result:
+        // many wrap the call in a loop that retries for as long as that number says the call was
+        // interrupted. A stale interrupted-number therefore turns a refusal into a loop that retries a
+        // call whose answer can never change, with no system call in it to slow it down - a module
+        // that starts, stops responding, and burns a processor doing it, which is indistinguishable
+        // from every other kind of freeze. Every refusal now says there is no such routine.
+        ElfObject obj = Read();
+
+        ElfSymbol setter = Assert.Single(obj.Symbols, s => s.Name == "__sp_set_errno" && !s.IsUndefined);
+        Assert.Equal(["__error", "__sp_errno_written"], CallsOf(obj, "__sp_set_errno"));
+        // It writes the runtime's own word, and clears the platform's place on the way. Without the
+        // clearing, a failure the platform recorded earlier that nobody read would be taken as news on
+        // the next read and translated over the number just written.
+        Assert.True(Holds(obj, setter, [0x89, 0x1A]), "the number is not written into the runtime's word");
+        Assert.True(Holds(obj, setter, [0xC7, 0x00, 0x00, 0x00, 0x00, 0x00]),
+            "the platform's place is left holding something the next read would take as news");
+
+        // Both shapes of refusal go through it, and both still answer -1 afterwards.
+        foreach (string name in (string[])["poll", "ioctl", "chdir", "link", "symlink", "getrlimit"])
+        {
+            ElfSymbol f = Assert.Single(obj.Symbols, s => s.Name == name && !s.IsUndefined);
+            Assert.Contains("__sp_set_errno", CallsOf(obj, name));
+            Assert.True(Holds(obj, f, [0xBF, 38, 0x00, 0x00, 0x00]),
+                $"{name} does not say there is no such routine");
+        }
+        // The wide refusal fills the whole register, so a caller comparing all 64 bits of a pointer or
+        // a count does not read the refusal as a large positive number and take it for a success.
+        ElfSymbol wide = Assert.Single(obj.Symbols, s => s.Name == "__getdelim" && !s.IsUndefined);
+        Assert.True(Holds(obj, wide, [0x48, 0xC7, 0xC0, 0xFF, 0xFF, 0xFF, 0xFF]),
+            "the wide refusal no longer fills the whole register");
+        Assert.Contains("__sp_set_errno", CallsOf(obj, "__getdelim"));
+
+        // An entry that reports failure by answering nothing needs the same reason behind it, and one
+        // of those sits inside a retry loop like the rest.
+        foreach (string name in (string[])["realpath", "mkdtemp"])
+            Assert.Contains("__sp_set_errno", CallsOf(obj, name));
+        // Asking for a name that is not set is an ordinary answer rather than a failure, and the two
+        // that load code report why through a call of their own, so those leave the number alone.
+        foreach (string name in (string[])["getenv", "dlopen", "dlsym"])
+            Assert.DoesNotContain("__sp_set_errno", CallsOf(obj, name));
+    }
+
+    [Fact]
+    public void TheMessageForAnErrorComesBackAsTextRatherThanANumber()
+    {
+        // Both sides publish this name and disagree on what it answers. The runtime hands the answer
+        // straight on as text; this platform answers zero when it filled the buffer and an error
+        // number when it could not, which is what it does for any buffer of twenty-two bytes or fewer.
+        // So a caller with a small buffer was handed the number thirty-four and read it as an address.
+        // Nothing caught it because the one caller in the runtime always passes a thousand bytes,
+        // which always succeeds and always answers zero - and zero reads as "no message", which is
+        // handled. The number also has to go back the way it came, or the message describes a
+        // different error than the one asked about.
+        ElfObject obj = Read();
+        ElfSymbol f = Assert.Single(obj.Symbols, s => s.Name == "strerror_r" && !s.IsUndefined);
+        Assert.Equal(["__sp_device_strerror_r", "__sp_platform_error_numbers"], CallsOf(obj, "strerror_r"));
+        Assert.NotEqual(0xE9, obj.Sections[f.SectionIndex].Data[(int)f.Value]);   // no longer a bare jump
+        Assert.True(Holds(obj, f, [0x48, 0x89, 0xD8]), "the buffer is not what comes back");
+        Assert.True(Holds(obj, f, [0xC6, 0x03, 0x00]), "a buffer it could not fill is left as it was");
+
+        // And the numbering read the other way round, so a number going back to the platform means
+        // there what it meant here. The two that trade places are the ones that catch a reader out.
+        ElfSymbol table = Assert.Single(obj.Symbols, s => s.Name == "__sp_platform_error_numbers");
+        byte[] data = obj.Sections[table.SectionIndex].Data;
+        int at = (int)table.Value;
+        Assert.Equal(256, (int)table.Size);
+        foreach ((byte runtime, byte device) in (ValueTuple<byte, byte>[])
+                 [(0, 0), (35, 11), (11, 35), (22, 22), (110, 60), (38, 78), (95, 45)])
+            Assert.True(data[at + runtime] == device,
+                $"the runtime's {runtime} should read as the platform's {device}, not {data[at + runtime]}");
+    }
+
+    [Fact]
+    public void AHintAboutMemoryIsTranslatedAndOneAboutThreadsIsAnswered()
+    {
+        ElfObject obj = Read();
+
+        // The two sides agree on the first five hints about a range of memory and part company after.
+        // The one the collector leans on - done with these pages, their contents are junk, take them
+        // back - is the eighth number to the runtime and the fifth here, and the eighth here means
+        // keep these pages out of the record written when the module dies. Passing it through did both
+        // wrong things at once: the collector was told its memory had been taken back when it had not,
+        // so a heap that should shrink after every collection only grew; and every range it asked
+        // about was struck from the record that is the one place answers to questions like this come
+        // from. So the hint is translated, and one with no counterpart is answered rather than passed.
+        ElfSymbol adv = Assert.Single(obj.Symbols, s => s.Name == "madvise" && !s.IsUndefined);
+        Assert.Equal(["__sp_memory_advice", "__sp_device_madvise"], CallsOf(obj, "madvise"));
+        Assert.True(Holds(obj, adv, [0x83, 0xFA, 9]), "madvise does not bound the hint before indexing");
+        Assert.True(Holds(obj, adv, [0x80, 0xFA, 0xFF]), "madvise passes on a hint with no counterpart");
+
+        // And the numbering itself: the first five carry over unchanged, the eighth becomes the fifth,
+        // and everything else is marked as having no counterpart here.
+        ElfSymbol table = Assert.Single(obj.Symbols, s => s.Name == "__sp_memory_advice");
+        byte[] hints = obj.Sections[table.SectionIndex].Data
+            .AsSpan((int)table.Value, (int)table.Size).ToArray();
+        Assert.Equal([0, 1, 2, 3, 4, 0xFF, 0xFF, 0xFF, 5], hints);
+
+        // The runtime asks for a thread's own number through the general entry, keeps what it is told,
+        // and files each thread under it. Refusing gave every thread the same number, so a later
+        // lookup answered with whichever thread was filed first - and what is done with that answer is
+        // to record where a thread was interrupted and to walk its memory for what is still in use.
+        ElfSymbol sc = Assert.Single(obj.Symbols, s => s.Name == "syscall" && !s.IsUndefined);
+        Assert.Equal(["__sp_set_errno", "scePthreadGetthreadid"], CallsOf(obj, "syscall"));
+        Assert.True(Holds(obj, sc, [0x81, 0xFF, 186, 0x00, 0x00, 0x00]),
+            "syscall does not single out the request for a thread's own number");
+        // Everything else it is asked for stays refused. One of those is how the runtime asks whether
+        // the machine offers a cheaper way to make one thread's writes visible to the rest; a refusal
+        // is what makes it choose the way that works here.
+        Assert.True(Holds(obj, sc, [0x48, 0xC7, 0xC0, 0xFF, 0xFF, 0xFF, 0xFF]),
+            "syscall no longer refuses the rest");
     }
 
     [Fact]
@@ -248,11 +469,12 @@ public sealed class CompatEmitterTests
         ];
         foreach (string name in expected)
             Assert.Contains(name, defined);
-        // The system queries nothing publishes an entry point for; each reports failure rather than
-        // leaving an import the loader cannot bind.
+        // The system queries are not here. Each is published by a module on the console, so defining
+        // one would shadow the real entry point with a routine that only reports failure, and the calls
+        // that read the system version and the settings could never work.
         foreach (string name in (string[])["sceKernelGetOpenPsId", "sceKernelGetProsperoSystemSwVersion",
                                            "sceKernelGetAllowedSdkVersionOnSystem", "sysctlbyname"])
-            Assert.Contains(name, defined);
+            Assert.DoesNotContain(name, defined);
         // The variables the runtime reads rather than calls. Two hold the address of a stream the C
         // module publishes, one starts out empty, and the last holds the address of the marker that
         // records the module was linked against that library.
@@ -359,10 +581,32 @@ public sealed class CompatEmitterTests
         foreach (byte platformOnly in new byte[] { 96, 99, 103, 160, 205 })
             Assert.True(data[at + platformOnly] == 132, $"{platformOnly} is passed through unchanged");
 
-        // The place handed back is this object's own, per thread, not the device's.
-        Assert.Equal(["__error", "__sp_error_numbers", "__sp_errno"], CallsOf(obj, "__errno_location"));
+        // The place handed back is this object's own, one word per thread, not the platform's.
+        // Translating the platform's where it lies cannot work: the runtime does not only read that
+        // place, it writes numbers of its own into it at fourteen points in what gets linked, and a
+        // number the runtime wrote is already counted the runtime's way. Translating it again moves
+        // it - two of the codes trade places, so each becomes the other - and one the runtime writes
+        // has no counterpart here at all and would come back as the error with no name.
+        //
+        // What separates a number the platform wrote from one the runtime wrote is that the platform
+        // writes only to report a failure, and no failure is numbered zero. So a number sitting there
+        // is news: it is read, translated into the runtime's word, and cleared. Clearing is what lets
+        // the same failure twice running read as two failures rather than one, and it is why saving
+        // the number, calling something, and putting it back still works - the read happens before the
+        // write, so a failure in between is taken first and then written over.
+        Assert.Equal(["__error", "__sp_error_numbers", "__sp_errno_written"],
+            CallsOf(obj, "__errno_location"));
         ElfSymbol f = Assert.Single(obj.Symbols, s => s.Name == "__errno_location" && !s.IsUndefined);
         Assert.NotEqual(0xE9, obj.Sections[f.SectionIndex].Data[(int)f.Value]);   // no longer a bare jump
+        Assert.True(Holds(obj, f, [0x85, 0xC9]), "nothing distinguishes news from nothing to report");
+        Assert.True(Holds(obj, f, [0xC7, 0x00, 0x00, 0x00, 0x00, 0x00]),
+            "the platform's place is not cleared, so one failure reads as many");
+        Assert.True(Holds(obj, f, [0x89, 0x0B]), "the number is not written into the runtime's own word");
+        Assert.True(Holds(obj, f, [0x48, 0x89, 0xD8]), "the runtime's own word is not what is handed back");
+        // And it never writes the translated number back into the platform's place, which is what made
+        // the next read translate a number that had already been translated once.
+        Assert.False(Holds(obj, f, [0x89, 0x08]),
+            "the translated number is still written back where the platform keeps its own");
     }
 
     [Fact]
@@ -375,7 +619,8 @@ public sealed class CompatEmitterTests
         // Both addresses are reached instruction-relative from names the linker places instead.
         ElfObject obj = Read();
         Assert.Equal(
-            ["_etext", "__executable_start", "__GNU_EH_FRAME_HDR", "__sp_module_name"],
+            ["_etext", "__executable_start", "__GNU_EH_FRAME_HDR", "__GNU_EH_FRAME_HDR_END",
+             "__sp_module_name"],
             CallsOf(obj, "dl_iterate_phdr"));
 
         ElfSymbol f = Assert.Single(obj.Symbols, s => s.Name == "dl_iterate_phdr" && !s.IsUndefined);
@@ -383,6 +628,21 @@ public sealed class CompatEmitterTests
         Assert.True(Holds(obj, f, [0x50, 0xE5, 0x74, 0x64]), "no frame-index header is described");
         // The callback is reached through the register it arrived in.
         Assert.True(Holds(obj, f, [0x41, 0xFF, 0xD2]), "the callback is never called");
+
+        // And it is described with a length, not only an address. The reader takes the far end of the
+        // index from the length in this same header - the index records no size of its own - so a
+        // length left at zero describes a range whose two ends meet, and that is refused before a byte
+        // is read. The refusal is silent: nothing records where the frame information was, and every
+        // later walk up the stack finds no method for the address it stands on and ends the module.
+        // Both lengths are written even though only the one in memory is read, so the header agrees
+        // with itself. Nothing else in the build would notice either going back to zero.
+        Assert.True(Holds(obj, f, [0x48, 0x89, 0x44, 0x24, 56 + 40]),
+            "the frame index is described without a length in memory");
+        Assert.True(Holds(obj, f, [0x48, 0x89, 0x44, 0x24, 56 + 32]),
+            "the frame index is described without a stored length");
+        // The length is the distance between the two names the linker places, measured from the image.
+        Assert.True(Holds(obj, f, [0x48, 0x2B, 0x44, 0x24, 56 + 16]),
+            "the length is not measured from where the index starts");
     }
 
     [Fact]
@@ -422,15 +682,17 @@ public sealed class CompatEmitterTests
         ElfObject obj = Read();
         var relocs = obj.Relocations.Values.SelectMany(list => list).ToList();
 
-        // Two per-thread places, each loaded through one local-exec relocation: the entry readdir64
-        // translates into, and the error number the runtime reads back.
-        Assert.Equal(2, relocs.Count(r => r.Type == RelType.TpOff32));
+        // Two per-thread places, reached through three local-exec relocations: the entry readdir64
+        // translates into, and the record of what was last written to the error number - which is read
+        // where the number is translated on the way out, and written again where a refusal puts a
+        // number there itself, since a number written without that record is translated a second time.
+        Assert.Equal(3, relocs.Count(r => r.Type == RelType.TpOff32));
         // Each variable holding an address carries one absolute fixup.
         int addresses = relocs.Count(r => r.Type == RelType.R64);
         Assert.Equal(3, addresses);
         // Everything else is a tail or forward call to a base name a module publishes.
         int calls = relocs.Count(r => r.Type == RelType.Plt32);
-        Assert.Equal(relocs.Count - 2 - addresses, calls);
+        Assert.Equal(relocs.Count - 3 - addresses, calls);
         Assert.True(calls >= 15, $"expected at least 15 forward calls, found {calls}");
     }
 

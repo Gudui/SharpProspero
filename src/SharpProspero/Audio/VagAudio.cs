@@ -20,7 +20,14 @@ public static class VagAudio
     private const int HeaderSize = 48;
     private const int BlockSize = 16;      // bytes per block
     private const int BlockSamples = 28;   // decoded samples per block
+    // What the second byte of a block says about it. The block carrying the end mark is a terminator
+    // and holds no sound: a file ends with one per channel, and whoever plays it stops there. The mark
+    // on the last block that does carry sound says only that it is the last.
     private const byte FlagPlaybackEnd = 7;
+    private const byte FlagLastDataBlock = 1;
+
+    // What a terminator block holds after its two leading bytes. Every file measured carries this.
+    private const byte TerminatorFill = 0x77;
 
     // Adaptive-differential filter coefficients, scaled by 64, for the base predictors 0-4. This is the
     // fixed filter set the container's decoder applies for these predictor indices.
@@ -57,13 +64,26 @@ public static class VagAudio
 
         // A conforming file leads with a silent block per channel; drop it so a round trip is clean.
         int start = superCount > 0 && IsSilentSuperBlock(body[..superBlock]) ? 1 : 0;
-        int frames = Math.Max(0, superCount - start) * BlockSamples;
+
+        // A file ends with a block per channel carrying the end mark and no sound. Decoding it emits
+        // twenty-eight samples of the fill it holds, which is a full-scale step at the end of every
+        // clip - so the scan stops there and the length is settled from where it stopped.
+        int end = superCount;
+        for (int sb = start; sb < superCount; sb++)
+        {
+            if (body[sb * superBlock + 1] != FlagPlaybackEnd)
+                continue;
+            end = sb;
+            break;
+        }
+
+        int frames = Math.Max(0, end - start) * BlockSamples;
         short[] samples = new short[frames * channels];
 
         int[] h1 = new int[channels];
         int[] h2 = new int[channels];
         Span<short> block = stackalloc short[BlockSamples];
-        for (int sb = start; sb < superCount; sb++)
+        for (int sb = start; sb < end; sb++)
         {
             int baseFrame = (sb - start) * BlockSamples;
             for (int c = 0; c < channels; c++)
@@ -87,8 +107,11 @@ public static class VagAudio
 
         int channels = audio.Channels;
         int frames = audio.Samples.Length / channels;
-        // One leading silent block per channel, then one block per 28-sample frame.
-        int blocksPerChannel = 1 + (frames + BlockSamples - 1) / BlockSamples;
+        // One leading silent block per channel, one block per 28-sample frame, and one terminator per
+        // channel at the end. A file without the terminator plays on into whatever follows it, because
+        // nothing in it says where the sound stops.
+        int dataBlocks = (frames + BlockSamples - 1) / BlockSamples;
+        int blocksPerChannel = 1 + dataBlocks + 1;
         int dataSize = blocksPerChannel * BlockSize * channels;
         byte[] output = new byte[HeaderSize + dataSize];
         Span<byte> span = output;
@@ -107,7 +130,7 @@ public static class VagAudio
         for (int c = 0; c < channels; c++)
         {
             int h1 = 0, h2 = 0;
-            for (int f = 0; f < blocksPerChannel - 1; f++)
+            for (int f = 0; f < dataBlocks; f++)
             {
                 for (int i = 0; i < BlockSamples; i++)
                 {
@@ -115,9 +138,15 @@ public static class VagAudio
                     frame[i] = index < audio.Samples.Length ? audio.Samples[index] : (short)0;
                 }
                 int blockOff = HeaderSize + (1 + f) * super + c * BlockSize;
-                bool last = f == blocksPerChannel - 2;
-                EncodeBlock(frame, ref h1, ref h2, span.Slice(blockOff, BlockSize), last ? FlagPlaybackEnd : (byte)0);
+                bool last = f == dataBlocks - 1;
+                EncodeBlock(frame, ref h1, ref h2, span.Slice(blockOff, BlockSize), last ? FlagLastDataBlock : (byte)0);
             }
+
+            // The terminator: no predictor, no shift, the end mark, and the fill.
+            Span<byte> terminator = span.Slice(HeaderSize + (1 + dataBlocks) * super + c * BlockSize, BlockSize);
+            terminator[0] = 0;
+            terminator[1] = FlagPlaybackEnd;
+            terminator[2..].Fill(TerminatorFill);
         }
         return output;
     }

@@ -127,7 +127,8 @@ system and the raw device node, and both need the module to run with enough priv
 drive, which a normal application sandbox does not have — treat the reads as best-effort.
 
 When the system has recognised a disc it mounts its filesystem under `DiscDrive.MountPoint` (`/mnt/disc`),
-which is browsed with the ordinary file APIs:
+which is browsed with the ordinary file APIs. `EnumerateFiles` lists the root by default, or a path
+beneath it — `EnumerateFiles("sce_sys")`:
 
 ```csharp
 if (DiscDrive.IsDiscMounted)
@@ -189,8 +190,9 @@ status code.
 
 ## Console feature flags
 
-`FeatureFlag` reads the console's feature flags by number: whether a feature is enabled, and whether a
-change to it is waiting for a reboot.
+`FeatureFlag` reads the console's feature flags. A feature is identified by a number, passed as a `uint`:
+`IsOn` reports whether it is enabled, `IsWaitingReboot` whether a change to it is waiting for a reboot.
+The SDK publishes no list of flag numbers, so pass a number the application already knows.
 
 ```csharp
 if (FeatureFlag.IsOn(featureId))

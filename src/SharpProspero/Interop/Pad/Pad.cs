@@ -60,6 +60,13 @@ public enum ScePadButton : uint
 
     /// <summary>Touch-pad press.</summary>
     TouchPad = 0x00100000,
+
+    /// <summary>
+    /// Set when the system has taken the controller for itself. The rest of the sample is then whatever
+    /// the system was doing with it, not what the player is pressing, so a sample carrying this bit is
+    /// discarded rather than read.
+    /// </summary>
+    Intercepted = 0x80000000,
 }
 
 /// <summary>Vibration motor levels: the large (left) and small (right) motors, 0 (stop) to 255.</summary>

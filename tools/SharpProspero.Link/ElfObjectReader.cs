@@ -92,6 +92,7 @@ public static class ElfObjectReader
 
         var symbols = ReadSymbols(data, raw, sections);
         var relocations = ReadRelocations(data, raw);
+        var groups = ReadGroups(raw, sections, symbols);
 
         return new ElfObject
         {
@@ -99,6 +100,7 @@ public static class ElfObjectReader
             Sections = sections,
             Symbols = symbols,
             Relocations = relocations,
+            Groups = groups,
         };
     }
 
@@ -154,6 +156,41 @@ public static class ElfObjectReader
         }
         return result;
     }
+
+    /// <summary>
+    /// The groups of sections this object shares with others. A compiler emits an inline function, a
+    /// template body or a virtual table into every object that needs it, and names each copy under one
+    /// signature so a link keeps exactly one. The first word of the section is flags; the words after it
+    /// are the member section indices, and the signature is the symbol the section's info field names.
+    /// </summary>
+    private static IReadOnlyList<ElfSectionGroup> ReadGroups(
+        RawSection[] raw, ElfSection[] sections, IReadOnlyList<ElfSymbol> symbols)
+    {
+        var groups = new List<ElfSectionGroup>();
+        for (int i = 0; i < sections.Length; i++)
+        {
+            if (sections[i].Type != ShType.Group) continue;
+            byte[] body = sections[i].Data;
+            if (body.Length < 4) continue;
+            uint flags = BinaryPrimitives.ReadUInt32LittleEndian(body);
+            uint signatureIndex = raw[i].Info;
+            if (signatureIndex >= (uint)symbols.Count) continue;
+            string signature = symbols[(int)signatureIndex].Name;
+            if (signature.Length == 0) continue;
+            var members = new List<int>();
+            for (int at = 4; at + 4 <= body.Length; at += 4)
+            {
+                int m = (int)BinaryPrimitives.ReadUInt32LittleEndian(body.AsSpan(at));
+                if (m > 0 && m < sections.Length) members.Add(m);
+            }
+            if (members.Count > 0)
+                groups.Add(new ElfSectionGroup(signature, members, (flags & GroupKeepOnlyOne) != 0));
+        }
+        return groups;
+    }
+
+    /// <summary>The flag saying a group asks for duplicates of itself to be dropped.</summary>
+    private const uint GroupKeepOnlyOne = 1;
 
     private static byte[] SectionBytes(byte[] data, RawSection s)
     {

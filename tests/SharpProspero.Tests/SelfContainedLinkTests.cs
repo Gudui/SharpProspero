@@ -186,7 +186,7 @@ public sealed class SelfContainedLinkTests
         // own place - both through the module that publishes them rather than being left undefined.
         Assert.Contains(result.Imports, i => i.Name == "getdents" && i.LibraryName == "libScePosix");
         Assert.Contains(result.Imports, i => i.Name == "__error" && i.LibraryName == "libkernel");
-        Assert.Contains(result.Imports, i => i.Name == "sceKernelMemoryPoolDecommit");
+        Assert.Contains(result.Imports, i => i.Name == "sceKernelReserveVirtualRange");
         Assert.Contains(result.Imports, i => i.Name == "scePthreadGetaffinity");
         Assert.Contains(result.Imports, i => i.Name == "sceKernelGetCurrentCpu");
         Assert.Contains(result.Imports, i => i.Name == "sceKernelAvailableFlexibleMemorySize");

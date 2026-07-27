@@ -30,6 +30,9 @@ public static unsafe partial class KernelSystem
 {
     private const string Lib = "libkernel";
 
+    // The library the console identifier is published under, which is not the one above.
+    private const string OpenPsIdLib = "libSceOpenPsId";
+
     /// <summary>
     /// Reads the system software version. Set <see cref="SceKernelSwVersion.Size"/> to the block size
     /// first. Zero on success, or a negative error code.
@@ -50,7 +53,13 @@ public static unsafe partial class KernelSystem
     /// <summary>
     /// Reads the console's 16-byte open identifier into <paramref name="openId"/>. Zero on success.
     /// </summary>
-    [LibraryImport(Lib)]
+    /// <remarks>
+    /// The same module carries this one, but publishes it under a library of its own rather than the
+    /// one every other call here belongs to, so it is asked for by that name. Naming the usual library
+    /// asks for something nothing publishes, and a module whose imports do not all bind never reaches
+    /// its first instruction.
+    /// </remarks>
+    [LibraryImport(OpenPsIdLib)]
     public static partial int sceKernelGetOpenPsId(byte* openId);
 
     /// <summary>

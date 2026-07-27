@@ -8,8 +8,8 @@ parent: Toolchain
 
 The SDK talks to the device through interop bindings in `SharpProspero.Interop`. A binding is a
 `partial` class of `[LibraryImport]` methods, plus the enums, structures and constants that go with
-the service. The library name matches a loadable module; the linker resolves the symbols against a
-stub it generates for that module.
+the service. The name in the attribute is a library, not a module file; a stub the linker generates
+records both, and which module carries the library comes from the catalog. See below.
 
 ## How a binding is shaped
 
@@ -26,7 +26,10 @@ public static unsafe partial class VideoOut
 Rules that keep bindings compatible with ahead-of-time compilation:
 
 - Use blittable parameter and return types: the integer types, `nuint` for `size_t`, `long` for
-  `off_t`, pointers for `void*` and `T*`. Blittable signatures generate no marshalling code.
+  `off_t`, pointers for `void*` and `T*`. Blittable signatures generate no marshalling code. The one
+  worthwhile exception is a NUL-terminated string argument: add
+  `StringMarshalling = StringMarshalling.Utf8` to the attribute and take a `string`, which the
+  generator converts without a runtime marshaller.
 - Keep methods `static partial` in a `partial` class; the source generator writes the call.
 - Pass buffers as pointers and let the caller pin or stack-allocate them.
 - Match structure layout exactly with `[StructLayout(LayoutKind.Sequential)]` and the fields in
@@ -90,8 +93,12 @@ For projects that already process headers separately, the generator can also wri
 per module from a catalog (`modules.json`). It only writes the files; it invokes nothing.
 
 ```
-pwsh tools/SharpProspero.Bindings.Generator/generate.ps1
+pwsh tools/SharpProspero.Bindings.Generator/generate.ps1 -SdkInclude <folder>
 ```
+
+`-SdkInclude` names the header tree. Without it the script reads `PROSPERO_SDK_DIR` and appends
+`target/include`; with neither set it stops and says so. Running the tool directly takes the same
+folder as `--sdk`, plus `--modules` for another catalog and `--responses` for another destination.
 
 Each response file names the header to parse, the output namespace (`SharpProspero.Interop.<Name>`),
 the method class name, and the library. The response files land under
@@ -101,7 +108,7 @@ the method class name, and the library. The response files land under
 
 | Namespace | Service | Key entry points |
 |---|---|---|
-| `Interop.Kernel` | Direct and flexible memory, memory info, files, timing, modules, system version | reserve, map, release direct memory; map, release, protect flexible memory; available flexible and direct memory, virtual query; open, read, seek, clock, load module, system software version, allowed SDK version |
+| `Interop.Kernel` | Direct and flexible memory, memory info, files, timing, modules, system version and identity | reserve, map, release direct memory; map, release, protect flexible memory; available flexible and direct memory, virtual query; open, read, seek, clock, load module, system software version, allowed SDK version, a named system value; the console identifier, which the same module publishes under `libSceOpenPsId` rather than `libkernel` |
 | `Interop.VideoOut` | Display output | open, set attribute, register, submit flip, wait vblank |
 | `Interop.Pad` | Controller | init, open, read, vibration, light bar, close |
 | `Interop.Keyboard` | USB keyboard | init, open, read state, close |
@@ -113,7 +120,7 @@ the method class name, and the library. The response files land under
 | `Interop.Text` | Character-encoding conversion (Ces) | EUC-JP, EUC-KR, Big5 and UHC to UTF-8 (use `System.Text.Encoding` between the Unicode forms) |
 | `Interop.Video` | Video decode and recording | decode: create decoder, decode, flush, reset, query memory (H.264 and HEVC via the codec type); recording: status, query memory, open, start, stop, close |
 | `Interop.Vision` | Camera depth | query memory, initialize, set command, set region, submit, wait, get image |
-| `Interop.AvCapture` | Audio-video capture | open, start, read frames, stop, close |
+| `Interop.AvCapture` | Video capture | open a video channel, start, read frames, stop, close |
 | `Interop.Device` | Message-bus device service | initialize, generation counter, event state, query device info |
 | `Interop.Sysmodule` | System modules | load, unload, is-loaded |
 | `Interop.Image` | Image decode and encode | PNG and JPEG decode; PNG and JPEG encode (for a screenshot) |

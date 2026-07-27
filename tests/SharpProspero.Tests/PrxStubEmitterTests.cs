@@ -60,7 +60,7 @@ public sealed class PrxStubEmitterTests
             ElfInfo info = ElfInfo.Read(path);
             Assert.True(info.Is64Bit);
             Assert.Equal(0xFE0C, info.Type);
-            Assert.Equal("SCE stub library", info.TypeName);
+            Assert.Equal("Module stub library", info.TypeName);
             Assert.Equal(0x3E, info.Machine);
         }
         finally

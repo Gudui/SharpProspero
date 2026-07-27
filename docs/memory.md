@@ -31,8 +31,8 @@ Surface surface = region.AsSurface(1920, 1080);
 ```
 
 `Allocate` rounds the size up to `alignment` (2 MiB by default), reserves cached memory shared between
-the CPU and GPU, and maps it CPU-readable, CPU-writable, and GPU-readable. Override `memoryType`,
-`protection`, and `alignment` for other uses. The region exposes its mapped base as `Pointer`, its
+the CPU and GPU, and maps it readable and writable by both. Override `memoryType`, `protection`,
+`alignment` and `mappingFlags` for other uses. The region exposes its mapped base as `Pointer`, its
 rounded `Size`, and its `PhysicalOffset`. `AsSurface` views the region as a drawing surface, with an
 overload that takes an explicit row `stride`.
 
@@ -88,6 +88,23 @@ property.
 </PropertyGroup>
 ```
 
+A second property sets how much address space the collector holds for its regions:
+
+```xml
+<PropertyGroup>
+  <ProsperoHeapRegionRangeBytes>402653184</ProsperoHeapRegionRangeBytes>
+</PropertyGroup>
+```
+
+The default is 384 MiB. The collector reserves this range as one unbroken run before it starts, and
+the build sets it because the collector otherwise asks for five times the ceiling — 1.25 GiB at the
+default ceiling — which the pool will not hand out, leaving the collector unable to start.
+
+Raise the range whenever you raise the ceiling. The range, not the ceiling, is the address space the
+heap has to grow into, so a ceiling above it is a number the heap never reaches. The value is read
+exactly as written and must cover a whole number of pages; a whole number of megabytes satisfies that
+and stays readable.
+
 {: .important }
 > The device's memory maps are limited, and the heap ceiling is a hard wall: allocate past it and the
 > collector cannot grow the heap, so the allocation fails outright. Keep per-frame allocation flat
@@ -109,7 +126,10 @@ if (HeapMonitor.ExceedsBudget(0.85))
 ```
 
 `Capture` returns a `HeapSnapshot` — a reading of `HeapSizeBytes`, `TotalAllocatedBytes`,
-`HardLimitBytes`, and `CollectionCount`, plus a `Pressure` ratio from 0 to 1 against the ceiling.
+`HardLimitBytes`, and `CollectionCount` (generation-0 collections, which counts every collection that
+has run), plus a `Pressure` ratio from 0 to 1 against the ceiling. When the runtime reports no
+ceiling, `HardLimitBytes` and `Pressure` are both zero and `ExceedsBudget` always returns false, so
+check `HardLimitBytes` before trusting either.
 
 ```csharp
 HeapSnapshot heap = HeapMonitor.Capture();
@@ -136,10 +156,11 @@ scratch.Return(work);
 ```
 
 The constructor's `factory` is required. Pass `onRent` to prepare an object as it goes out and
-`onReturn` to reset it as it comes back, `prewarm` to make some up front, and `maxRetained` to cap how
-many idle objects the pool keeps — a returned object is kept up to that limit and dropped past it, so a
-burst does not grow the pool without bound. `IdleCount` reports how many are ready to hand out without
-allocating, and `Clear` drops every idle object.
+`onReturn` to reset it as it comes back, `prewarm` to make some up front (never more than the retained
+limit), and `maxRetained` to cap how many idle objects the pool keeps, 1024 by default — a returned
+object is kept up to that limit and dropped past it, so a burst does not grow the pool without bound.
+`IdleCount` reports how many are ready to hand out without allocating, and `Clear` drops every idle
+object.
 
 {: .warning }
 > Return each borrowed object exactly once, and drop your reference to it afterward. Returning the same

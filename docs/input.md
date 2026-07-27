@@ -25,7 +25,7 @@ once at startup, read it in the frame loop, and dispose it at shutdown; disposin
 using SharpProspero.Input;
 using SharpProspero.Interop.Pad;
 
-using var gamePad = GamePad.Open();     // the signed-in user by default
+using var gamePad = GamePad.Open();     // the system profile; pass Users.InitialUserId for one player's pad
 
 GamePadState pad = gamePad.Read();
 if (pad.IsPressed(ScePadButton.Cross))
@@ -33,7 +33,10 @@ if (pad.IsPressed(ScePadButton.Cross))
 ```
 
 `Read` returns a `GamePadState`, a decoded snapshot of one sample. When no sample is available it returns
-`GamePadState.Neutral` — a resting value with both sticks centered — so a read never throws mid-frame.
+`GamePadState.Neutral` — a resting value with both sticks centered — so a read never throws mid-frame. It
+returns `Neutral` for an intercepted sample too: the system sets `ScePadButton.Intercepted` while it has
+taken the controller for itself, and the rest of that sample describes what the system is doing with it
+rather than what the player is pressing, so the whole sample is dropped.
 
 Inside a `ProsperoApp`, the host already opens the pad and hands you the current sample on the frame
 context, along with the previous one for edge detection. Use that instead of opening a second handle:
@@ -105,7 +108,7 @@ and a two-finger pinch that carries both a scale and a rotation.
 ```csharp
 var gestures = new TouchGestureRecognizer();
 // each frame:
-foreach (TouchGesture g in gestures.Update(pad.State))
+foreach (TouchGesture g in gestures.Update(pad))
 {
     switch (g.Kind)
     {
@@ -117,7 +120,8 @@ foreach (TouchGesture g in gestures.Update(pad.State))
 ```
 
 The thresholds - how far a tap may move, how long a hold takes, the flick speed - are properties you can
-tune. It keeps its own state, so a single recognizer follows a gesture across frames.
+tune. It keeps its own state, so a single recognizer follows a gesture across frames; call `Reset` to drop
+everything in progress, after a screen change or when the pad handle is reopened.
 
 ### Output: rumble and light bar
 
@@ -186,15 +190,25 @@ cursorY += m.DeltaY;
 if (m.IsButtonDown(MouseButton.Primary)) { }
 ```
 
-`KeyboardState.Keys` is the set of USB usage codes currently held (newest last), with `Modifiers` holding
-the shift/control/alt/gui state and `Connected` reporting whether a keyboard is attached; `IsKeyDown`
-tests one usage code. `MouseState` gives the relative `DeltaX`/`DeltaY` movement, the `Wheel` and `Tilt`
-scroll, and the `Buttons` held — an application accumulates the deltas into a cursor position of its own.
+`KeyboardState.Keys` is the set of USB usage codes currently held (newest last); the read keeps only real
+codes, so it is empty when nothing is down even though the count that comes back is never less than one.
+`Modifiers` holds the shift/control/alt/gui state, `Leds` the lock keys that are on (num, caps, scroll),
+and `Connected` reports whether a keyboard is attached. `IsKeyDown` tests one usage code and answers false
+for zero, which is not a key. Producing a character needs `Leds` as well as `Modifiers` — caps lock decides
+the case of a letter and num lock what the number pad gives — so pass both to the converter below.
+
+`MouseState` gives the relative `DeltaX`/`DeltaY` movement, the `Wheel` and `Tilt` scroll, the `Buttons`
+held, and `Connected` — an application accumulates the deltas into a cursor position of its own. A still
+mouse produces nothing to read, so `Read` repeats the last reading with the four movement values zeroed
+rather than reporting the mouse absent: a held button stays held and the cursor stays put. `Connected` and
+`Buttons` therefore carry over from the last reading the device produced, and a mouse reads as absent only
+when a reading says so or the read fails.
 
 {: .note }
 > `MouseButton` lives in `SharpProspero.Interop.Mouse` and `KeyModifier` in
-> `SharpProspero.Interop.Keyboard`. `KeyboardState` is a `ref struct` that borrows its key buffer until
-> the next read — copy out anything you keep past the current frame.
+> `SharpProspero.Interop.Keyboard`. `KeyboardState` is a `ref struct`: it cannot be stored in a field,
+> boxed, or held across an `await`. Copy `Keys` into an array of your own to keep it past the current
+> frame.
 
 ### From key codes to characters
 
@@ -210,7 +224,7 @@ if (converter is not null && keys.Connected)
     KeyboardLayout layout = converter.GetLayout();     // the user's chosen layout
     foreach (ushort keycode in keys.Keys)
     {
-        char c = converter.ToCharacter(keycode, keys.Modifiers, layout);
+        char c = converter.ToCharacter(keycode, keys.Modifiers, layout, keys.Leds);
         if (c != '\0')                                 // '\0' for a key that makes no character
             typed += c;
     }

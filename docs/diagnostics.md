@@ -74,7 +74,7 @@ Log.AddSink(log);
 log.Dispose();                                  // closes the file at shutdown
 ```
 
-`FileLogSink.Open` creates the file if it is absent and opens it for appending, so a log survives across runs until the file is removed. It throws if the file cannot be opened, and it implements `IDisposable`; dispose it at shutdown to close the file. Every sink formats a line the same way, as `HH:mm:ss.fff LVL message`, where `LVL` is the three-letter tag `TRC`, `DBG`, `INF`, `WRN` or `ERR`.
+`FileLogSink.Open` creates the file if it is absent and opens it for appending, so a log survives across runs until the file is removed. It throws if the file cannot be opened, and it implements `IDisposable`; dispose it at shutdown to close the file. Every sink formats a line the same way, as `HH:mm:ss.fff LVL message`, where `LVL` is the three-letter tag `TRC`, `DBG`, `INF`, `WRN` or `ERR`. If the real-time clock cannot be read — for example before it is ready early in start-up — the timestamp reads `--:--:--.---` and the rest of the line is unchanged.
 
 ## Frame statistics
 
@@ -99,6 +99,6 @@ The constructor takes an optional `window` (120 frames by default, at least two)
 {: .tip }
 > Compare `Fps` against `OnePercentLowFps`. A wide gap between the two means the average is smooth but the build is stuttering, which the average alone will not show you.
 
-`Draw` writes a one-line readout of the rate and the frame time to a [2D surface](graphics.md) at a position and scale. `DrawGraph` draws a sparkline of the recent frame times, oldest at the left, scaled so a slow frame stands out against a flat low line; pass an optional border colour to frame it. Both take a `Surface` and colours from `SharpProspero.Graphics`.
+`Draw` writes a one-line readout to a [2D surface](graphics.md) at a position and scale: the rate, the average frame time and the slowest frame in the window. `DrawGraph` draws a sparkline of the recent frame times, oldest at the left. The top of the box is a 33 ms frame, or the slowest frame in the window when that is slower, so a build holding 60 frames a second draws a flat line across the middle and a stutter spikes to the top; pass an optional border colour to frame it. Both take a `Surface` and colours from `SharpProspero.Graphics`.
 
 For the clocks and timers that drive a frame loop, see [Timing](timing.md); to move work that would stall a frame onto another thread, see [Threading](threading.md).

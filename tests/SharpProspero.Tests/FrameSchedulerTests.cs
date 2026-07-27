@@ -144,4 +144,21 @@ public sealed class FrameSchedulerTests
         Assert.Throws<ArgumentNullException>(() => scheduler.After(1.0, null!));
         Assert.Throws<ArgumentNullException>(() => scheduler.Every(1.0, null!));
     }
+    [Fact]
+    public void Clear_FromInsideACallbackDoesNotEndTheTick()
+    {
+        // Emptying the list outright while it is being walked leaves the walk indexing past its end,
+        // and the exception that follows leaves the frame loop entirely - the module stops.
+        var scheduler = new FrameScheduler();
+        int ran = 0;
+        scheduler.Every(1, () => { ran++; scheduler.Clear(); });
+        scheduler.Every(1, () => ran++);
+
+        scheduler.Update(1);
+
+        Assert.Equal(1, ran);
+        scheduler.Update(1);
+        Assert.Equal(1, ran);
+    }
+
 }

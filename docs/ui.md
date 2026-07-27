@@ -59,10 +59,13 @@ internal sealed class Menu : ProsperoApp
 
         surface.Clear(_screen.Theme.Background);
         _screen.Draw(surface);
+
+        if (_exit)
+            context.RequestExit();
     }
 
     private void StartGame() { /* ... */ }
-    private void Exit() => /* request exit on the next OnFrame's context */ _exit = true;
+    private void Exit() => _exit = true;
     private bool _exit;
 }
 ```
@@ -99,7 +102,7 @@ returns to the first screen.
 | `Label` | A line of text, for titles and read-only values. Not focusable. |
 | `Button` | Activates on confirm and calls its action. Can be disabled. |
 | `Checkbox` | An on/off setting the user toggles with confirm. |
-| `Slider` | A value between a minimum and a maximum, adjusted with left and right. |
+| `Slider` | A value between a minimum and a maximum, moved by a fixed step with left and right. The step is required; a step of zero or less is treated as one. |
 | `Stepper` | A whole number in a range, adjusted with left and right; clamps at the ends and can format its value (for example "50%" or "x3"). |
 | `OptionSelector` | One choice from a fixed set, cycled with left and right (wraps at the ends). |
 | `Carousel` | A horizontal strip of items with one highlighted in the middle, moved with left and right and chosen with confirm - the shape a launcher uses. |
@@ -108,7 +111,7 @@ returns to the first screen.
 | `ListView` | A vertical list the user moves through and opens with confirm; it scrolls to keep the selection in view. |
 | `ProgressBar` | A bar that fills from the left to show a fraction that is known. |
 | `Gauge` | A round meter that fills a ring or a dial to a known fraction, with the percentage in the middle. Not focusable. |
-| `Spinner` | A turning ring that shows work is under way with no known end. Not focusable. |
+| `Spinner` | A turning ring that shows work is under way with no known end. Call `Advance(deltaSeconds)` on it each frame or it draws stationary. Not focusable. |
 | `Image` | A picture drawn from a surface (for example a decoded `PngImage`). |
 | `TextBlock` | A paragraph that wraps to its width and grows as tall as it needs. Not focusable. |
 | `Separator` | A rule that divides one group of controls from the next. Not focusable. |
@@ -118,6 +121,7 @@ returns to the first screen.
 | `Row` | Places its children side by side, each an equal share of the width. |
 | `Grid` | Arranges its children in a fixed number of columns, wrapping to the next row. |
 | `ScrollView` | A window onto content taller than the space available; up and down move it. |
+| `ScrollMenu` | A column of controls taller than the space available; up and down move a highlight through them, scrolling to keep it in view. |
 | `ModalHost` | Holds the usual content and, when asked, a panel on top of it that takes the controller. |
 
 `TextBlock` lays its text out with the built-in text at the theme's scale. Give it a `Font` to use a
@@ -211,13 +215,22 @@ var toast = new Toast();
 saveButton.Activated = () => { Save(); toast.Show("Saved"); };
 
 // each frame
-toast.Update(frame.DeltaSeconds);
+toast.Update((float)context.DeltaSeconds);
 screen.Render(surface);
-toast.Draw(surface, theme);
+toast.Draw(surface, screen.Theme);
 ```
 
 `Show` replaces anything already up, `Hide` takes it down at once, and the banner fades over its last
 moment rather than vanishing.
+
+A `Spinner` is driven the same way — it is part of the control tree, but the turn is yours to advance:
+
+```csharp
+var busy = new Spinner();
+// each frame, before the screen draws:
+busy.Advance((float)context.DeltaSeconds);
+busy.Visible = stillLoading;
+```
 
 A `ListView` handles up and down itself to move its selection, but leaves them unused at its top and
 bottom rows, so pressing up on the first row or down on the last moves focus to the control above or
@@ -250,10 +263,14 @@ focus as one unit and moves a highlight through its controls with up and down, s
 focused control in view; confirm and adjust reach whichever control is focused. Up on the first control
 and down on the last are left for the screen, so focus can move out of the window.
 
+Add the leaf controls — buttons, checkboxes, sliders, selectors — to the menu itself. The highlight only
+visits its direct children, so a `StackPanel`, `Row` or `Grid` placed inside is drawn but never takes it,
+and neither does anything within it.
+
 ```csharp
 var options = new ScrollMenu { ViewHeight = 320 }
     .Add(new Checkbox("Fullscreen", true))
-    .Add(new Slider("Volume", 0, 100, 80))
+    .Add(new Slider("Volume", 0, 100, 80, step: 5))
     .Add(new Button("Reset", () => ResetSettings()));
 var screen = new UiScreen(options);
 ```
@@ -284,7 +301,7 @@ focus with it.
 
 ## Saving what is on screen
 
-Anything drawn to a surface can be saved as a PNG with [`PngEncoder`](bindings.md), so a screen can
+Anything drawn to a surface can be saved as a PNG with [`PngEncoder`](graphics.md#screenshots-and-photo-export), so a screen can
 offer a screenshot:
 
 ```csharp

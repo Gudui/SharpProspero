@@ -3,6 +3,7 @@
 
 using SharpProspero.Graphics.Agc;
 using SharpProspero.Interop.Agc;
+using SharpProspero.Interop.VideoOut;
 using SharpProspero.Memory;
 using System;
 using System.Numerics;
@@ -113,11 +114,21 @@ public sealed unsafe class Renderer3D : IDisposable
         constants->Mvp = mvp;
         constants->Model = model;
 
-        // The colour target points at the framebuffer being drawn; it is linear to match the display.
+        // The colour target points at the framebuffer being drawn, and has to describe it the way the
+        // display was opened: the processor writes where it is told, so a target that disagrees with
+        // the registered buffer scatters the image rather than shifting it. Reading the arrangement
+        // back from the display is what keeps the two from drifting apart when either is changed.
+        //
+        // The channel order matches the buffer the display registers, which carries blue first. Saying
+        // the ordinary one puts what the program wrote as red into the byte the output reads as blue,
+        // so the picture comes out with those two exchanged and nothing reports a fault.
         var target = new CxRenderTarget().Init(RegisterDefaults.RenderTargetBlock());
         var spec = new RenderTargetSpec(
-            CxRenderTarget.Format.k8_8_8_8, CxRenderTarget.ChannelType.kUNorm, CxRenderTarget.ChannelOrder.kStandard,
-            (uint)_display.Width, (uint)_display.Height, (ulong)_display.BackBufferAddress, CxRenderTarget.TileMode.kLinear);
+            CxRenderTarget.Format.k8_8_8_8, CxRenderTarget.ChannelType.kUNorm, CxRenderTarget.ChannelOrder.kAlt,
+            (uint)_display.Width, (uint)_display.Height, (ulong)_display.BackBufferAddress,
+            _display.Tiling == VideoOutTilingMode.Tiled
+                ? CxRenderTarget.TileMode.kRenderTarget
+                : CxRenderTarget.TileMode.kLinear);
         AgcRenderTargetSetup.Initialize(target, spec);
 
         var viewport = new AgcViewport();
@@ -144,7 +155,7 @@ public sealed unsafe class Renderer3D : IDisposable
 
         void* dcb = dcbObj.Handle;
         dcbObj.Reset();
-        SceAgcDriver.sceAgcDriverWaitUntilSafeForRendering(dcb, _display.OutputHandle, (uint)_display.CurrentBufferIndex, (uint)VideoOutFlipModeVSync, 0);
+        dcbObj.WaitUntilSafeForDisplay(_display.OutputHandle, (uint)_display.CurrentBufferIndex);
 
         SceAgc.sceAgcDcbSetCxRegistersIndirect(dcb, contextRegion.Pointer, (uint)cx);
         SceAgc.sceAgcDcbSetShRegistersIndirect(dcb, shaderRegion.Pointer, (uint)sh);
@@ -160,7 +171,7 @@ public sealed unsafe class Renderer3D : IDisposable
 
         // Record the flip on the graphics timeline so it runs after the draw completes (not immediately on
         // the processor as a display-side flip would), then pace to the vertical blank and rotate the set.
-        SceAgc.sceAgcDcbSetFlip(dcb, (uint)_display.OutputHandle, (uint)_display.CurrentBufferIndex, (uint)VideoOutFlipModeVSync, (ulong)_display.FrameIndex);
+        SceAgc.sceAgcDcbSetFlip(dcb, (uint)_display.OutputHandle, _display.CurrentBufferIndex, VideoOutFlipModeVSync, (long)_display.FrameIndex);
         AgcDevice.Submit(dcbObj);
         _display.AdvanceFrame();
         _slot = (_slot + 1) % _framesInFlight;

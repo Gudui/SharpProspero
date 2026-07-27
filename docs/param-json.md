@@ -8,7 +8,9 @@ nav_order: 7
 
 Every package carries a `sce_sys/param.json` describing the title to the system: its identifiers, its
 version, what kind of title it is, and the name shown on the home screen. The templates ship one filled
-in from the `--title` and `--titleId` you pass, so a first build needs no editing. This page describes
+in from the `--title` and `--titleId` you pass - the content id is built from the title id, since the
+two have to agree - so a first build needs no editing. Pass `--contentIdOverride` when a whole
+36-character content id of your own has to be used instead. This page describes
 the fields you are most likely to change and what the rest are for.
 
 ## Checking it
@@ -24,11 +26,14 @@ The build checks the metadata and fills in anything a finished title carries tha
 
 Nothing here reports itself as an error on the console. A field the system cannot read leaves the home
 screen drawing the title wrongly, or a service the title expected to reach is never offered to it, with
-no message either way. So a field carrying a value the system does not recognise stops the build, and a
-field that is merely absent is filled in.
+no message either way. So a field carrying a value the system does not recognise stops the build — and so
+does an absent identity field: the title id, the content id, the content and master versions, the rights
+model and the name block have no default worth guessing, so each is reported rather than invented.
 
-An absent field does not stop a title running — the system reads its own default for it. The check
-fills them in so the title says what it means rather than inheriting a default it never chose.
+Everything else is written in where it is absent: the kind of title, the badge, the age rating, the start
+behaviour, the sharing table, the feature flags, the download size and the update-info link. None of those
+stops a title running — the system supplies its own value for each — so the check fills them in to make the
+title say what it means rather than inherit a value it never chose.
 
 Check a folder yourself at any time:
 
@@ -44,7 +49,7 @@ Add `--apply` to write the missing fields, `--category <kind>` to set the kind o
 | Field | What it is |
 |---|---|
 | `titleId` | The nine-character title id, four letters then five digits, e.g. `PPSA99099`. Identifies the title. |
-| `conceptId` | The numeric concept id (usually the digits of the title id). |
+| `conceptId` | The numeric concept id (usually the digits of the title id). The templates take it as its own `--conceptId` option and do not derive it, so pass it alongside `--titleId`. Nothing checks it. |
 | `contentId` | The full content id: `UP9000-<titleId>_00-<16 chars>`, 36 characters. The package is keyed by this, and it has to carry the title id. |
 | `contentVersion` | The content version string, `NN.NNN.NNN`. Raise it for an update. |
 | `masterVersion` | The master version, `NN.NN`. |
@@ -99,9 +104,9 @@ The memory a title is given is settled separately, not by the kind. Those fields
 
 | Field | What it is |
 |---|---|
-| `contentBadgeType` | The badge drawn on the icon. It follows the kind: `1` for `Game`, `2` for the media kinds. The build settles it against the category. |
+| `contentBadgeType` | The badge drawn on the icon: `0` none, `1` game, `2` application. It is yours to choose. The build fills it in only when it is absent or outside that range, starting at `1` for `Game` and `2` for the other kinds, and leaves a value you set alone. |
 | `applicationDrmType` | The rights model: `standard`, `free`, `upgradable`, `demo` or `freemium`. `free` is the homebrew choice. |
-| `ageLevel` | The age rating, per region, with a `default` for a region that has no entry of its own. |
+| `ageLevel` | The age rating, per region, with a `default` for a region that has no entry of its own. The build adds only a missing `default` and leaves every regional entry as you wrote it. |
 | `attribute`, `attribute2`, `attribute3` | Feature-flag bitmasks (background audio, cross-save, and so on). Leave `0` unless a feature needs one. |
 | `downloadDataSize` | The extra download size to reserve, in bytes. `0` for a self-contained package. |
 
@@ -131,6 +136,9 @@ means default:
 | `amm.pagetableMemorySizeInMib` | Page-table memory, in MiB. |
 | `amm.vaRangeInGib`, `amm.multimapVaRangeInGib` | Address-space range, in GiB. |
 
+The check reads none of these fields, so a value off the granule passes the build unreported. Get them
+right by hand.
+
 Direct memory defaults to 768 MiB. Larger allowances exist in fixed steps (1024, 1280, 1536 and 1792
 MiB), each of which a title has to be granted rather than simply ask for.
 
@@ -153,7 +161,9 @@ A title that leaves `sdkVersion` at zero states it was built against nothing; ru
 `addcont.serviceIdForSharing` carries the table of titles this one shares content with — seven entries
 of nineteen characters, blank where nothing is shared. `pubtools` records the tool that produced the
 metadata (`creationDate`, `toolVersion`). `versionFileUri` points at an update-info file for a title
-that ships updates, and is empty otherwise.
+that ships updates, and is empty otherwise. `originContentVersion` and `targetContentVersion` carry a
+content version for a title that ships an update. Both are optional, and each is checked to the same
+`NN.NNN.NNN` shape as `contentVersion` when present.
 
 The packager reads `titleId`, `contentId` and the version fields; leave the rest as the template writes
 them unless a title needs the feature a field controls.

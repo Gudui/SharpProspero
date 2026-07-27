@@ -34,33 +34,64 @@ public readonly ref struct AudioFrame
 /// stay valid until the next call for a frame, so draw it to the display right away with
 /// <see cref="RenderTo(Surface, int, int)"/>, which converts it to the surface's color format.
 /// </summary>
+/// <remarks>
+/// The buffer the decoder hands back is wider and taller than the picture in it. Which part is the
+/// picture is given as four insets from the buffer's edges, and the horizontal pair is measured from
+/// the pitch, so the padding that makes the rows a convenient length is counted as crop. Drawing the
+/// whole buffer therefore shows a band of whatever the decoder left in that padding.
+/// </remarks>
 public readonly ref struct VideoFrame
 {
     private readonly unsafe byte* _data;
 
-    internal unsafe VideoFrame(byte* data, int width, int height, int pitch, ulong timeStamp)
+    internal unsafe VideoFrame(byte* data, int width, int height, int pitch, ulong timeStamp,
+        int cropLeft, int cropRight, int cropTop, int cropBottom)
     {
         _data = data;
         Width = width;
         Height = height;
         Pitch = pitch;
         TimeStamp = timeStamp;
+        CropLeft = cropLeft;
+        CropRight = cropRight;
+        CropTop = cropTop;
+        CropBottom = cropBottom;
     }
 
-    /// <summary>Frame width in pixels.</summary>
+    /// <summary>The width the stream declares, in pixels.</summary>
     public int Width { get; }
 
-    /// <summary>Frame height in pixels.</summary>
+    /// <summary>The height of the buffer the decoder wrote, in pixels.</summary>
     public int Height { get; }
 
     /// <summary>Row pitch of the luma and chroma planes in bytes.</summary>
     public int Pitch { get; }
 
+    /// <summary>Columns at the left of the buffer that are not part of the picture.</summary>
+    public int CropLeft { get; }
+
+    /// <summary>
+    /// Columns at the right of the buffer that are not part of the picture, counted from the pitch.
+    /// </summary>
+    public int CropRight { get; }
+
+    /// <summary>Rows at the top of the buffer that are not part of the picture.</summary>
+    public int CropTop { get; }
+
+    /// <summary>Rows at the bottom of the buffer that are not part of the picture.</summary>
+    public int CropBottom { get; }
+
+    /// <summary>The width of the picture inside the buffer, in pixels.</summary>
+    public int VisibleWidth => Pitch - CropLeft - CropRight;
+
+    /// <summary>The height of the picture inside the buffer, in pixels.</summary>
+    public int VisibleHeight => Height - CropTop - CropBottom;
+
     /// <summary>When the frame plays, in milliseconds.</summary>
     public ulong TimeStamp { get; }
 
-    /// <summary>Draws the frame at its native size with its top-left at (<paramref name="x"/>, <paramref name="y"/>).</summary>
-    public void RenderTo(Surface destination, int x, int y) => RenderTo(destination, x, y, Width, Height);
+    /// <summary>Draws the picture at its own size with its top-left at (<paramref name="x"/>, <paramref name="y"/>).</summary>
+    public void RenderTo(Surface destination, int x, int y) => RenderTo(destination, x, y, VisibleWidth, VisibleHeight);
 
     /// <summary>
     /// Draws the frame into the destination rectangle, scaling it to fit (nearest sampling) and
@@ -68,9 +99,12 @@ public readonly ref struct VideoFrame
     /// </summary>
     public unsafe void RenderTo(Surface destination, int destX, int destY, int destWidth, int destHeight)
     {
-        if (_data == null || Width <= 0 || Height <= 0 || destWidth <= 0 || destHeight <= 0)
+        int sourceWidth = VisibleWidth, sourceHeight = VisibleHeight;
+        if (_data == null || sourceWidth <= 0 || sourceHeight <= 0 || destWidth <= 0 || destHeight <= 0)
             return;
 
+        // The chroma plane follows the whole luma buffer, so it starts past the buffer's height rather
+        // than the picture's, and both planes are then read from the picture's corner inside it.
         byte* luma = _data;
         byte* chroma = _data + (long)Pitch * Height;
         int x0 = Math.Max(0, destX), y0 = Math.Max(0, destY);
@@ -80,15 +114,17 @@ public readonly ref struct VideoFrame
 
         for (int py = y0; py < y1; py++)
         {
-            int sy = (py - destY) * Height / destHeight;
-            if (sy >= Height) sy = Height - 1;
+            int sy = (py - destY) * sourceHeight / destHeight;
+            if (sy >= sourceHeight) sy = sourceHeight - 1;
+            sy += CropTop;
             byte* lumaRow = luma + (long)sy * Pitch;
             byte* chromaRow = chroma + (long)(sy >> 1) * Pitch;
             uint* destRow = pixels + (long)py * stride;
             for (int px = x0; px < x1; px++)
             {
-                int sx = (px - destX) * Width / destWidth;
-                if (sx >= Width) sx = Width - 1;
+                int sx = (px - destX) * sourceWidth / destWidth;
+                if (sx >= sourceWidth) sx = sourceWidth - 1;
+                sx += CropLeft;
 
                 // Limited-range BT.601 conversion in integer arithmetic. The chroma is shared across a
                 // 2x2 block, so the sample index drops the low bit and reads the U,V pair.
@@ -204,8 +240,57 @@ public sealed unsafe class MediaPlayer : IDisposable
     /// <summary>The playback position in milliseconds.</summary>
     public ulong Position => AvPlayer.sceAvPlayerCurrentTime(Live());
 
-    /// <summary>Begins playback.</summary>
-    public void Start() => SceResult.ThrowIfFailed(AvPlayer.sceAvPlayerStart(Live()), nameof(AvPlayer.sceAvPlayerStart));
+    /// <summary>How long <see cref="Start"/> waits for a source to be read before giving up.</summary>
+    public static readonly TimeSpan SourceReadTimeout = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// Begins playback, turning on the first video, audio and subtitle stream the source carries.
+    /// Reading a source runs on the player's own thread, so this waits for that to finish before it
+    /// can see what the source holds.
+    /// </summary>
+    /// <exception cref="ProsperoException">
+    /// Nothing was readable within <see cref="SourceReadTimeout"/>, a stream would not turn on, or
+    /// playback would not start.
+    /// </exception>
+    public void Start()
+    {
+        void* handle = Live();
+        EnableTheStreamsToPlay(handle);
+        SceResult.ThrowIfFailed(AvPlayer.sceAvPlayerStart(handle), nameof(AvPlayer.sceAvPlayerStart));
+    }
+
+    // Playback carries the streams that were turned on and no others, and turning none on is refused
+    // rather than taken as "play everything". What a source holds is known only once the player's own
+    // thread has read it, which is why the count is waited on rather than read once.
+    private static void EnableTheStreamsToPlay(void* handle)
+    {
+        int count = AvPlayer.sceAvPlayerStreamCount(handle);
+        long until = Environment.TickCount64 + (long)SourceReadTimeout.TotalMilliseconds;
+        while (count <= 0 && Environment.TickCount64 < until)
+        {
+            Thread.Sleep(1);
+            count = AvPlayer.sceAvPlayerStreamCount(handle);
+        }
+        if (count <= 0)
+            throw new ProsperoException(nameof(AvPlayer.sceAvPlayerStreamCount), count);
+
+        // The first stream of each kind, which is the choice a player with no way to ask the caller can
+        // make. A second stream of a kind is another language or another angle, and turning that on as
+        // well would play both at once.
+        Span<bool> taken = stackalloc bool[4];
+        for (uint i = 0; i < (uint)count; i++)
+        {
+            AvPlayerStreamInfo info;
+            SceResult.ThrowIfFailed(
+                AvPlayer.sceAvPlayerGetStreamInfo(handle, i, &info), nameof(AvPlayer.sceAvPlayerGetStreamInfo));
+            int kind = (int)info.Type;
+            if (kind <= 0 || kind >= taken.Length || taken[kind])
+                continue;
+            SceResult.ThrowIfFailed(
+                AvPlayer.sceAvPlayerEnableStream(handle, i), nameof(AvPlayer.sceAvPlayerEnableStream));
+            taken[kind] = true;
+        }
+    }
 
     /// <summary>Stops playback.</summary>
     public void Stop() => SceResult.ThrowIfFailed(AvPlayer.sceAvPlayerStop(Live()), nameof(AvPlayer.sceAvPlayerStop));
@@ -263,7 +348,8 @@ public sealed unsafe class MediaPlayer : IDisposable
             return false;
         }
         frame = new VideoFrame(
-            (byte*)info.Data, (int)info.VideoWidth, (int)info.VideoHeight, (int)info.VideoPitch, info.TimeStamp);
+            (byte*)info.Data, (int)info.VideoWidth, (int)info.VideoHeight, (int)info.VideoPitch, info.TimeStamp,
+            (int)info.CropLeft, (int)info.CropRight, (int)info.CropTop, (int)info.CropBottom);
         return true;
     }
 
@@ -322,7 +408,7 @@ public sealed unsafe class MediaPlayer : IDisposable
     // Video frame buffers are GPU memory: the decoder writes them and the caller reads them, so they
     // must be GPU-visible direct memory, not the plain heap the general allocator hands back. The
     // player asks for and releases them by pointer through these callbacks, so the reservation each
-    // pointer belongs to is tracked in a small native table, keyed by the mapped address, that both the
+    // pointer belongs to is tracked in a small unmanaged table, keyed by the mapped address, that both the
     // player's threads reach without touching the managed heap.
     private struct TextureSlot
     {

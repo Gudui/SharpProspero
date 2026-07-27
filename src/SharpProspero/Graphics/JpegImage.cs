@@ -54,9 +54,17 @@ public sealed unsafe class JpegImage : IDisposable
             if (width == 0 || height == 0 || imageBytes > uint.MaxValue)
                 throw new ProsperoException(nameof(JpegDec.sceJpegDecParseHeader), unchecked((int)0x80650020));
 
-            // Standard sampling: the decoder handles the common YCbCr layouts (4:4:4, 4:2:2, 4:2:0)
-            // a typical file uses. Zero is not one of the attribute values, so it is not the default.
-            var create = new SceJpegDecCreateParam { ThisSize = (uint)sizeof(SceJpegDecCreateParam), Attribute = 1, MaxImageWidth = info.ImageWidth };
+            // Which sampling the decoder is created for, taken from what the header reports rather than
+            // assumed. Most files need the ordinary set of layouts; some need the full one, and a
+            // decoder created for the ordinary set refuses those. The parse says which, and the answer
+            // was being read and thrown away. It reports nothing for a colour space it does not know,
+            // and only the two values are accepted, so anything else falls back to the ordinary set.
+            var create = new SceJpegDecCreateParam
+            {
+                ThisSize = (uint)sizeof(SceJpegDecCreateParam),
+                Attribute = info.SuitableCscAttribute == 2 ? 2u : 1u,
+                MaxImageWidth = info.ImageWidth,
+            };
             int workSize = JpegDec.sceJpegDecQueryMemorySize(&create);
             SceResult.ThrowIfFailed(workSize, nameof(JpegDec.sceJpegDecQueryMemorySize));
 

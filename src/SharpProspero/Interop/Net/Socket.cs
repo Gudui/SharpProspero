@@ -63,6 +63,12 @@ public unsafe struct SceNetEpollData
 }
 
 /// <summary>One readiness event reported by the poller: which events fired and the cookie for the socket.</summary>
+/// <remarks>
+/// Twenty-four bytes, not sixteen. The identifier between the padding and the cookie is easy to miss
+/// and costly to omit: leaving it out puts the cookie eight bytes early, so every cookie read back is
+/// the wrong half of the record, and the poller filling a caller's array writes eight bytes past each
+/// entry it was given room for - past the end of the array on the last one.
+/// </remarks>
 [StructLayout(LayoutKind.Sequential)]
 public struct SceNetEpollEvent
 {
@@ -70,6 +76,9 @@ public struct SceNetEpollEvent
     public uint Events;
 
     private uint _pad;
+
+    /// <summary>What the event is about, reported by the poller.</summary>
+    public ulong Ident;
 
     /// <summary>The cookie registered for the socket.</summary>
     public SceNetEpollData Data;

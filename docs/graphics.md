@@ -22,7 +22,7 @@ lower graphics-processor interface, see the child pages [2D scenes](graphics-sce
 ## The display
 
 `DisplayDevice` opens the main output, allocates its framebuffers from direct memory, registers them,
-and presents frames on the vertical blank.
+and presents frames, holding each until the output reports it on screen.
 
 ```csharp
 using var display = DisplayDevice.Open(width: 1920, height: 1080, bufferCount: 2);
@@ -35,16 +35,32 @@ while (running)
 }
 ```
 
-`BackBuffer` is the framebuffer to draw the next frame into. `Present` submits it, waits for the
-vertical blank, advances to the next framebuffer, and returns the presented frame index. The default is
+`BackBuffer` is the framebuffer to draw the next frame into. `Present` submits it, waits until the
+output reports that flip as the one on screen, advances to the next framebuffer, and returns the
+presented frame index. When the flip queue is full, `Present` retries instead of failing. The default is
 a two-buffer swap chain; pass a higher `bufferCount` for triple buffering. The pixels are B8-G8-R8-A8
-sRGB in linear layout, the format the CPU renderer writes. `Open` requires the width to be a multiple
-of 64 so the row pitch matches the allocation; the standard 1920 and 1280 widths already are.
+sRGB. `Open` takes only the sizes the output accepts — 1920x1080, 3840x2160, 720x480, 720x576, or a
+width that is a multiple of 32 from 1280 to 1888 with a height of nine sixteenths of it — and throws
+`ArgumentOutOfRangeException` for anything else. Only 1920x1080 is accepted on every console; the rest
+need the console set up for them and are refused when the buffers are registered.
+
+`Open` takes a `tiling` argument. The default, `VideoOutTilingMode.Tiled`, is accepted on any console
+and is what the graphics processor draws into; `BackBuffer` is then a row-major surface of its own that
+`Present` rearranges into the scan-out buffer, which walks every pixel on the processor. Pass
+`VideoOutTilingMode.Linear` to draw straight into the scan-out buffer and skip that pass — the output
+accepts it only while "Enhanced Display Buffer Attribute" is on in the machine's debug settings, and
+otherwise `Open` throws a `ProsperoException` saying so. `Tiling` reports which layout is in use.
+
+For a caller that records its own flip on the graphics timeline, `OutputHandle`, `CurrentBufferIndex`,
+`BackBufferAddress` and `FrameIndex` give the values the command buffer needs, and `AdvanceFrame` waits
+for that frame and rotates the swap chain in place of `Present`. `FlipStatus` reports how far the output
+has got through the flips submitted to it, and `Present` takes a `VideoOutFlipMode` (vertical sync by
+default).
 
 ```mermaid
 flowchart LR
   A[Draw into BackBuffer] --> B[Present]
-  B --> C[Wait for vertical blank]
+  B --> C[Wait until that flip is on screen]
   C --> D[Advance to next framebuffer]
   D --> A
 ```
@@ -77,7 +93,7 @@ surface bounds.
 | `DrawText(text, x, y, scale, color)` | Draw a string left to right. |
 | `DrawTextCentered(text, y, scale, color)` | Draw a string centered horizontally. |
 | `DrawTextOutlined(text, x, y, scale, fill, outline)` | Draw a string with a one-pixel outline, so it stays readable over a photo or a video frame. |
-| `MeasureText(text, scale)` | Width in pixels the string occupies. |
+| `Surface.MeasureText(text, scale)` | Width in pixels the string occupies. Static: call it on the type, not on a surface. |
 
 Fills use a single-pass span write per row, so `Clear` and `FillRect` run as fast as the memory allows.
 When a framebuffer's row pitch is wider than the drawn width, construct the surface with a `stride` (in
@@ -323,7 +339,8 @@ tool or an overlay.
 
 For smooth text at any size, `TrueTypeFont` loads a `.ttf` or `.otf` file and renders antialiased glyphs
 in any color. Load the font modules first, load a font from its bytes, set the pixel size, and draw.
-`(x, y)` is the left end of the text baseline. Dispose the font when done.
+`(x, y)` is the top-left of the line, the same as every other font here, so the layout helpers place
+both alike; `DrawTextOnBaseline` takes the baseline instead. Dispose the font when done.
 
 ```csharp
 using var module = SystemModule.Load(SystemModuleId.Font);
@@ -336,8 +353,18 @@ font.DrawText(surface, "Hello, world", 100, 200, Color.White);
 int width = font.MeasureText("Hello, world");
 ```
 
-Both fonts implement `ITextFont` (`LineHeight`, `MeasureText`, `DrawText`), so `TextLayout` and the
-interface controls work the same whichever one you choose.
+`PixelSize` is settable, so one loaded font can be re-sized between draws; sizes below 1 or above 1024
+pixels are pulled into that range. `LineHeight` is the distance from one line to the next and
+`BaselineOffset` the distance from the top of a line down to its baseline, both as the font itself
+reports them at the current size, so both move when the size changes. `DrawText` adds `BaselineOffset`
+for you, which is how it takes a line top where `DrawTextOnBaseline` takes a baseline. `Load` also takes
+`memoryBudgetBytes`, the size of the block reserved for the font; the default suits a UI font and
+anything under 256 KB is refused.
+
+`TrueTypeFont` and `BitmapTextFont` — the built-in glyphs wrapped as a font, `new BitmapTextFont(scale)` —
+both implement `ITextFont` (`LineHeight`, `MeasureText`, `DrawText`), so `TextLayout` and the interface
+controls work the same whichever one you choose. `BitmapFont` itself is only the glyph table
+`BitmapTextFont` draws from.
 
 ## Screenshots and photo export
 

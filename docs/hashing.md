@@ -8,8 +8,10 @@ nav_order: 6
 
 The `SharpProspero.Security` namespace computes message digests and checksums with no system module, so a
 build can verify a downloaded file against a published checksum, compare two files, or authenticate a
-message with a shared secret. Every algorithm shares one small base type and offers the same one-shot,
-file, and streaming forms, and each returns the identical result on the device and in tests.
+message with a shared secret. The digests share one small base type, `HashAlgorithm`, and offer the same
+one-shot, file, and streaming forms. `Crc32` names its one-shot helpers `Compute` and `ComputeFileValue`
+instead, and `Hmac` stands outside the base type with static helpers and a streaming form but no file
+helper. Each returns the identical result on the device and in tests.
 
 <details open markdown="block">
   <summary>On this page</summary>
@@ -87,8 +89,8 @@ sha.Finish(digest);
 ## The hashing base type
 
 Every digest derives from `HashAlgorithm`, so code can accept any of them through the base. It defines
-`HashSize`, `Update`, the three `Finish` overloads, and `ComputeFile(string)`, which streams a file
-through the running digest and returns the result.
+`HashSize`, `Update`, the two `Finish` overloads and `FinishHex`, and `ComputeFile(string)`, which
+streams a file through the running digest and returns the result.
 
 ```csharp
 static string Checksum(HashAlgorithm hash, ReadOnlySpan<byte> data)
@@ -145,6 +147,9 @@ string tag = Hmac.Sha256Hex(key, message);   // also Sha512Hex, Sha1Hex, Md5Hex
 bool authentic = tag == expected;
 ```
 
+`Hmac.Sha256`, `Sha512`, `Sha1` and `Md5` take the same arguments and return the tag as raw bytes, for a
+caller comparing against bytes from a protocol rather than against text.
+
 For a keyed stream, construct one over any hash factory and its internal block size, then feed it with
 `Update`:
 
@@ -155,8 +160,11 @@ mac.Update(part2);
 byte[] tag = mac.Finish();
 ```
 
+`HashSize` reports the tag width in bytes, the same as the underlying hash, and sizes a buffer for
+`Finish(Span<byte>)`.
+
 The `blockSize` argument is the underlying hash's internal block size in bytes, not its digest size. It is
-64 for SHA-256, SHA-1 and MD5, and 128 for SHA-512. The four static helpers pass the right value for you.
+64 for SHA-256, SHA-1 and MD5, and 128 for SHA-512. The static helpers pass the right value for you.
 
 ## Block sizes
 

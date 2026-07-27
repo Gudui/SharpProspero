@@ -21,7 +21,7 @@ C# application  ->  IL  ->  ahead-of-time compiler (ILC)  ->  x86_64 object
                                                                     |
                                                                 eboot.bin (ELF)
                                                                     |
-                                                        LibProsperoPkg packager
+                                                                   the packager
                                                                     |
                                                               installable *.pkg
 ```
@@ -49,28 +49,36 @@ onto the underlying service and carry no policy of their own.
 - `Interop.Pad` — controller init, open, read, vibration and light bar.
 - `Interop.Audio` — audio-output init, open, output and volume.
 - `Interop.Sysmodule` — load, unload and query the loadable system modules.
-- `Interop.Image` — PNG and JPEG decode.
+- `Interop.Image` — PNG and JPEG decode and encode.
 - `Interop.Rtc` — the real-time clock: current wall-clock time and tick.
 - `Interop.Random` — random bytes from the system entropy source.
-- `Interop.Dialog` — the system browser dialog.
+- `Interop.Dialog` — the common dialog subsystem and the message, error, text-input, save-data and
+  browser dialogs.
 - `Interop.Media` — media playback: start a player, add a source, pull decoded audio.
 - `Interop.UserService`, `Interop.SystemService` — startup services and system parameters.
 
 ### Memory
 
-`SharpProspero.Memory` wraps the raw allocator in `DirectMemoryRegion`, a disposable region that
-reserves, maps and releases in one object. `HeapMonitor` reads managed heap usage so a loop can stay
-within the ceiling set for the module. Direct memory is the source of GPU-visible buffers; the
-managed heap is for application state.
+`SharpProspero.Memory` wraps the raw allocator in two disposable regions. `DirectMemoryRegion`
+reserves, maps and releases a region in one object; `FlexibleMemoryRegion` maps working buffers the
+graphics processor does not read. `SystemMemory` reports the flexible memory still available and the
+largest free run of direct memory. `HeapMonitor` reads managed heap usage so a loop can stay within
+the ceiling set for the module, and `ObjectPool<T>` and `LruCache<TKey, TValue>` hold the allocation
+rate flat. Direct memory is the source of GPU-visible buffers; the managed heap is for application
+state.
 
 ### Graphics
 
 `SharpProspero.Graphics` builds the drawing surface on top of memory and display output.
 `DisplayDevice` opens the output, allocates its framebuffers from direct memory, registers them, and
 presents frames. `Surface` draws into a framebuffer: clear, fill, lines, outlines, surface copies,
-glyphs and text. `PngImage` and `JpegImage` decode into surface-format pixels. `BitmapFont` carries
-the 8x8 glyph table as read-only data. `Color` packs a pixel for the display format and blends
-between colors.
+glyphs and text. `PngImage`, `JpegImage`, `BmpImage`, `TgaImage` and `GifImage` decode into
+surface-format pixels; `PngEncoder` and `JpegEncoder` write a surface back out as a file.
+`BitmapFont` carries the 8x8 glyph table as read-only data, and `TrueTypeFont` draws antialiased
+glyphs at any pixel size. `Color` packs a pixel for the display format and blends between colors.
+Below that CPU drawing path, `SharpProspero.Graphics.Agc` records register state and draw commands
+into buffers the graphics processor runs; `Renderer3D` uses it to draw a `MeshData` mesh with the
+built-in shaders. See [Graphics](graphics.md) and [GPU command layer](graphics-gpu.md).
 
 ### Input
 
@@ -82,19 +90,44 @@ per-frame context can report button edges (pressed and released this frame).
 ### Audio, timing, files and modules
 
 `SharpProspero.Audio` opens a stereo output port that paces the caller to the audio clock.
-`SharpProspero.Timing` holds a monotonic clock (`GameClock`) for frame pacing and a wall-clock reader
-(`SystemClock`) for the calendar date and time. `SharpProspero.Storage` reads the files bundled with
+`SharpProspero.Timing` holds a monotonic clock (`GameClock`) for frame pacing, a wall-clock reader
+(`SystemClock`) for the calendar date and time, and timers driven by the frame delta: `Cooldown`,
+`Interval`, `Countdown`, `FixedTimestep` for a fixed simulation step, and `FrameScheduler` for
+delayed and repeating callbacks. `SharpProspero.Storage` reads the files bundled with
 the module (`PackageFile`) and browses and changes files and directories by path (`FileSystem`).
 `SharpProspero.Modules` loads a system module by id or a supplied `.prx` at run time.
 `SharpProspero.Media` plays a media file and hands back decoded audio frames.
-`SharpProspero.Numerics` holds a reproducible gameplay generator and the entropy source.
-`SharpProspero.Platform` reads the user's system settings (language, date and time formats, time
-zone), opens the system browser, and installs a package file. Services that a title does not link
+`SharpProspero.Numerics` holds the arithmetic game code is built on: `Vector2` and `RectF`, the
+scalar helpers in `MathUtil`, the overlap tests in `Collision`, a `Quadtree<T>` spatial index, a
+`RectPacker` that fits many small rectangles into one atlas, coherent `NoiseField` sampling for
+procedural content, a reproducible gameplay generator (`GameRandom`) drawing its seed from the
+entropy source (`HardwareEntropy`), a `WeightedTable<T>` for drop and encounter draws, and the 3D
+set: `Camera3D`, `Transform`, `Ray`, and the `BoundingBox` and `BoundingSphere` volumes a `Frustum`
+culls against.
+`SharpProspero.Platform` is the system-service layer: console facts, signed-in users and system
+parameters, system settings and the events the module receives, the overlay dialogs and
+notifications, save data, trophies and the telemetry behind them, the content library and screen
+capture, installing and launching titles, the attached storage and disc devices, and networking from
+a TCP or UDP socket up to an HTTP client and server. Services that a title does not link
 against are loaded at run time and resolved by name through `SystemLibrary`, so no extra library is
 needed to reach them. `FirmwareVersion` and `FirmwareSupport` read the running system version and
 report whether the SDK supports it, and `FirmwareRegistry` holds, in one place, what each
 resolved-by-name service depends on and the version it was confirmed on. See
 [Firmware compatibility](firmware.md).
+
+### Threading and diagnostics
+
+`SharpProspero.Threading` moves slow work off the frame loop. `BackgroundOperation` and
+`BackgroundOperation<T>` each run one job on a thread of their own; `WorkQueue` runs a stream of jobs
+on a small pool of worker threads and hands back a `WorkItem<T>` per result. `Dispatcher` is the way
+back: a worker posts a callback and the frame thread runs it when it drains the queue, which is where
+the drawing surface and application state are safe to touch. `ProsperoApp` exposes its own
+`Dispatcher` and drains it once per frame before `OnFrame`. See [Threading](threading.md).
+
+`SharpProspero.Diagnostics` reports on a running module. `Log` writes leveled messages to the sinks
+attached to it — a file (`FileLogSink`) or the console (`ConsoleLogSink`) — and drops anything below
+`MinimumLevel`. `FrameStats` tracks frame times over a window and reports the rate, the one-percent
+low and any percentile, as a text readout or a graph. See [Diagnostics](diagnostics.md).
 
 ### Interface
 
@@ -111,7 +144,9 @@ overrides `OnLoad`, `OnFrame` and `OnUnload`.
 
 ## Entry points
 
-An application's `Main` becomes the module entry the loader calls. A module can also expose extra
+The loader calls `_start`, which the linker's start object defines. It sets the C library up from the
+block the loader hands it, registers the teardown routine, runs the module's constructors, then calls
+the application's `Main` and passes its return value to `exit`. A module can also expose extra
 C-callable entry points by marking a static method `[UnmanagedCallersOnly]`; the compiler exports it
 as an unmanaged symbol because `IlcExportUnmanagedEntryPoints` is set in the build props.
 

@@ -93,11 +93,11 @@ public static class ApplicationCategories
     /// carries.
     /// </summary>
     /// <remarks>
-    /// A title that runs a module of its own is badged as a game; a media application is badged as
-    /// other. The two travel together, and a title whose badge does not match its category is drawn
-    /// with the wrong one on the home screen.
+    /// This is only the starting point for a title that names none. The badge does not follow from the
+    /// category and is the author's to choose: a title of any category may carry any of the three, and
+    /// deriving one from the other overwrote a deliberate choice, including the one meaning no badge.
     /// </remarks>
-    public static int BadgeFor(ApplicationCategory category) =>
+    public static int DefaultBadge(ApplicationCategory? category) =>
         category == ApplicationCategory.Game ? 1 : 2;
 
     /// <summary>

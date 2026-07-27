@@ -9,7 +9,7 @@
   <Import Project="$(SharpProsperoRoot)\build\Prospero.App.props" />
 
   <PropertyGroup>
-    <OutputType>Exe</OutputType>
+    <OutputType>Library</OutputType>
     <RootNamespace>SampleApp</RootNamespace>
     <AssemblyName>SampleApp</AssemblyName>
     <TargetFramework>net10.0</TargetFramework>

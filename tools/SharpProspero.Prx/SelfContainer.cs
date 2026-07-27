@@ -425,29 +425,22 @@ public static class SelfContainer
     }
 
     /// <summary>
-    /// Recomputes the SHA-256 of the container's embedded ELF and compares it with the digest stored in
-    /// the extended info, so a reader can tell whether the container is intact. The result's
-    /// <c>HasDigest</c> is false when the container carries no extended-info digest to check against.
+    /// Rebuilds the image the container carries and compares its SHA-256 with the digest stored in the
+    /// extended info, so a reader holding nothing but the container can tell whether it is intact. The
+    /// result's <c>HasDigest</c> is false when the container carries no extended-info digest.
     /// </summary>
+    /// <remarks>
+    /// The digest covers what the container carries, not the file it was made from. Those differ by the
+    /// record-keeping a module holds between and after its stored segments, which the container leaves
+    /// behind, so checking against the original file reports a mismatch for every real module.
+    /// </remarks>
     /// <param name="data">The container file bytes.</param>
     public static SelfIntegrity CheckIntegrity(ReadOnlySpan<byte> data)
-        => CheckIntegrity(data, ReadOnlySpan<byte>.Empty);
-
-    /// <summary>
-    /// Compares the digest stored in the container's extended info with a SHA-256 over
-    /// <paramref name="module"/>, which is the module the container was built from. The digest covers
-    /// the module in full, including any record-keeping the container does not store, so this is the
-    /// form that can confirm a match for every module. Passing an empty span falls back to the image
-    /// rebuilt from the container, which agrees only when the container stores the whole module.
-    /// </summary>
-    /// <param name="data">The container file bytes.</param>
-    /// <param name="module">The module the container carries, or empty to rebuild it from the container.</param>
-    public static SelfIntegrity CheckIntegrity(ReadOnlySpan<byte> data, ReadOnlySpan<byte> module)
     {
         SelfImage image = Parse(data);
         if (image.ExtInfo is not SelfExtInfo ext || ext.Digest is null || ext.Digest.Length != 32)
             return new SelfIntegrity(false, false, [], []);
-        byte[] computed = SHA256.HashData(module.IsEmpty ? ExtractElf(data) : module.ToArray());
+        byte[] computed = SHA256.HashData(ExtractElf(data));
         bool matches = computed.AsSpan().SequenceEqual(ext.Digest);
         return new SelfIntegrity(true, matches, ext.Digest, computed);
     }
@@ -571,12 +564,7 @@ public static class SelfContainer
         BinaryPrimitives.WriteUInt64LittleEndian(span[(extInfoStart + 0x08)..], 1); // program type
         BinaryPrimitives.WriteUInt64LittleEndian(span[(extInfoStart + 0x10)..], options.AppVersion);
         BinaryPrimitives.WriteUInt64LittleEndian(span[(extInfoStart + 0x18)..], options.FirmwareVersion);
-        // The digest covers the module exactly as it was handed in, every byte of it. A module keeps
-        // some of its record-keeping past the last segment the container stores - the note in the tail -
-        // so a reader working from the container alone cannot arrive at this value again; that is a
-        // property of the format, and <see cref="CheckIntegrity(ReadOnlySpan{byte}, ReadOnlySpan{byte})"/>
-        // checks it against the module instead.
-        SHA256.HashData(elf).CopyTo(span[(extInfoStart + 0x20)..]);
+        // The digest is written once the rest of the container is in place, below.
 
         BinaryPrimitives.WriteUInt64LittleEndian(span[(extInfoStart + ExtInfoSize)..], 3); // control block type
 
@@ -590,6 +578,17 @@ public static class SelfContainer
         if (versionLength > 0)
             elf.AsSpan(versionOffset, versionLength).CopyTo(span[versionStart..]);
 
+        // The digest covers the image the container carries, not the file it was made from. The two
+        // differ: a module holds record-keeping between and after its stored segments - its section
+        // table, and the records in its tail - that the container does not carry, so a digest over the
+        // file describes something no reader ever sees again. Every module that starts carries the
+        // first, and none carries the second.
+        //
+        // It is taken over the reconstruction rather than over a second assembly of the same bytes, so
+        // the value written here and the value a reader arrives at cannot drift apart: they come from
+        // one routine. The digest itself sits in the header, outside what is reconstructed, so writing
+        // it afterwards does not change what it covers.
+        SHA256.HashData(ExtractElf(buffer)).CopyTo(span[(extInfoStart + 0x20)..]);
         return buffer;
     }
 
@@ -616,33 +615,6 @@ public static class SelfContainer
 
     private readonly record struct SelectedSegment(int PhdrIndex, int FileOffset, int FileSize);
 
-    // The module as the container carries it: the header region and every stored segment, with
-    // anything not stored left zero. Reading a container back produces exactly this, so this is what
-    // the digest covers - a digest over the input instead would stop matching the moment a module kept
-    // any record-keeping past its last stored segment, which is what a module does.
-    private static byte[] CarriedImage(byte[] elf, int phnum, List<SelectedSegment> selected)
-    {
-        int headerLen = ElfHeaderSize + phnum * ElfPhdrSize;
-        // The image reaches the furthest extent any program header records, whether or not the
-        // container stores those bytes, which is how reading one back sizes it.
-        long end = headerLen;
-        for (int i = 0; i < phnum; i++)
-        {
-            int p = ElfHeaderSize + i * ElfPhdrSize;
-            ulong off = BinaryPrimitives.ReadUInt64LittleEndian(elf.AsSpan(p + 0x08));
-            ulong size = BinaryPrimitives.ReadUInt64LittleEndian(elf.AsSpan(p + 0x20));
-            if (off > int.MaxValue || size > (ulong)int.MaxValue - off)
-                continue;
-            end = Math.Max(end, (long)(off + size));
-        }
-
-        byte[] image = new byte[end];
-        elf.AsSpan(0, headerLen).CopyTo(image);
-        foreach (SelectedSegment s in selected)
-            elf.AsSpan(s.FileOffset, s.FileSize).CopyTo(image.AsSpan(s.FileOffset));
-        return image;
-    }
-
     private static List<SelectedSegment> SelectSegments(byte[] elf, int phoff, int phnum)
     {
         var result = new List<SelectedSegment>();
@@ -652,23 +624,28 @@ public static class SelfContainer
             uint pType = BinaryPrimitives.ReadUInt32LittleEndian(elf.AsSpan(p));
             ulong off = BinaryPrimitives.ReadUInt64LittleEndian(elf.AsSpan(p + 0x08));
             ulong fsz = BinaryPrimitives.ReadUInt64LittleEndian(elf.AsSpan(p + 0x20));
-            if (!RangeInBounds(off, fsz, elf.Length))
-                continue;
             // A segment storing nothing is carried as a pair of zero-length entries sharing one file
-            // offset with whatever follows. None of the seventy modules measured that start carries a
-            // zero-length entry, its digest table covers no blocks, and two entries at one offset leave
-            // the table no longer ascending. A module that stores nothing in a mapped segment is
-            // malformed at the source, so it is refused here rather than wrapped into that shape.
+            // offset with whatever follows. Such an entry's digest table covers no blocks, and two
+            // entries at one offset leave the table no longer ascending. A module that stores nothing
+            // in a mapped segment is malformed at the source, so it is refused here rather than
+            // wrapped into that shape.
             if (fsz == 0)
             {
                 if (pType == PtLoad && BinaryPrimitives.ReadUInt32LittleEndian(elf.AsSpan(p + 4)) != 0)
                     throw new PrxFormatException(
                         $"Program header {i} is mapped but stores nothing. A container carries such a segment as a " +
-                        "zero-length entry, which no module that starts has.");
+                        "zero-length entry, and a module carrying one does not start.");
                 continue;
             }
-            if (pType == PtLoad || pType == PtModuleData || pType == PtRelro || pType == PtComment)
-                result.Add(new SelectedSegment(i, (int)off, (int)fsz));
+            if (pType != PtLoad && pType != PtModuleData && pType != PtRelro && pType != PtComment)
+                continue;
+            // A segment the container has to carry, whose bytes are not in the module. Passing over it
+            // writes a container missing a segment the loader needs and says nothing, so what comes out
+            // reads as a module and is not one.
+            if (!RangeInBounds(off, fsz, elf.Length))
+                throw new PrxFormatException(
+                    $"Program header {i} stores {fsz} bytes at 0x{off:X}, past the end of the {elf.Length}-byte module.");
+            result.Add(new SelectedSegment(i, (int)off, (int)fsz));
         }
         return result;
     }

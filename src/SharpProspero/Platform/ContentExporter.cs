@@ -5,6 +5,7 @@ using SharpProspero.Interop;
 using SharpProspero.Interop.Content;
 using SharpProspero.Interop.Sysmodule;
 using System;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Unicode;
 using Native = SharpProspero.Interop.Content.ContentExport;
@@ -24,6 +25,18 @@ namespace SharpProspero.Platform;
 /// </example>
 public sealed unsafe class ContentExporter : IDisposable
 {
+    // What the service allocates through. It calls these from its own threads with no managed frame
+    // above them, so nothing here may throw: a failure is reported by answering nothing.
+    [UnmanagedCallersOnly]
+    private static void* Allocate(nuint size, void* userData)
+    {
+        try { return NativeMemory.Alloc(size); }
+        catch (OutOfMemoryException) { return null; }
+    }
+
+    [UnmanagedCallersOnly]
+    private static void Release(void* block, void* userData) => NativeMemory.Free(block);
+
     private bool _disposed;
 
     private ContentExporter() { }
@@ -36,8 +49,15 @@ public sealed unsafe class ContentExporter : IDisposable
             Sysmodule.sceSysmoduleLoadModule((ushort)SystemModuleId.ContentExport),
             "sceSysmoduleLoadModule(ContentExport)");
 
-        // A zeroed parameter takes the service's own allocator and buffer size.
-        var param = default(SceContentExportInitParam2);
+        // The service allocates through routines the caller supplies and has none of its own to fall
+        // back on: it checks both are there and refuses the whole call otherwise, so a cleared
+        // parameter meant the service could never be started. The buffer size is genuinely optional and
+        // is left at zero, which selects the service's own.
+        var param = new SceContentExportInitParam2
+        {
+            MallocFunc = (nint)(delegate* unmanaged<nuint, void*, void*>)&Allocate,
+            FreeFunc = (nint)(delegate* unmanaged<void*, void*, void>)&Release,
+        };
         SceResult.ThrowIfFailed(Native.sceContentExportInit2(&param), nameof(Native.sceContentExportInit2));
         return new ContentExporter();
     }

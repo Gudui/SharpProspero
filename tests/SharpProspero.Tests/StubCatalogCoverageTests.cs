@@ -106,14 +106,22 @@ public sealed class StubCatalogCoverageTests
 
         SharpProspero.Link.ElfObject obj =
             SharpProspero.Link.ElfObjectReader.Read(SharpProspero.Link.CompatEmitter.BuildObject(), "compat.o");
+        // A name under the alias prefix reaches the published name after it: that is how a routine
+        // standing in front of something the platform publishes still reaches the platform's.
+        static string Published(string n) =>
+            n.StartsWith(SharpProspero.Link.Linker.DeviceAliasPrefix, StringComparison.Ordinal)
+                ? n[SharpProspero.Link.Linker.DeviceAliasPrefix.Length..]
+                : n;
+
         string[] reached = [.. obj.Symbols
             .Where(s => s.IsUndefined && s.Name.Length > 0)
-            .Select(s => s.Name)
+            .Select(s => Published(s.Name))
             .Where(n => !named.Contains(n))
             // The linker places these itself; they name no module.
             .Where(n => n != SharpProspero.Link.CompatEmitter.ModuleBaseSymbol
                      && n != SharpProspero.Link.CompatEmitter.TextEndSymbol
-                     && n != SharpProspero.Link.CompatEmitter.FrameIndexSymbol)
+                     && n != SharpProspero.Link.CompatEmitter.FrameIndexSymbol
+                     && n != SharpProspero.Link.CompatEmitter.FrameIndexEndSymbol)
             .Distinct().Order()];
 
         Assert.True(reached.Length == 0,
@@ -133,6 +141,25 @@ public sealed class StubCatalogCoverageTests
     }
 
     // Where the toolchain is installed, or null when it is not.
+    // The archive that is the authority for an entry. A library's archive is normally named after the
+    // library, but not always: some are named after the module instead, and one is only shipped in the
+    // form a development machine uses. Guessing the first spelling and moving on when it is absent is
+    // how a wrong entry survived - the check skipped exactly the entry that was wrong.
+    private static string? StubArchive(string root, StubCatalog.Entry entry)
+    {
+        string dir = System.IO.Path.Combine(root, "target", "lib");
+        string library = entry.Library.Replace(".native", "").Replace("_native", "");
+        string module = (entry.ModuleName ?? entry.Library).Replace(".native", "").Replace("_native", "");
+        foreach (string stem in new[] { library, module })
+            foreach (string suffix in new[] { "_stub_weak.a", "_nosubmission_stub_weak.a" })
+            {
+                string path = System.IO.Path.Combine(dir, stem + suffix);
+                if (System.IO.File.Exists(path))
+                    return path;
+            }
+        return null;
+    }
+
     private static string? ToolchainRoot()
     {
         string? root = System.Environment.GetEnvironmentVariable("PROSPERO_SDK_DIR");
@@ -216,9 +243,15 @@ public sealed class StubCatalogCoverageTests
         var wrong = new List<string>();
         foreach (StubCatalog.Entry entry in StubCatalog.Core)
         {
-            string library = entry.Library.Replace(".native", "").Replace("_native", "");
-            string stub = System.IO.Path.Combine(root, "target", "lib", library + "_stub_weak.a");
-            if (!System.IO.File.Exists(stub))
+            string? stub = StubArchive(root, entry);
+            if (stub is null)
+                continue;
+            // An archive shipped only in the form a development machine uses describes that machine's
+            // layout, not a retail one: this one names a file that exists on no retail system, where
+            // the library lives in a file named after its module instead. Which file to load is settled
+            // against the machine rather than against that archive, so it is not compared here. What
+            // the archive does settle - which names the library publishes - is checked either way.
+            if (stub.Contains("_nosubmission_", StringComparison.Ordinal))
                 continue;
             string? declared = DeclaredFileName(stub);
             if (declared is null)
@@ -247,14 +280,23 @@ public sealed class StubCatalogCoverageTests
         // Names the device carries that the toolchain does not offer an application. Each one is
         // confirmed present in the module that publishes it, so an import of it binds; the toolchain
         // simply does not hand it out. Add to this only with that confirmation.
-        var deviceOnly = new HashSet<string>(StringComparer.Ordinal) { "sceSystemServiceLaunchApp" };
+        // Names the device publishes that the link-time archives do not carry. The archives are the
+        // authority on what an application may link, so a name here is one the console was measured to
+        // export and the archive simply omits.
+        var deviceOnly = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "sceSystemServiceLaunchApp",
+            "sceKernelGetProsperoSystemSwVersion",
+            "sceKernelGetAllowedSdkVersionOnSystem",
+            "sysctlbyname",
+            "sceKernelGetOpenPsId",
+        };
 
         var wrong = new List<string>();
         foreach (StubCatalog.Entry entry in StubCatalog.Core)
         {
-            string library = entry.Library.Replace(".native", "").Replace("_native", "");
-            string stub = System.IO.Path.Combine(root, "target", "lib", library + "_stub_weak.a");
-            if (!System.IO.File.Exists(stub))
+            string? stub = StubArchive(root, entry);
+            if (stub is null)
                 continue;
             HashSet<string> published = PublishedNames(stub);
             foreach (string name in entry.Exports)
