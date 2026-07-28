@@ -143,14 +143,12 @@ Before you mark it ready:
 - [ ] New behaviour has a test; a fixed bug has a test that pins it.
 - [ ] Public API carries documentation comments.
 - [ ] The documentation matches the change.
-- [ ] Comments and documentation follow [RULES.md](RULES.md).
 - [ ] No debug scaffolding, commented-out code or leftover diagnostic output.
 - [ ] The diff holds nothing the description leaves out.
 
 ## Style
 
-C# 14 and .NET 10. [RULES.md](RULES.md) sets the standard for every comment and documentation page,
-and review holds you to it. Read it before you write either.
+C# 14 and .NET 10.
 
 Comments say why, not what the line already says. Documentation stays technical, accurate and readable
 by someone doing the task.
