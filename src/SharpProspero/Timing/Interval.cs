@@ -41,15 +41,28 @@ public sealed class Interval(float periodSeconds)
         if (!float.IsFinite(deltaSeconds) || deltaSeconds <= 0f || Period <= 0f)
             return 0;
 
+        // The delta is taken whole. A beat is allowed a period longer than a frame, so clamping the
+        // delta would stop a long period from ever firing.
         _accumulated += deltaSeconds;
-        int count = 0;
-        while (_accumulated >= Period)
-        {
-            _accumulated -= Period;
-            count++;
-        }
+        if (_accumulated < Period)
+            return 0;
+
+        // One division rather than a loop of subtractions. Subtracting cannot finish when the period is
+        // small enough that the accumulator does not change by it, and hands back an unbounded count
+        // when it does finish; both are reachable from an ordinary frame with a small period.
+        long due = (long)(_accumulated / Period);
+        int count = (int)Math.Min(due, MaxFiresPerAdvance);
+        _accumulated -= count * Period;
+        if (due > MaxFiresPerAdvance)
+            _accumulated = 0f;      // the cap was hit; drop the backlog rather than carry it
         return count;
     }
+
+    /// <summary>
+    /// The most fires one call reports. Reaching it means the period is far smaller than the frame, and
+    /// the backlog is dropped rather than carried, so a caller is never handed an unbounded loop.
+    /// </summary>
+    public const int MaxFiresPerAdvance = 1_000_000;
 
     /// <summary>Clears the progress toward the next fire.</summary>
     public void Reset() => _accumulated = 0f;

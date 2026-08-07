@@ -1,6 +1,7 @@
 // SharpProspero.Tests
 // Copyright (C) 2026 SvenGDK
 
+using SharpProspero.Interop;
 using SharpProspero.Interop.Dialog;
 using System.Runtime.InteropServices;
 using Xunit;
@@ -33,6 +34,8 @@ public sealed unsafe class ErrorDialogLayoutTests
 
         Assert.Equal(16, param.Size);
         Assert.Equal(0, param.ErrorCode);
-        Assert.Equal(0, param.UserId);
+        // The dialog refuses a user of nought, so clearing the block cannot leave it there. This
+        // asserted the value the dialog rejects.
+        Assert.Equal(SceUser.System, param.UserId);
     }
 }

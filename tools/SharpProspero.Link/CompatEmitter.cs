@@ -135,6 +135,12 @@ public static class CompatEmitter
     private const byte NoSuchRoutine = 38;              // "not implemented", in the runtime's numbering
 
     /// <summary>
+    /// The number for an argument the platform will not accept, as the runtime counts them. Both sides
+    /// happen to agree on it, but it is written the runtime's way because that is what reads it.
+    /// </summary>
+    private const byte InvalidArgument = 22;
+
+    /// <summary>
     /// A refusal says why it refused. Callers do not merely test the result: many wrap the call in a
     /// loop that retries for as long as the number says the call was interrupted, and a refusal that
     /// leaves that number alone inherits whatever the last call to anything left there. If that
@@ -169,6 +175,38 @@ public static class CompatEmitter
         a.Emit(0x5D, 0xC3);                                 // pop rbp ; ret
         (byte[] code, (int, string)[] relocs) = a.Build();
         return new(name, false, code, relocs);
+    }
+
+    /// <summary>
+    /// Records why a call refused, taken from the coded failure it answered with, and leaves the code
+    /// in place for the caller to load afterwards.
+    ///
+    /// The memory and affinity entry points do not put the reason where the runtime reads it. They
+    /// answer a single code built as a fixed high half plus the platform's own number for what went
+    /// wrong, and on the paths that refuse before reaching a system call there is no system call to
+    /// leave that number anywhere. So the low half is taken out of the code, put through the same
+    /// numbering every other error goes through - which is not the identity, since two of the low
+    /// numbers trade places - and written where the runtime looks. Without this the caller reads
+    /// whatever the last call to anything left there and reports an unrelated failure.
+    ///
+    /// It marks "unnamed" and "tell", so a caller with a reason of its own can jump to "tell" with the
+    /// number already in edi. It ends in a call, so every register a call may clobber is gone - the
+    /// answer has to be loaded after it, not before.
+    /// </summary>
+    private static void EmitCodedErrno(Asm a)
+    {
+        a.Emit(0x0F, 0xB7, 0xF8);                           // movzx edi, ax   (the platform's number)
+        a.Emit(0x81, 0xFF); a.Emit32(ErrorTableSize);       // cmp edi, the numbering's reach
+        a.JumpIfAtOrAbove("unnamed");
+        int at = a.Length + 3;
+        a.Emit(0x48, 0x8D, 0x05, 0, 0, 0, 0);               // lea rax, [rip + the numbering]
+        a.Emit(0x0F, 0xB6, 0x3C, 0x38);                     // movzx edi, byte [rax + rdi]
+        a.JumpIfAlways("tell");
+        a.Mark("unnamed");
+        a.Emit(0xBF, UnnamedError, 0x00, 0x00, 0x00);       // mov edi, no name for it
+        a.Mark("tell");
+        a.Note(at, ErrorTableSymbol);
+        a.Call(SetErrnoSymbol);
     }
 
     /// <summary>
@@ -409,7 +447,11 @@ public static class CompatEmitter
         a.Emit(0x85, 0xC0); a.JumpIfNotEqual("refuse");     // test eax, eax
         a.Emit(0x48, 0x8B, 0x04, 0x24);                     // mov rax, [rsp]  (where it landed)
         a.Emit(0xC9, 0xC3);                                 // leave ; ret
+        // Both calls this reaches report a refusal the same way, so the reason is recovered from the
+        // code either of them answered with. Two of the refusals never reach a system call at all - a
+        // length of nothing, and pinning to no address - so there is no other place it could come from.
         a.Mark("refuse");
+        EmitCodedErrno(a);
         a.Emit(0x48, 0xC7, 0xC0, 0xFF, 0xFF, 0xFF, 0xFF, 0xC9, 0xC3); // mov rax,-1 ; leave ; ret
 
         (byte[] code, (int, string)[] relocs) = a.Build();
@@ -502,7 +544,10 @@ public static class CompatEmitter
         a.Emit(0x85, 0xC0); a.JumpIfNotEqual("refuse");     // test eax, eax
         a.Mark("done");
         a.Emit(0x31, 0xC0, 0xC9, 0xC3);                     // xor eax, eax ; leave ; ret
+        // Whichever of the two calls refused, it answered a code carrying the reason, and neither
+        // leaves that reason where the runtime reads it.
         a.Mark("refuse");
+        EmitCodedErrno(a);
         a.Emit(0xB8, 0xFF, 0xFF, 0xFF, 0xFF, 0xC9, 0xC3);   // mov eax, -1 ; leave ; ret
 
         (byte[] code, (int, string)[] relocs) = a.Build();
@@ -762,6 +807,26 @@ public static class CompatEmitter
         return new("sigemptyset", false, code, relocs);
     }
 
+    // sigfillset(set): name every signal there is and report success.
+    //
+    // Four words hold a hundred and twenty-eight bits, and a hundred and twenty-eight is exactly how
+    // many signals this platform numbers, so all-ones names every one of them and nothing beyond. The
+    // caller's set is the wider one the runtime was built against, which is why only the four words
+    // this platform reads are written - the rest of it is never looked at on this side.
+    private static CompatFunc SigFillSet()
+    {
+        var a = new Asm();
+        a.Emit(0x48, 0x85, 0xFF); a.JumpIfEqual("refuse");  // test rdi, rdi
+        a.Emit(0x48, 0xC7, 0xC0, 0xFF, 0xFF, 0xFF, 0xFF);   // mov rax, -1
+        a.Emit(0x48, 0x89, 0x07);                           // mov [rdi], rax
+        a.Emit(0x48, 0x89, 0x47, 0x08);                     // mov [rdi+8], rax
+        a.Emit(0x31, 0xC0, 0xC3);                           // xor eax, eax ; ret
+        a.Mark("refuse");
+        a.Emit(0xB8, 0xFF, 0xFF, 0xFF, 0xFF, 0xC3);         // mov eax, -1 ; ret
+        (byte[] code, (int, string)[] relocs) = a.Build();
+        return new("sigfillset", false, code, relocs);
+    }
+
     // sigaddset(set, signal): set the one bit, or refuse a signal outside the range.
     private static CompatFunc SigAddSet()
     {
@@ -893,6 +958,92 @@ public static class CompatEmitter
     private const int FcntlDuplicateClosing = 1030, FcntlDeviceDuplicateClosing = 19;
     private const int FcntlReadFlags = 3, FcntlSetFlags = 4;
 
+    // The three commands that carry a lock, counted the runtime's way, and the first of them - the one
+    // that reads a lock back rather than taking one, which is also the only one that answers in the
+    // structure it was handed.
+    private const byte FcntlReadLock = 5, FcntlLockCommands = 3;
+
+    // Where the fields of a lock sit, and how the two sides number the kinds of lock.
+    //
+    // Same size on both sides, so nothing overruns - the failure is pure misreading. The runtime puts
+    // the kind first and the offset eight bytes in; this platform puts the offset first and the kind
+    // twenty bytes in. Handed over unchanged, the kind is read out of the offset, the offset out of the
+    // length, and the kind field takes the top half of the length - which is nought for any lock
+    // shorter than four gigabytes, and nought is not a kind of lock, so every request is refused.
+    //
+    // The kinds are numbered from one here - shared one, unlocked two, exclusive three - against the
+    // runtime's from nought - shared nought, exclusive one, unlocked two. Three kinds each way is a
+    // short enough run to carry as one nibble per kind in an immediate rather than as another table in
+    // the data section.
+    private const int LockKindsToDevice = 0x231, LockKindsFromDevice = 0x1200;
+
+    /// <summary>
+    /// Rewrites a kind of lock, arriving in ecx and answered in eax, through one of the two pairings.
+    /// The kind is masked into the run the pairing covers so the shift cannot run off the end. Only
+    /// three of the four places in a pairing name a kind, and the fourth reads back as nought, which
+    /// the platform does not accept - so a kind neither side names is refused rather than guessed at.
+    /// </summary>
+    private static void EmitLockKind(Asm a, int pairing)
+    {
+        a.Emit(0x83, 0xE1, 0x03);                           // and ecx, 3
+        a.Emit(0xC1, 0xE1, 0x02);                           // shl ecx, 2      (a nibble per kind)
+        a.Emit(0xB8); a.Emit32(pairing);                    // mov eax, the pairing
+        a.Emit(0xD3, 0xE8);                                 // shr eax, cl
+        a.Emit(0x83, 0xE0, 0x0F);                           // and eax, 15
+    }
+
+    /// <summary>
+    /// Builds this platform's lock on the frame from the caller's, for the three commands that carry
+    /// one, and points the third argument at it. The caller's is kept so a read-a-lock answer can go
+    /// back into it. Everything else passes straight through.
+    /// </summary>
+    private static void EmitLockToDevice(Asm a)
+    {
+        a.Emit(0x89, 0xD8);                                 // mov eax, ebx
+        a.Emit(0x83, 0xE8, FcntlReadLock);                  // sub eax, the first of the three
+        a.Emit(0x83, 0xF8, FcntlLockCommands);              // cmp eax, how many carry a lock
+        a.JumpIfAtOrAbove("nolock");
+        a.Emit(0x48, 0x85, 0xD2); a.JumpIfEqual("nolock");  // test rdx, rdx  (nothing to read)
+        a.Emit(0x48, 0x89, 0x55, 0xE8);                     // mov [rbp-24], rdx  (to answer into)
+        a.Emit(0x48, 0x8B, 0x42, 0x08);                     // mov rax, [rdx+8]
+        a.Emit(0x48, 0x89, 0x45, 0xC0);                     // mov [rbp-64], rax    where it starts
+        a.Emit(0x48, 0x8B, 0x42, 0x10);                     // mov rax, [rdx+16]
+        a.Emit(0x48, 0x89, 0x45, 0xC8);                     // mov [rbp-56], rax    how far it reaches
+        a.Emit(0x8B, 0x42, 0x18);                           // mov eax, [rdx+24]
+        a.Emit(0x89, 0x45, 0xD0);                           // mov [rbp-48], eax    whose it is
+        a.Emit(0x0F, 0xB7, 0x0A);                           // movzx ecx, word [rdx]
+        EmitLockKind(a, LockKindsToDevice);
+        a.Emit(0x66, 0x89, 0x45, 0xD4);                     // mov [rbp-44], ax     what kind
+        a.Emit(0x0F, 0xB7, 0x42, 0x02);                     // movzx eax, word [rdx+2]
+        a.Emit(0x66, 0x89, 0x45, 0xD6);                     // mov [rbp-42], ax     what it counts from
+        a.Emit(0x31, 0xC0);                                 // xor eax, eax
+        a.Emit(0x89, 0x45, 0xD8);                           // mov [rbp-40], eax    this machine's own
+        a.Emit(0x48, 0x8D, 0x55, 0xC0);                     // lea rdx, [rbp-64]
+        a.Mark("nolock");
+    }
+
+    /// <summary>
+    /// Copies the answer to a read-a-lock request back into the caller's own structure, the other way
+    /// through the same field placing and the same pairing of kinds.
+    /// </summary>
+    private static void EmitLockFromDevice(Asm a)
+    {
+        a.Emit(0x48, 0x8B, 0x55, 0xE8);                     // mov rdx, [rbp-24]
+        a.Emit(0x48, 0x85, 0xD2); a.JumpIfEqual("out");     // test rdx, rdx  (never built one)
+        a.Emit(0x0F, 0xB7, 0x4D, 0xD4);                     // movzx ecx, word [rbp-44]
+        EmitLockKind(a, LockKindsFromDevice);
+        a.Emit(0x66, 0x89, 0x02);                           // mov [rdx], ax
+        a.Emit(0x0F, 0xB7, 0x45, 0xD6);                     // movzx eax, word [rbp-42]
+        a.Emit(0x66, 0x89, 0x42, 0x02);                     // mov [rdx+2], ax
+        a.Emit(0x48, 0x8B, 0x45, 0xC0);                     // mov rax, [rbp-64]
+        a.Emit(0x48, 0x89, 0x42, 0x08);                     // mov [rdx+8], rax
+        a.Emit(0x48, 0x8B, 0x45, 0xC8);                     // mov rax, [rbp-56]
+        a.Emit(0x48, 0x89, 0x42, 0x10);                     // mov [rdx+16], rax
+        a.Emit(0x8B, 0x45, 0xD0);                           // mov eax, [rbp-48]
+        a.Emit(0x89, 0x42, 0x18);                           // mov [rdx+24], eax
+        a.Emit(0x31, 0xC0);                                 // xor eax, eax   (the request succeeded)
+    }
+
     private static byte[] BuildFcntlTable()
     {
         byte[] t = new byte[FcntlTableSize];
@@ -906,7 +1057,10 @@ public static class CompatEmitter
         var a = new Asm();
         a.Emit(0x55, 0x48, 0x89, 0xE5);                     // push rbp ; mov rbp, rsp
         a.Emit(0x53);                                       // push rbx
-        a.Emit(0x48, 0x83, 0xEC, 0x08);                     // sub rsp, 8
+        // The frame carries this platform's lock at [rbp-64], which is thirty-two bytes, and the
+        // caller's own at [rbp-24] so a read-a-lock answer knows where to go back.
+        a.Emit(0x48, 0x83, 0xEC, 0x38);                     // sub rsp, 56
+        a.Emit(0x48, 0xC7, 0x45, 0xE8, 0x00, 0x00, 0x00, 0x00);  // mov qword [rbp-24], 0
         a.Emit(0x89, 0xF3);                                 // mov ebx, esi  (what was asked for)
 
         // The word an open-flags request carries is translated the way an open's is.
@@ -927,15 +1081,23 @@ public static class CompatEmitter
         a.Emit(0xBE); a.Emit32(FcntlDeviceDuplicateClosing);
 
         a.Mark("ready");
+        // The three lock commands carry a structure whose fields this platform reads elsewhere, so it
+        // is rebuilt on the frame before the call rather than handed over as it arrived.
+        EmitLockToDevice(a);
         a.Emit(0x31, 0xC0);                                 // xor eax, eax  (no vector arguments)
         a.Call(Linker.DeviceAliasPrefix + "fcntl");
 
-        // A request that reads the open flags answers with a word needing translation back.
+        // Two kinds of request answer with something needing translation back: one with a word of open
+        // flags, and one with the lock it was asked about.
         a.Emit(0x85, 0xC0); a.JumpIfNegative("out");        // test eax, eax  (a refusal passes through)
+        a.Emit(0x81, 0xFB); a.Emit32(FcntlReadLock); a.JumpIfEqual("readlock");
         a.Emit(0x81, 0xFB); a.Emit32(FcntlReadFlags); a.JumpIfNotEqual("out");
         TranslateOpenFlags(a, toDevice: false, 0xC0, 0xC1, 0xC0);      // the word came back in eax
+        a.JumpIfAlways("out");
+        a.Mark("readlock");
+        EmitLockFromDevice(a);
         a.Mark("out");
-        a.Emit(0x48, 0x83, 0xC4, 0x08, 0x5B, 0x5D, 0xC3);   // add rsp,8 ; pop rbx ; pop rbp ; ret
+        a.Emit(0x48, 0x83, 0xC4, 0x38, 0x5B, 0x5D, 0xC3);   // add rsp,56 ; pop rbx ; pop rbp ; ret
 
         (byte[] code, (int Offset, string Target)[] relocs) = a.Build();
         return new("fcntl", false, code, [.. relocs, (at, FcntlTableSymbol)]);
@@ -945,6 +1107,11 @@ public static class CompatEmitter
     // pages is a quarter of a gigabyte, which is under the pool a module of this kind is given and well
     // over what the collector needs to start - cautious in the direction that fails safely.
     private const int AssumedPages = 16384;
+
+    // The count answered when the set of processors this thread may run on cannot be read. It is well
+    // under the widest set the toolchain names, so a module sized against it starts with fewer threads
+    // than the machine could carry rather than more than it can.
+    private const byte AssumedProcessors = 8;
 
     private static CompatFunc SysConf()
     {
@@ -961,8 +1128,33 @@ public static class CompatEmitter
         a.Mark("page");
         a.Emit(0xB8, 0x00, 0x40, 0x00, 0x00, 0xC3);                         // mov eax, 16384 ; ret
 
+        // How many processors there are. **This may not refuse either**: the collector compares the
+        // answer against -1 and gives up on its whole start-up when it matches, which surfaces as the
+        // module reporting a non-zero result from its entry and nothing else.
+        //
+        // The figure is asked of the platform rather than written down here, because a number written
+        // down here is a number the platform never states - and it is the same question the set of
+        // processors this thread may run on already answers, which is where the runtime's own count
+        // comes from. Taking both from one source is the point: two answers describing two different
+        // machines is worse than either being a little off, since the collector sizes its heaps
+        // against one and the thread pool against the other.
         a.Mark("cpus");
-        a.Emit(0xB8, 0x08, 0x00, 0x00, 0x00, 0xC3);                         // mov eax, 8 ; ret
+        a.Emit(0x55, 0x48, 0x89, 0xE5);                                     // push rbp ; mov rbp, rsp
+        a.Emit(0x48, 0x83, 0xEC, 0x10);                                     // sub rsp, 16  (the set)
+        a.Emit(0x48, 0xC7, 0x04, 0x24, 0, 0, 0, 0);                         // mov qword [rsp], 0
+        a.Call("scePthreadSelf");
+        a.Emit(0x48, 0x89, 0xC7);                                           // mov rdi, rax
+        a.Emit(0x48, 0x89, 0xE6);                                           // mov rsi, rsp
+        a.Call("scePthreadGetaffinity");
+        a.Emit(0x85, 0xC0); a.JumpIfNotEqual("assumecpus");                 // test eax, eax
+        a.Emit(0xF3, 0x48, 0x0F, 0xB8, 0x04, 0x24);                         // popcnt rax, [rsp]
+        // An empty set is the question going unanswered rather than a machine with no processors, and
+        // passing nought on divides by it further up.
+        a.Emit(0x85, 0xC0); a.JumpIfEqual("assumecpus");                    // test eax, eax
+        a.Emit(0xC9, 0xC3);                                                 // leave ; ret
+        a.Mark("assumecpus");
+        a.Emit(0xB8, AssumedProcessors, 0x00, 0x00, 0x00);                  // mov eax, a cautious count
+        a.Emit(0xC9, 0xC3);                                                 // leave ; ret
 
         // How much memory this module can have, in pages, and how much of it is still free.
         //
@@ -1000,7 +1192,7 @@ public static class CompatEmitter
         a.Emit(0xC9, 0xC3);                                                 // leave ; ret
 
         // Nothing came back, so a figure is used instead of a refusal. It is a fixed, cautious one in
-        // the same spirit as the page size and processor count above, and deliberately **not** the
+        // the same spirit as the fall-back count above, and deliberately **not** the
         // machine's own memory size: the collector's pages come from the pool this module maps out of,
         // which is a small fraction of what the machine has, and answering with the larger figure would
         // size every decision above it against memory this module can never reach - trading a refusal
@@ -1339,9 +1531,47 @@ public static class CompatEmitter
         return new("sched_getaffinity", false, code, relocs);
     }
 
-    // __sched_cpucount(set size, set): how many processors are in the set. Answering a fixed one while
-    // the processor count answers eight left the runtime sizing its thread pool for a single processor
-    // on a machine with eight, and the two answers describing different machines.
+    // sched_setaffinity(process, set size, set): which processors this thread may run on from now on.
+    //
+    // The mirror of the question above, and the platform publishes it in the same shape: the same
+    // question asked of a thread, taking a single word rather than a byte array, and a module is one
+    // process. Only the bottom word of the caller's set is read, which is where every processor this
+    // platform has fits; the caller that reaches this builds its set into that word.
+    //
+    // Reporting success and doing nothing, which is what this did, is the worst answer available. The
+    // caller does not ask afterwards whether the pinning took - it reports to the application that the
+    // threads are pinned - so a thread that was never moved is one nothing will ever notice.
+    private static CompatFunc SchedSetAffinity()
+    {
+        var a = new Asm();
+        a.Emit(0x55, 0x48, 0x89, 0xE5);                     // push rbp ; mov rbp, rsp
+        a.Emit(0x53);                                       // push rbx
+        a.Emit(0x48, 0x83, 0xEC, 0x08);                     // sub rsp, 8
+        a.Emit(0x48, 0x85, 0xD2); a.JumpIfEqual("invalid"); // test rdx, rdx   (no set to read)
+        a.Emit(0x48, 0x83, 0xFE, 0x08); a.JumpIfBelow("invalid");  // cmp rsi, 8  (too small to hold it)
+        a.Emit(0x48, 0x89, 0xD3);                           // mov rbx, rdx
+        a.Call("scePthreadSelf");
+        a.Emit(0x48, 0x89, 0xC7);                           // mov rdi, rax
+        a.Emit(0x48, 0x8B, 0x33);                           // mov rsi, [rbx]  (the bottom of the set)
+        a.Call("scePthreadSetaffinity");
+        a.Emit(0x85, 0xC0); a.JumpIfNotEqual("coded");      // test eax, eax
+        a.JumpIfAlways("out");                              // nothing refused, so eax is already nought
+        a.Mark("invalid");
+        a.Emit(0xBF, InvalidArgument, 0x00, 0x00, 0x00);    // mov edi, that argument is not valid
+        a.JumpIfAlways("tell");
+        a.Mark("coded");
+        EmitCodedErrno(a);
+        a.Emit(0xB8, 0xFF, 0xFF, 0xFF, 0xFF);               // mov eax, -1
+        a.Mark("out");
+        a.Emit(0x48, 0x83, 0xC4, 0x08, 0x5B, 0x5D, 0xC3);   // add rsp,8 ; pop rbx ; pop rbp ; ret
+
+        (byte[] code, (int, string)[] relocs) = a.Build();
+        return new("sched_setaffinity", false, code, relocs);
+    }
+
+    // __sched_cpucount(set size, set): how many processors are in the set. Answering a fixed one left
+    // the runtime sizing its thread pool for a single processor while the count it asks for separately
+    // described a much larger machine, so the two answers described different machines.
     private static CompatFunc SchedCpuCount()
     {
         var a = new Asm();
@@ -1454,6 +1684,31 @@ public static class CompatEmitter
         foreach ((string _, byte device, byte runtime) in ErrorNumbers)
             table[runtime] = device;
         return table;
+    }
+
+    // strerror(number): the message for an error, as text the caller does not own.
+    //
+    // The platform publishes this and it can be reached straight through, which is what left it wrong:
+    // the number arriving here is counted the runtime's way, and the platform counts errors its own
+    // way, so every number the two sides disagree about asked for the message belonging to a different
+    // error. Two callers reach it - the compressor, when it reports why a stream could not be written
+    // or read, and the runtime, when it writes out what a fault was - and both hand what comes back
+    // straight to whoever is reading the report. The number is put back the way the platform counts
+    // before the call, and nothing else changes, so the answer is still the platform's own text.
+    private static CompatFunc StrError()
+    {
+        var a = new Asm();
+        a.Emit(0x81, 0xFF); a.Emit32(ErrorTableSize);       // cmp edi, the numbering's reach
+        a.JumpIfAtOrAbove("asis");
+        a.Emit(0x89, 0xFF);                                 // mov edi, edi
+        int tableAt = a.Length + 3;
+        a.Emit(0x48, 0x8D, 0x05, 0, 0, 0, 0);               // lea rax, [rip + the numbering, reversed]
+        a.Emit(0x0F, 0xB6, 0x3C, 0x38);                     // movzx edi, byte [rax + rdi]
+        a.Mark("asis");
+        // A tail jump, so what the platform answers is what the caller gets and no frame is built.
+        a.Emit(0xE9); a.Note(a.Length, Linker.DeviceAliasPrefix + "strerror"); a.Emit(0, 0, 0, 0);
+        (byte[] code, (int Offset, string Target)[] relocs) = a.Build();
+        return new("strerror", false, code, [.. relocs, (tableAt, ReverseErrorTableSymbol)]);
     }
 
     // strerror_r(number, buffer, size): the message for an error.
@@ -1801,14 +2056,18 @@ public static class CompatEmitter
     // (what the runtime asks for, what it means here)
     private static readonly (byte Runtime, byte Device, string What)[] ClockIds =
     [
-        (0, 0,  "wall clock"),
-        (1, 4,  "steady, never jumps"),          // the one that matters: here 1 is processor time
+        (0, 0,  "wall clock"),                   // asked for
+        (1, 4,  "steady, never jumps"),          // asked for; the one that matters, since here 1 is
+                                                 // processor time and the steady one is four
+        // Nothing links a request for either of these two. The first reaches this platform's own
+        // process clock rather than the one that carries the same name as what was asked for, which
+        // is numbered twenty-one here; settle which is meant before relying on it.
         (2, 15, "processor time for this module"),
         (3, 14, "processor time for this thread"),
-        (4, 4,  "steady and unadjusted"),
-        (5, 10, "wall clock, cheap and coarse"),
-        (6, 12, "steady, cheap and coarse"),
-        (7, 20, "counts since the machine started"),
+        (4, 4,  "steady and unadjusted"),        // not asked for
+        (5, 10, "wall clock, cheap and coarse"), // asked for
+        (6, 12, "steady, cheap and coarse"),     // asked for
+        (7, 20, "counts since the machine started"),  // asked for
     ];
     private const string ClockTableSymbol = "__sp_clock_ids";
     private const int ClockTableSize = 8;
@@ -2024,8 +2283,13 @@ public static class CompatEmitter
         // Mapped to a device entry, or refused where there is no counterpart.
         SetErrno(),
         ErrnoLocation(),
+        StrError(),
         StrErrorR(),
-        Forward("pthread_setname_np", "scePthreadRename"),
+        // Naming a thread. Two names reach the same work here, and only one of them answers the way
+        // the runtime was built to read: the one this forwards to hands back nought or a plain error
+        // number, while the other wraps that number into a code of its own, so a caller testing for a
+        // thread that is gone compares against a number it never sees.
+        Forward("pthread_setname_np", "pthread_rename_np"),
         // Reading a thread's own attributes. The device publishes the same call under the name the
         // system it descends from uses, and the arguments and the result line up - a thread handle
         // first, a place to put the attributes second, zero or an error number back - so both pass
@@ -2072,6 +2336,7 @@ public static class CompatEmitter
         // Which processor this thread is on. The platform publishes exactly that question.
         Forward("sched_getcpu", "sceKernelGetCurrentCpu"),
         SchedGetAffinity(),
+        SchedSetAffinity(),
         SchedCpuCount(),
 
         // Further large-file variants that forward to a base name the device publishes.
@@ -2084,7 +2349,6 @@ public static class CompatEmitter
 
         // Advisory or best-effort calls that succeed as no-ops, and lookups with no counterpart.
         Zero("posix_fadvise64"),                    // advice is optional
-        Zero("sched_setaffinity"),                  // affinity is fixed
         Zero("getauxval"),                          // no auxiliary value
         RefuseNull("mkdtemp"),                      // no temporary directory, and it says why
         Value("getgrgid_r", 2),                     // no such group
@@ -2172,8 +2436,14 @@ public static class CompatEmitter
         // the runtime's hardware-exception path inert, which costs nothing until something faults.
         Zero("sigaction"),
         SigEmptySet(),
+        SigFillSet(),
         SigAddSet(),
         Zero("signal"),                             // the previous handler, which is the default one
+        // Sending a signal to a process. Nothing published delivers one, and the shape of the refusal
+        // matters: this answers -1 and leaves the reason behind it, so a caller testing the result for
+        // a negative number reads a refusal as a refusal. Answering the reason itself, the way the
+        // thread-directed call below does, would read as a success to that same test.
+        Refuse("kill"),
         // Sending a signal to a thread. Nothing published delivers one, so the collector's way of
         // interrupting a thread to take control of it cannot work whatever this answers. It answers
         // "there is no such thread", which is the one refusal the caller already has a path for: it
@@ -2186,11 +2456,21 @@ public static class CompatEmitter
         ReadDir(),
         CloseDir(),
         // Nothing found, reported the way each caller expects. Asking for a name that is not set is
-        // an ordinary answer rather than a failure, and the two that load code report why through a
-        // call of their own, so those three answer nothing and leave the number alone. Resolving a
+        // an ordinary answer rather than a failure, and the ones that load code report why through a
+        // call of their own, so those four answer nothing and leave the number alone. Resolving a
         // path is a failure when it answers nothing, so that one says why.
+        //
+        // The four that load code go together. Nothing in the toolchain declares or publishes any of
+        // them, so all four have to be defined here or none of the five entry points the runtime
+        // builds on them can be linked at all - and three of those five are reached by asking for the
+        // module's own path or its identifier, which an ordinary application does. Releasing what was
+        // loaded succeeds because nothing was ever handed out to release, and asking why the load
+        // failed answers nothing, which is what that call answers when there is nothing to say and
+        // therefore what every caller of it already handles.
         Zero("dlopen"),
         Zero("dlsym"),
+        Zero("dlclose"),
+        Zero("dlerror"),
         Zero("getenv"),
         RefuseNull("realpath"),
     ];

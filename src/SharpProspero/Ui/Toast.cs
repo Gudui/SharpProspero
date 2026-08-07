@@ -59,7 +59,7 @@ public sealed class Toast
     /// <summary>Advances by <paramref name="deltaSeconds"/>; the message goes when its time runs out.</summary>
     public void Update(float deltaSeconds)
     {
-        if (_remaining <= 0f || deltaSeconds <= 0f)
+        if (_remaining <= 0f || !float.IsFinite(deltaSeconds) || deltaSeconds <= 0f)
             return;
         _remaining -= deltaSeconds;
         if (_remaining < 0f)

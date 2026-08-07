@@ -4,6 +4,7 @@
 using SharpProspero.Link;
 using System;
 using System.Buffers.Binary;
+using System.Collections.Generic;
 using System.Linq;
 using Xunit;
 
@@ -42,8 +43,8 @@ public sealed class CompatEmitterTests
         (byte Question, byte[] Answer)[] expected =
         [
             (30, [0xB8, 0x00, 0x40, 0x00, 0x00]),   // page size: 16384
-            (83, [0xB8, 0x08, 0x00, 0x00, 0x00]),   // processors
-            (84, [0xB8, 0x08, 0x00, 0x00, 0x00]),
+            (83, [0x55, 0x48, 0x89, 0xE5]),         // processors: the routine that asks the platform
+            (84, [0x55, 0x48, 0x89, 0xE5]),
             (85, [0x55, 0x48, 0x89, 0xE5]),         // memory: the routine that asks the pool
             (86, [0x55, 0x48, 0x89, 0xE5]),         // free memory: its own routine, not the one above
         ];
@@ -64,14 +65,22 @@ public sealed class CompatEmitterTests
             Assert.Equal(answer, code[target..(target + answer.Length)]);
         }
 
-        // Both memory answers must reach the pool rather than report a number of their own, and they
-        // are different questions: how much this module may have, and how much of it is still free.
-        // Neither may answer -1. The caller asking how much memory there is compares the answer against
-        // -1 and refuses to start the runtime at all when it matches - which surfaces only as the module
-        // reporting a non-zero result from its entry, with nothing to say why. The caller asking how
-        // much is free does not check at all and reads -1 as sixteen million million pages.
+        // Every answer that can be asked of the platform is asked of it. The processor count comes from
+        // the set of processors the calling thread may run on, which is where the runtime's own count
+        // comes from as well, so the two describe one machine. The two memory answers reach the pool,
+        // and they are different questions: how much this module may have, and how much is still free.
+        // None of the three may answer -1. The caller asking how much memory there is compares the
+        // answer against -1 and refuses to start the runtime at all when it matches - which surfaces
+        // only as the module reporting a non-zero result from its entry, with nothing to say why. The
+        // caller asking how much is free does not check at all and reads -1 as sixteen million million
+        // pages.
         Assert.Equal(
-            ["sceKernelConfiguredFlexibleMemorySize", "sceKernelAvailableFlexibleMemorySize"],
+            [
+                "scePthreadSelf",
+                "scePthreadGetaffinity",
+                "sceKernelConfiguredFlexibleMemorySize",
+                "sceKernelAvailableFlexibleMemorySize",
+            ],
             CallsOf(obj, "sysconf"));
         // The figure used when neither can answer is a fixed cautious one, deliberately not the
         // machine's own memory size: the pages the collector gets come from the pool this module maps
@@ -184,9 +193,16 @@ public sealed class CompatEmitterTests
         ElfSymbol mmap = Assert.Single(obj.Symbols, s => s.Name == "mmap" && !s.IsUndefined);
         ElfSymbol mprotect = Assert.Single(obj.Symbols, s => s.Name == "mprotect" && !s.IsUndefined);
 
-        var mmapCalls = obj.Relocations[mmap.SectionIndex]
-            .Where(r => r.Offset > mmap.Value && r.Offset < mmap.Value + mmap.Size)
-            .Select(r => obj.Symbols[(int)r.SymbolIndex].Name).ToList();
+        // The platform calls each entry point makes, in the order it makes them. The two names this
+        // object defines itself - the numbering and the routine that records a reason - are left out
+        // here and pinned separately below.
+        List<string> PlatformCallsOf(ElfSymbol f) => obj.Relocations[f.SectionIndex]
+            .Where(r => r.Offset > f.Value && r.Offset < f.Value + f.Size)
+            .Select(r => obj.Symbols[(int)r.SymbolIndex].Name)
+            .Where(n => !n.StartsWith("__sp_", StringComparison.Ordinal))
+            .ToList();
+
+        List<string> mmapCalls = PlatformCallsOf(mmap);
         // Two calls, chosen by whether any access was asked for. None means addresses are wanted and
         // nothing behind them, which is one call and covers both holding a fresh range and giving the
         // memory behind one back - mapping room over a range pinned releases what was there and leaves
@@ -197,14 +213,25 @@ public sealed class CompatEmitterTests
         // asked for - was refused before the runtime could start.
         Assert.DoesNotContain("sceKernelMemoryPoolReserve", mmapCalls);
 
-        var protCalls = obj.Relocations[mprotect.SectionIndex]
-            .Where(r => r.Offset > mprotect.Value && r.Offset < mprotect.Value + mprotect.Size)
-            .Select(r => obj.Symbols[(int)r.SymbolIndex].Name).ToList();
+        List<string> protCalls = PlatformCallsOf(mprotect);
         Assert.Equal([
             "sceKernelVirtualQuery",          // what is behind this address?
             "sceKernelMapFlexibleMemory",     // nothing yet: put memory behind it, pinned
             "sceKernelMprotect",              // anything else: protection only, nothing moves
         ], protCalls);
+
+        // Neither of these leaves a reason where the runtime reads it on its own: they answer one coded
+        // number and never reach a system call on the paths that refuse. So both take the platform's own
+        // number out of that code, put it through the same numbering every other error goes through, and
+        // record it - otherwise the caller reads whatever the last call to anything left behind.
+        foreach (ElfSymbol f in (ElfSymbol[])[mmap, mprotect])
+        {
+            List<string> named = obj.Relocations[f.SectionIndex]
+                .Where(r => r.Offset > f.Value && r.Offset < f.Value + f.Size)
+                .Select(r => obj.Symbols[(int)r.SymbolIndex].Name).ToList();
+            Assert.Contains("__sp_error_numbers", named);
+            Assert.Contains("__sp_set_errno", named);
+        }
 
         // The mapping call reads two registers past the ones it takes and refuses the request outright
         // when the first of them holds anything above three. Reached from the ordinary call that
@@ -665,7 +692,9 @@ public sealed class CompatEmitterTests
         ElfObject obj = Read();
         var undefined = obj.Symbols.Where(s => s.IsUndefined && s.Name.Length > 0).Select(s => s.Name).ToHashSet();
         // The base names a module publishes stay undefined here, so the link imports them.
-        foreach (string baseName in new[] { "open", "lseek", "pread", "fopen", "fstat", "stat", "__error", "scePthreadRename", "nanosleep", "ftruncate", "pwrite", "pwritev", "preadv" })
+        // Naming a thread goes to the entry that answers the way the caller counts, not the one that
+        // answers a coded number the caller would read as a large positive result.
+        foreach (string baseName in new[] { "open", "lseek", "pread", "fopen", "fstat", "stat", "__error", "pthread_rename_np", "nanosleep", "ftruncate", "pwrite", "pwritev", "preadv" })
             Assert.Contains(baseName, undefined);
         // The ones nothing publishes are defined here instead, so the link never imports them.
         var defined = obj.Symbols.Where(s => !s.IsUndefined).Select(s => s.Name).ToHashSet();

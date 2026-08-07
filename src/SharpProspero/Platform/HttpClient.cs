@@ -5,16 +5,51 @@ using SharpProspero.Interop;
 using SharpProspero.Interop.Net;
 using System;
 using System.IO;
+using System.Text;
 
 namespace SharpProspero.Platform;
 
-/// <summary>A downloaded HTTP response: its status code and body.</summary>
+/// <summary>What a request asks the server to do.</summary>
+public enum HttpMethod
+{
+    /// <summary>Fetch a resource.</summary>
+    Get = 0,
+    /// <summary>Send a body and fetch the answer.</summary>
+    Post = 1,
+    /// <summary>Fetch a resource's headers alone.</summary>
+    Head = 2,
+    /// <summary>Replace a resource with the body sent.</summary>
+    Put = 4,
+    /// <summary>Remove a resource.</summary>
+    Delete = 5,
+}
+
+/// <summary>A downloaded HTTP response: its status code, headers and body.</summary>
 /// <param name="StatusCode">The HTTP status code, for example 200.</param>
 /// <param name="Body">The response body.</param>
-public readonly record struct HttpResponse(int StatusCode, byte[] Body)
+/// <param name="Headers">
+/// The response headers as the server sent them, one per line. Empty when the server sent none.
+/// </param>
+public readonly record struct HttpResponse(int StatusCode, byte[] Body, string Headers = "")
 {
     /// <summary>True when the status code is in the 2xx success range.</summary>
     public bool IsSuccess => StatusCode is >= 200 and < 300;
+
+    /// <summary>
+    /// The value of <paramref name="name"/> from <see cref="Headers"/>, matched without regard to case,
+    /// or null when the server sent no such header.
+    /// </summary>
+    public string? Header(string name)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(name);
+        foreach (ReadOnlySpan<char> line in Headers.AsSpan().EnumerateLines())
+        {
+            int colon = line.IndexOf(':');
+            if (colon > 0 && line[..colon].Trim().Equals(name, StringComparison.OrdinalIgnoreCase))
+                return line[(colon + 1)..].Trim().ToString();
+        }
+        return null;
+    }
 }
 
 /// <summary>
@@ -95,7 +130,30 @@ public sealed unsafe class HttpClient : IDisposable
 
     /// <summary>Downloads <paramref name="url"/> with a GET request.</summary>
     /// <exception cref="ProsperoException">The request failed.</exception>
-    public HttpResponse Get(string url)
+    public HttpResponse Get(string url) => Send(HttpMethod.Get, url);
+
+    /// <summary>
+    /// Sends <paramref name="body"/> to <paramref name="url"/> and returns what came back.
+    /// <paramref name="contentType"/> names what the body is; pass null to send no such header.
+    /// </summary>
+    /// <exception cref="ProsperoException">The request failed.</exception>
+    public HttpResponse Post(string url, ReadOnlySpan<byte> body, string? contentType = "application/octet-stream")
+    {
+        string[]? headers = contentType is null ? null : ["Content-Type: " + contentType];
+        return Send(HttpMethod.Post, url, body, headers);
+    }
+
+    /// <summary>
+    /// Makes one request and reads the whole answer. <paramref name="headers"/> holds lines of the form
+    /// <c>Name: value</c>, each added to the request; a repeated name replaces the one before it.
+    /// </summary>
+    /// <remarks>
+    /// A body is sent only for the methods that carry one. The length is declared before the send, so a
+    /// server that refuses a request without one accepts this.
+    /// </remarks>
+    /// <exception cref="ProsperoException">The request failed.</exception>
+    public HttpResponse Send(
+        HttpMethod method, string url, ReadOnlySpan<byte> body = default, string[]? headers = null)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentException.ThrowIfNullOrEmpty(url);
@@ -104,11 +162,31 @@ public sealed unsafe class HttpClient : IDisposable
         SceResult.ThrowIfFailed(connId, nameof(Http.sceHttpCreateConnectionWithURL));
         try
         {
-            int reqId = Http.sceHttpCreateRequestWithURL(connId, Http.MethodGet, url, 0);
+            int reqId = Http.sceHttpCreateRequestWithURL(connId, (int)method, url, (ulong)body.Length);
             SceResult.ThrowIfFailed(reqId, nameof(Http.sceHttpCreateRequestWithURL));
             try
             {
-                SceResult.ThrowIfFailed(Http.sceHttpSendRequest(reqId, null, 0), nameof(Http.sceHttpSendRequest));
+                if (headers is not null)
+                {
+                    foreach (string header in headers)
+                    {
+                        int colon = header.IndexOf(':');
+                        if (colon <= 0)
+                            throw new ArgumentException(
+                                $"'{header}' is not a header line; it needs a name, a colon and a value.",
+                                nameof(headers));
+                        SceResult.ThrowIfFailed(
+                            Http.sceHttpAddRequestHeader(
+                                reqId, header[..colon].Trim(), header[(colon + 1)..].Trim(),
+                                Http.HeaderOverwrite),
+                            nameof(Http.sceHttpAddRequestHeader));
+                    }
+                }
+
+                int sent;
+                fixed (byte* data = body)
+                    sent = Http.sceHttpSendRequest(reqId, body.IsEmpty ? null : data, (nuint)body.Length);
+                SceResult.ThrowIfFailed(sent, nameof(Http.sceHttpSendRequest));
 
                 int status = 0;
                 SceResult.ThrowIfFailed(Http.sceHttpGetStatusCode(reqId, &status), nameof(Http.sceHttpGetStatusCode));
@@ -119,8 +197,13 @@ public sealed unsafe class HttpClient : IDisposable
                     Http.sceHttpGetResponseContentLength(reqId, &lengthKnown, &contentLength),
                     nameof(Http.sceHttpGetResponseContentLength));
 
-                byte[] body = ReadBody(reqId, lengthKnown == 0, contentLength);
-                return new HttpResponse(status, body);
+                string responseHeaders = ReadHeaders(reqId);
+                // A HEAD answer carries the length its body would have had, and no body. Reading one
+                // would wait for bytes that never come.
+                byte[] responseBody = method == HttpMethod.Head
+                    ? []
+                    : ReadBody(reqId, lengthKnown == 0, contentLength);
+                return new HttpResponse(status, responseBody, responseHeaders);
             }
             finally
             {
@@ -131,6 +214,17 @@ public sealed unsafe class HttpClient : IDisposable
         {
             Http.sceHttpDeleteConnection(connId);
         }
+    }
+
+    // The headers the server sent, as one block the service owns. The pointer stays valid only while
+    // the request does, so it is copied out here.
+    private static string ReadHeaders(int reqId)
+    {
+        byte* header = null;
+        nuint size = 0;
+        if (Http.sceHttpGetAllResponseHeaders(reqId, &header, &size) < 0 || header is null || size == 0)
+            return string.Empty;
+        return Encoding.UTF8.GetString(header, (int)size);
     }
 
     // Reads the body until the read returns nothing more. When the length is known, the loop also

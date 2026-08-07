@@ -55,7 +55,7 @@ public enum AudioOutFormat : uint
 /// <summary>
 /// Audio-output bindings. Initialize the subsystem, open a port for a user with a grain (samples per
 /// output block), a sample rate and a format, then push one block of samples at a time. Each output
-/// call blocks until the block is consumed, which paces the caller to the audio clock.
+/// call blocks until the queue has room for the block, which paces the caller to the audio clock.
 /// </summary>
 public static unsafe partial class AudioOut
 {
@@ -89,7 +89,12 @@ public static unsafe partial class AudioOut
     [LibraryImport(Lib)]
     public static partial int sceAudioOutClose(int handle);
 
-    /// <summary>Outputs one block of samples from <paramref name="ptr"/>; blocks until it is consumed.</summary>
+    /// <summary>
+    /// Outputs one block of samples from <paramref name="ptr"/>, blocking until the queue has room for
+    /// it. A null <paramref name="ptr"/> is the end-of-output case: the call waits for the block already
+    /// queued and leaves the port idle instead of submitting another, which is how a port is emptied
+    /// before it is closed.
+    /// </summary>
     [LibraryImport(Lib)]
     public static partial int sceAudioOutOutput(int handle, void* ptr);
 

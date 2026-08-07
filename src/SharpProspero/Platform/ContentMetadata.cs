@@ -66,7 +66,7 @@ public sealed unsafe class ContentMetadata : IDisposable
         byte* buffer = (byte*)NativeMemory.Alloc((nuint)size);
         try
         {
-            _ = ReadValue(field, buffer);
+            _ = ReadValue(field, buffer, size);
             return ReadUtf8(buffer, size);
         }
         finally
@@ -84,7 +84,7 @@ public sealed unsafe class ContentMetadata : IDisposable
         Native.sceContentSearchCloseMetadata(_id);
     }
 
-    private SceContentSearchMetadataValue ReadValue(string field, byte* textBuffer)
+    private SceContentSearchMetadataValue ReadValue(string field, byte* textBuffer, int textCapacity = 0)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentException.ThrowIfNullOrEmpty(field);
@@ -96,7 +96,12 @@ public sealed unsafe class ContentMetadata : IDisposable
 
         var value = default(SceContentSearchMetadataValue);
         if (textBuffer != null)
+        {
+            // The service is told where to put the text and how much room is there. Handing it the
+            // pointer alone leaves the capacity at nought, which is not a buffer it can write into.
             value.Value = (long)(nint)textBuffer;
+            value.Size = textCapacity;
+        }
         SceResult.ThrowIfFailed(
             Native.sceContentSearchGetMetadataValue(_id, f, &value),
             nameof(Native.sceContentSearchGetMetadataValue));

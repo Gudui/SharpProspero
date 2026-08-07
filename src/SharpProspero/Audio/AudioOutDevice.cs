@@ -9,10 +9,15 @@ namespace SharpProspero.Audio;
 
 /// <summary>
 /// A stereo 16-bit audio-output port. Open it once, then push one block of interleaved samples per
-/// call; each push blocks until the block plays, which paces the caller to the audio clock. Fill a
-/// buffer of <see cref="SamplesPerBlock"/> shorts (left, right, left, right, …) and pass it to
-/// <see cref="Output"/>.
+/// call; each push blocks until there is room in the output queue for it, which paces the caller to the
+/// audio clock. Fill a buffer of <see cref="SamplesPerBlock"/> shorts (left, right, left, right, …) and
+/// pass it to <see cref="Output"/>.
 /// </summary>
+/// <remarks>
+/// Because a push returns once the block is queued rather than once it has played, closing the port
+/// straight after the last push cuts that block off. <see cref="Dispose"/> waits for it first; call
+/// <see cref="Drain"/> directly to wait without closing.
+/// </remarks>
 public sealed unsafe class AudioOutDevice : IDisposable
 {
     private const int Channels = 2;
@@ -64,8 +69,8 @@ public sealed unsafe class AudioOutDevice : IDisposable
     }
 
     /// <summary>
-    /// Outputs one block of interleaved stereo samples and blocks until it plays. The span must hold
-    /// at least <see cref="SamplesPerBlock"/> shorts.
+    /// Outputs one block of interleaved stereo samples, blocking until the queue has room for it. The
+    /// span must hold at least <see cref="SamplesPerBlock"/> shorts.
     /// </summary>
     /// <exception cref="ProsperoException">The output call failed.</exception>
     public void Output(ReadOnlySpan<short> samples)
@@ -91,11 +96,25 @@ public sealed unsafe class AudioOutDevice : IDisposable
             nameof(AudioOut.sceAudioOutSetVolume));
     }
 
-    /// <summary>Closes the port.</summary>
+    /// <summary>
+    /// Waits for the block already queued to finish playing and leaves the port idle. Pushing again
+    /// afterwards resumes output.
+    /// </summary>
+    /// <exception cref="ProsperoException">The output call failed.</exception>
+    public void Drain()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        // A push with nothing to push is the port's end-of-output: it waits for the queued block and
+        // then stops rather than submitting another. One call is enough - there is one block to wait on.
+        SceResult.ThrowIfFailed(AudioOut.sceAudioOutOutput(_handle, null), nameof(AudioOut.sceAudioOutOutput));
+    }
+
+    /// <summary>Waits for the last block to play, then closes the port.</summary>
     public void Dispose()
     {
         if (_disposed)
             return;
+        AudioOut.sceAudioOutOutput(_handle, null);
         _disposed = true;
         AudioOut.sceAudioOutClose(_handle);
     }

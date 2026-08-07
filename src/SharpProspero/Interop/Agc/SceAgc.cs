@@ -257,13 +257,21 @@ public static unsafe partial class SceAgc
     [LibraryImport(Lib)]
     public static partial int sceAgcCondExecPatchSetEnd(void* packet, void* endAddress);
 
-    /// <summary>Builds an interpolant (VS-&gt;PS attribute) mapping from two shader programs.</summary>
+    /// <summary>
+    /// Fills a block of thirty-two context registers that map the pixel program's input parameters onto
+    /// the geometry program's outputs, by matching their semantics.
+    /// </summary>
     [LibraryImport(Lib)]
-    public static partial int sceAgcCreateInterpolantMapping(void* outMapping, void* vsShader, void* psShader);
+    public static partial int sceAgcCreateInterpolantMapping(void* cxInterpolantMapping, void* geometryShader, void* pixelShader);
 
-    /// <summary>Creates a primitive/pipeline state object from shader programs, GPU addresses and flags.</summary>
+    /// <summary>
+    /// Fills the primitive state the two register spaces carry: the shader-unit enable and the output
+    /// primitive type on the context side, and the geometry-engine control, user-VGPR enable and
+    /// primitive type on the user-config side. The output primitive type comes from the primitive being
+    /// drawn, not from the geometry program.
+    /// </summary>
     [LibraryImport(Lib)]
-    public static partial int sceAgcCreatePrimState(void* outPrimState, void* shader, void* gpuAddr1, void* gpuAddr2, uint flags);
+    public static partial int sceAgcCreatePrimState(void* cxPrimitiveState, void* ucPrimitiveState, void* hullShader, void* geometryShader, uint primitiveType);
 
     /// <summary>Creates a shader object from a shader binary/header and its GPU address; writes the handle to outShader and returns a status.</summary>
     [LibraryImport(Lib)]
@@ -638,9 +646,13 @@ public static unsafe partial class SceAgc
     [LibraryImport(Lib)]
     public static partial uint sceAgcDcbWriteDataGetSize(uint dwordCount);
 
-    /// <summary>Patches the destination address/offset field of a DMA-data packet.</summary>
+    /// <summary>
+    /// Patches the destination address or offset of a DMA-data packet, the mirror of the source call
+    /// below. The value is a second argument: the packet is checked and the value stored into it, so
+    /// declaring only the packet left whatever the register happened to hold as the destination.
+    /// </summary>
     [LibraryImport(Lib)]
-    public static partial int sceAgcDmaDataPatchSetDstAddressOrOffset(void* dstAddr);
+    public static partial int sceAgcDmaDataPatchSetDstAddressOrOffset(void* packet, ulong dstData);
 
     /// <summary>Patches the source address/offset/immediate value field of a DMA-data packet.</summary>
     [LibraryImport(Lib)]
@@ -690,9 +702,14 @@ public static unsafe partial class SceAgc
     [LibraryImport(Lib)]
     public static partial int sceAgcJumpPatchSetTarget(void* packet, void* target, uint size);
 
-    /// <summary>Links multiple shader programs into a linked pipeline.</summary>
+    /// <summary>
+    /// Links the programs of a draw: it writes a thirty-four register context block (the interpolant
+    /// mapping, the shader-unit enable and the output primitive type) and a three register user-config
+    /// block (the geometry-engine control, the user-VGPR enable and the primitive type). Pass a null
+    /// hull program when there is no tessellation.
+    /// </summary>
     [LibraryImport(Lib)]
-    public static partial int sceAgcLinkShaders(void* linkState, void* outHandle, void* shaderA, void* shaderB, void* shaderC, uint flags);
+    public static partial int sceAgcLinkShaders(void* cxShaderLinkage, void* ucPrimitiveState, void* hullShader, void* geometryShader, void* pixelShader, uint primitiveType);
 
     /// <summary>Patches the write-back address of an end-of-pipe action packet.</summary>
     [LibraryImport(Lib)]

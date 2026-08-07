@@ -14,6 +14,9 @@ public static class SceUser
     /// <summary>The system profile. Value 0xFF.</summary>
     public const int System = 0xFF;
 
+    /// <summary>Every signed-in user, for a service that acts on all of them. Value 0xFE.</summary>
+    public const int Everyone = 0xFE;
+
     /// <summary>No user. The value a user id holds before a real user is chosen.</summary>
     public const int Invalid = -1;
 }

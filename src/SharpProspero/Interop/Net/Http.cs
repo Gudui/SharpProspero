@@ -19,10 +19,72 @@ public static partial class NetPool
     public static partial int sceNetPoolDestroy(int memId);
 }
 
-/// <summary>The TLS context the HTTP service uses for secure requests.</summary>
-public static partial class Ssl
+/// <summary>A length-carrying byte blob: a certificate, a key, or a chain member.</summary>
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct SceSslData
+{
+    /// <summary>The bytes.</summary>
+    public byte* Ptr;
+
+    /// <summary>Their length.</summary>
+    public nuint Size;
+}
+
+/// <summary>The lowest protocol version a connection will negotiate.</summary>
+public enum SceSslVersion : int
+{
+    /// <summary>Leave the service's own floor in place.</summary>
+    None = 0,
+
+    /// <summary>SSL 2.0.</summary>
+    Ssl20 = 1,
+
+    /// <summary>SSL 3.0.</summary>
+    Ssl30 = 2,
+
+    /// <summary>TLS 1.0.</summary>
+    Tls10 = 3,
+
+    /// <summary>TLS 1.1.</summary>
+    Tls11 = 4,
+
+    /// <summary>TLS 1.2.</summary>
+    Tls12 = 5,
+}
+
+/// <summary>
+/// TLS bindings. The service is started once for the process and hands back a context id; the HTTP
+/// service takes that id, and a connection can also be run directly over a socket the network bindings
+/// already opened: create a connection over the socket id and the host name, set the options wanted,
+/// handshake, then send and receive.
+/// </summary>
+public static unsafe partial class Ssl
 {
     private const string Lib = "libSceSsl";
+
+    /// <summary>Require the peer certificate to be present and parseable.</summary>
+    public const uint FlagServerVerify = 0x00000001;
+
+    /// <summary>Require the certificate's name to match the host name the connection was created with.</summary>
+    public const uint FlagCnCheck = 0x00000004;
+
+    /// <summary>Reject a certificate that has expired.</summary>
+    public const uint FlagNotAfterCheck = 0x00000008;
+
+    /// <summary>Reject a certificate that is not yet valid.</summary>
+    public const uint FlagNotBeforeCheck = 0x00000010;
+
+    /// <summary>Require the chain to end at a certificate authority the service already trusts.</summary>
+    public const uint FlagKnownCaCheck = 0x00000020;
+
+    /// <summary>Reject a certificate signed with SHA-1.</summary>
+    public const uint FlagNotSha1CertCheck = 0x00002000;
+
+    /// <summary>Let a read return as soon as any bytes are available rather than filling the buffer.</summary>
+    public const uint MsgFlagPartialRead = 0x00000001;
+
+    /// <summary>Read without consuming: the same bytes are returned by the next read.</summary>
+    public const uint MsgFlagPeek = 0x00000003;
 
     /// <summary>Starts the TLS service with a pool of <paramref name="poolSize"/> bytes, returning a context id.</summary>
     [LibraryImport(Lib)]
@@ -31,6 +93,127 @@ public static partial class Ssl
     /// <summary>Stops the TLS service.</summary>
     [LibraryImport(Lib)]
     public static partial int sceSslTerm(int sslCtxId);
+
+    /// <summary>
+    /// Wraps an already-connected socket, returning a connection id. <paramref name="hostname"/> is what
+    /// the certificate's name is checked against and what is sent as the server-name indication.
+    /// </summary>
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    public static partial int sceSslCreateConnection(int sslCtxId, int sockId, string hostname);
+
+    /// <summary>Releases a connection id. The socket itself stays open.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSslDeleteConnection(int sslConnectionId);
+
+    /// <summary>Runs the handshake, including whatever verification the options left enabled.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSslConnect(int sslConnectionId);
+
+    /// <summary>Sends the close notification and shuts the secure channel down.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSslClose(int sslConnectionId);
+
+    /// <summary>Writes <paramref name="len"/> bytes. Returns the number written.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSslWrite(int sslConnectionId, void* buf, nuint len, int flags);
+
+    /// <summary>Reads up to <paramref name="len"/> bytes. Returns the number read, or 0 at the end.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSslRead(int sslConnectionId, void* buf, nuint len, int flags);
+
+    /// <summary>Writes with no flags, and does not return until the whole buffer is sent.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSslSend(int sslConnectionId, void* msg, nuint fulllen);
+
+    /// <summary>Reads with no flags, and does not return until the buffer is full or the peer closes.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSslRecv(int sslConnectionId, void* buf, nuint fulllen);
+
+    /// <summary>
+    /// Turns verification checks on for a connection. Set these before the handshake; afterwards they
+    /// have nothing left to reject.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSslEnableVerifyOption(int sslConnectionId, uint option);
+
+    /// <summary>Turns verification checks off for a connection.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSslDisableVerifyOption(int sslConnectionId, uint option);
+
+    /// <summary>Refuses to negotiate anything below <paramref name="version"/>.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSslSetMinSslVersion(int sslConnectionId, SceSslVersion version);
+
+    /// <summary>
+    /// Runs the verification decision through the caller's routine. It receives the context id, the bits
+    /// describing what failed, the chain, and its own object; returning a negative value fails the
+    /// handshake with that value.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSslSetVerifyCallback(int sslConnectionId,
+        delegate* unmanaged[Cdecl]<int, uint, void**, int, void*, int> cbfunc, void* userArg);
+
+    /// <summary>Offers the protocol list, in the wire form, for application-layer protocol negotiation.</summary>
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    public static partial int sceSslSetAlpn(int sslConnectionId, string proto);
+
+    /// <summary>Reads back which protocol the peer chose, or null if none was negotiated.</summary>
+    [LibraryImport(Lib)]
+    public static partial byte* sceSslGetAlpnSelected(int sslConnectionId);
+
+    /// <summary>Reuses a completed session on a freshly connected socket, skipping the full handshake.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSslReuseConnection(int sslConnectionId, int sockId);
+
+    /// <summary>
+    /// Adds certificate authorities, and optionally a client certificate and its private key, to the
+    /// context. Everything given here applies to connections created afterwards.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSslLoadCert(int sslCtxId, int caCertNum, SceSslData** caList,
+        SceSslData* cert, SceSslData* privKey);
+
+    /// <summary>Drops what <see cref="sceSslLoadCert"/> added.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSslUnloadCert(int sslCtxId);
+}
+
+/// <summary>
+/// A URL broken into its parts. The strings point into the pool handed to <see cref="Http.sceHttpUriParse"/>,
+/// so they stay valid only as long as that pool does.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct SceHttpUriElement
+{
+    /// <summary>Non-zero when the URL has no hierarchical part and only <see cref="Path"/> is meaningful.</summary>
+    public int Opaque;
+
+    /// <summary>The scheme, without the colon.</summary>
+    public byte* Scheme;
+
+    /// <summary>The user name, or null.</summary>
+    public byte* Username;
+
+    /// <summary>The password, or null.</summary>
+    public byte* Password;
+
+    /// <summary>The host name.</summary>
+    public byte* Hostname;
+
+    /// <summary>The path.</summary>
+    public byte* Path;
+
+    /// <summary>The query, including its leading question mark.</summary>
+    public byte* Query;
+
+    /// <summary>The fragment, including its leading hash.</summary>
+    public byte* Fragment;
+
+    /// <summary>The port, or 0 when the URL did not carry one.</summary>
+    public ushort Port;
+
+    /// <summary>Reserved. Leave zero.</summary>
+    public fixed byte Reserved[10];
 }
 
 /// <summary>HTTP client bindings.</summary>
@@ -46,6 +229,84 @@ public static unsafe partial class Http
 
     /// <summary>The POST method.</summary>
     public const int MethodPost = 1;
+
+    /// <summary>The HEAD method.</summary>
+    public const int MethodHead = 2;
+
+    /// <summary>The OPTIONS method.</summary>
+    public const int MethodOptions = 3;
+
+    /// <summary>The PUT method.</summary>
+    public const int MethodPut = 4;
+
+    /// <summary>The DELETE method.</summary>
+    public const int MethodDelete = 5;
+
+    /// <summary>The TRACE method.</summary>
+    public const int MethodTrace = 6;
+
+    /// <summary>The CONNECT method.</summary>
+    public const int MethodConnect = 7;
+
+    /// <summary>Replace any header of the same name.</summary>
+    public const uint HeaderOverwrite = 0;
+
+    /// <summary>Append, leaving any header of the same name in place.</summary>
+    public const uint HeaderAdd = 1;
+
+    /// <summary>The longest URL the URI helpers accept, excluding the terminator.</summary>
+    public const int MaxUriLength = (16 * 1024) - 1;
+
+    /// <summary>Build the scheme into the output URL.</summary>
+    public const uint UriBuildWithScheme = 0x01;
+
+    /// <summary>Build the host name into the output URL.</summary>
+    public const uint UriBuildWithHostname = 0x02;
+
+    /// <summary>Build the port into the output URL.</summary>
+    public const uint UriBuildWithPort = 0x04;
+
+    /// <summary>Build the path into the output URL.</summary>
+    public const uint UriBuildWithPath = 0x08;
+
+    /// <summary>Build the user name into the output URL.</summary>
+    public const uint UriBuildWithUsername = 0x10;
+
+    /// <summary>Build the password into the output URL.</summary>
+    public const uint UriBuildWithPassword = 0x20;
+
+    /// <summary>Build the query into the output URL.</summary>
+    public const uint UriBuildWithQuery = 0x40;
+
+    /// <summary>Build the fragment into the output URL.</summary>
+    public const uint UriBuildWithFragment = 0x80;
+
+    /// <summary>Build every part that is present.</summary>
+    public const uint UriBuildWithAll = 0xFFFF;
+
+    /// <summary>Require the server certificate to be present and parseable.</summary>
+    public const uint SslFlagServerVerify = 0x01;
+
+    /// <summary>Require a client certificate exchange.</summary>
+    public const uint SslFlagClientVerify = 0x02;
+
+    /// <summary>Require the certificate's name to match the host.</summary>
+    public const uint SslFlagCnCheck = 0x04;
+
+    /// <summary>Reject an expired certificate.</summary>
+    public const uint SslFlagNotAfterCheck = 0x08;
+
+    /// <summary>Reject a certificate that is not yet valid.</summary>
+    public const uint SslFlagNotBeforeCheck = 0x10;
+
+    /// <summary>Require the chain to end at a trusted certificate authority.</summary>
+    public const uint SslFlagKnownCaCheck = 0x20;
+
+    /// <summary>Allow a previous session to be resumed.</summary>
+    public const uint SslFlagSessionReuse = 0x40;
+
+    /// <summary>Send the server-name indication.</summary>
+    public const uint SslFlagSni = 0x80;
 
     /// <summary>Starts the HTTP service on a net pool and a TLS context, returning a context id.</summary>
     [LibraryImport(Lib)]
@@ -75,13 +336,88 @@ public static unsafe partial class Http
     [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
     public static partial int sceHttpCreateRequestWithURL(int connId, int method, string url, ulong contentLength);
 
+    /// <summary>
+    /// Creates a request whose method is given by name rather than by one of the numbered methods, which
+    /// is how a method outside that set is issued.
+    /// </summary>
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    public static partial int sceHttpCreateRequestWithURL2(int connId, string method, string url, ulong contentLength);
+
     /// <summary>Deletes a request.</summary>
     [LibraryImport(Lib)]
     public static partial int sceHttpDeleteRequest(int reqId);
 
+    /// <summary>Sets the body length after the request was created.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceHttpSetRequestContentLength(int id, ulong contentLength);
+
+    /// <summary>Sends the body in chunks instead of declaring a length up front.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceHttpSetChunkedTransferEnabled(int id, int isEnable);
+
+    /// <summary>
+    /// Has the service decompress a gzip-encoded response, so <see cref="sceHttpReadData"/> yields the
+    /// decoded bytes. Only 0 and 1 are accepted.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceHttpSetInflateGZIPEnabled(int id, int isEnable);
+
     /// <summary>Sends a request, with optional body data.</summary>
     [LibraryImport(Lib)]
     public static partial int sceHttpSendRequest(int reqId, void* postData, nuint size);
+
+    /// <summary>
+    /// Breaks a request off. The call blocked in send or read returns instead of waiting for the server.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceHttpAbortRequest(int reqId);
+
+    /// <summary>
+    /// Adds a request header. <paramref name="mode"/> is <see cref="HeaderOverwrite"/> or
+    /// <see cref="HeaderAdd"/>.
+    /// </summary>
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    public static partial int sceHttpAddRequestHeader(int id, string name, string value, uint mode);
+
+    /// <summary>Removes a request header the caller added, or one the service adds by default.</summary>
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    public static partial int sceHttpRemoveRequestHeader(int id, string name);
+
+    /// <summary>
+    /// Points <paramref name="header"/> at the response header block. The block belongs to the request and
+    /// dies with it, so anything wanted from it is copied out first.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceHttpGetAllResponseHeaders(int reqId, byte** header, nuint* headerSize);
+
+    /// <summary>
+    /// Finds one field in a header block and points <paramref name="fieldValue"/> at its value. The value
+    /// is not terminated; <paramref name="valueLen"/> gives its length.
+    /// </summary>
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    public static partial int sceHttpParseResponseHeader(byte* header, nuint headerLen, string fieldStr,
+        byte** fieldValue, nuint* valueLen);
+
+    /// <summary>Splits a status line into its version, code and reason phrase.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceHttpParseStatusLine(byte* statusLine, nuint lineLen, int* httpMajorVer,
+        int* httpMinorVer, int* responseCode, byte** reasonPhrase, nuint* phraseLen);
+
+    /// <summary>Caps how large a response header block the service will accept.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceHttpSetResponseHeaderMaxSize(int id, nuint headerSize);
+
+    /// <summary>Follows 3xx responses itself rather than handing them to the caller.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceHttpSetAutoRedirect(int id, int isEnable);
+
+    /// <summary>Reads back whether redirects are being followed.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceHttpGetAutoRedirect(int id, int* isEnable);
+
+    /// <summary>Reads the error the transport last reported for a request.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceHttpGetLastErrno(int reqId, int* errNum);
 
     /// <summary>Reads the response status code.</summary>
     [LibraryImport(Lib)]
@@ -104,4 +440,75 @@ public static unsafe partial class Http
     /// <summary>Sets the receive timeout, in microseconds.</summary>
     [LibraryImport(Lib)]
     public static partial int sceHttpSetRecvTimeOut(int id, uint usec);
+
+    /// <summary>Sets the send timeout, in microseconds.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceHttpSetSendTimeOut(int id, uint usec);
+
+    /// <summary>Sets the name-resolution timeout, in microseconds.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceHttpSetResolveTimeOut(int id, uint usec);
+
+    /// <summary>Sets how many times name resolution is retried.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceHttpSetResolveRetry(int id, int retry);
+
+    /// <summary>Turns TLS checks on for a template, connection or request.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceHttpsEnableOption(int id, uint sslFlags);
+
+    /// <summary>Turns TLS checks off for a template, connection or request.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceHttpsDisableOption(int id, uint sslFlags);
+
+    /// <summary>Reads why the TLS handshake failed, with the verification bits in <paramref name="detail"/>.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceHttpsGetSslError(int id, int* errNum, uint* detail);
+
+    /// <summary>Adds certificate authorities, and optionally a client certificate and key, to the context.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceHttpsLoadCert(int httpCtxId, int caCertNum, SceSslData** caList,
+        SceSslData* cert, SceSslData* privKey);
+
+    /// <summary>Drops what <see cref="sceHttpsLoadCert"/> added.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceHttpsUnloadCert(int httpCtxId);
+
+    /// <summary>Refuses to negotiate anything below <paramref name="version"/>.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceHttpsSetSslVersion(int id, SceSslVersion version);
+
+    /// <summary>
+    /// Splits a URL into <paramref name="output"/>, with the strings written into
+    /// <paramref name="pool"/>. Call once with a null pool to learn the size through
+    /// <paramref name="require"/>, then again with a pool that large.
+    /// </summary>
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    public static partial int sceHttpUriParse(SceHttpUriElement* output, string srcUrl, void* pool,
+        nuint* require, nuint prepare);
+
+    /// <summary>
+    /// Assembles a URL from the parts <paramref name="option"/> selects. As with the parser, a null
+    /// output reports the length needed through <paramref name="require"/>.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceHttpUriBuild(byte* output, nuint* require, nuint prepare,
+        SceHttpUriElement* srcElement, uint option);
+
+    /// <summary>Resolves a relative URL against a base one.</summary>
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    public static partial int sceHttpUriMerge(byte* mergedUrl, string url, string relativeUrl,
+        nuint* require, nuint prepare, uint option);
+
+    /// <summary>Percent-encodes a string for use inside a URL.</summary>
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    public static partial int sceHttpUriEscape(byte* output, nuint* require, nuint prepare, string input);
+
+    /// <summary>Reverses <see cref="sceHttpUriEscape"/>.</summary>
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    public static partial int sceHttpUriUnescape(byte* output, nuint* require, nuint prepare, string input);
+
+    /// <summary>Collapses the dot segments in a path.</summary>
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    public static partial int sceHttpUriSweepPath(byte* dst, string src, nuint srcSize);
 }

@@ -13,7 +13,10 @@ namespace SharpProspero.Storage;
 /// <summary>What a directory entry refers to.</summary>
 public enum FileEntryType
 {
-    /// <summary>The kind is not reported; stat the path to find out.</summary>
+    /// <summary>
+    /// The listing did not report a kind. Ask <see cref="FileSystem.GetEntryType"/> for the path to
+    /// find out; treating it as a file is wrong for any file system that leaves the kind out.
+    /// </summary>
     Unknown = 0,
 
     /// <summary>A named pipe.</summary>
@@ -124,6 +127,34 @@ public static unsafe class FileSystem
             offset += recordLength;
         }
     }
+
+    /// <summary>
+    /// What <paramref name="path"/> refers to, asking the file system directly rather than relying on
+    /// a directory listing to report it.
+    /// </summary>
+    /// <returns>
+    /// The kind, or <see cref="FileEntryType.Unknown"/> when the path cannot be reached or its status
+    /// cannot be read.
+    /// </returns>
+    /// <remarks>
+    /// A symbolic link is reported as whatever it names, matching how the system's own directory walks
+    /// decide whether to descend.
+    /// </remarks>
+    public static FileEntryType GetEntryType(string path)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(path);
+        byte[] owned = ToNullTerminated(path);
+        SceKernelStat status = default;
+        int result;
+        fixed (byte* p = owned)
+            result = KernelFile.stat(p, &status);
+        return result == 0
+            ? (FileEntryType)((status.Mode & KernelFile.FileTypeMask) >> 12)
+            : FileEntryType.Unknown;
+    }
+
+    /// <summary>True when <paramref name="path"/> is a directory.</summary>
+    public static bool IsDirectory(string path) => GetEntryType(path) == FileEntryType.Directory;
 
     /// <summary>The size in bytes of the file at <paramref name="path"/>.</summary>
     public static long GetFileSize(string path)
@@ -291,7 +322,7 @@ public static unsafe class FileSystem
                 continue;
             string from = source.TrimEnd('/') + "/" + entry.Name;
             string to = destination.TrimEnd('/') + "/" + entry.Name;
-            if (entry.IsDirectory)
+            if (DescendsInto(entry, from))
                 CopyDirectory(from, to);
             else
                 CopyFile(from, to);
@@ -305,12 +336,20 @@ public static unsafe class FileSystem
             if (entry.Name is "." or "..")
                 continue;
             string child = directory.TrimEnd('/') + "/" + entry.Name;
-            if (entry.IsDirectory)
+            if (DescendsInto(entry, child))
                 CollectFiles(child, files);
             else
                 files.Add(child);
         }
     }
+
+    // A file system is free to leave the kind out of a directory record, and a walk that reads an
+    // unreported kind as a file would copy a directory as a byte stream and never enter it. Only the
+    // unreported case costs a second call; a record that names its kind is taken at its word.
+    private static bool DescendsInto(DirectoryEntry entry, string path)
+        => entry.Type == FileEntryType.Unknown
+            ? GetEntryType(path) == FileEntryType.Directory
+            : entry.IsDirectory;
 
     private static int OpenPath(string path, int flags, ushort mode)
     {

@@ -45,6 +45,28 @@ public unsafe struct SceContentExportParam
 }
 
 /// <summary>
+/// How much data a callback-fed export carries and who hands it over. The service calls
+/// <see cref="Func"/> repeatedly until the callback answers
+/// <see cref="ContentExport.DataProvideDone"/>.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct SceContentExportCallbackParam
+{
+    /// <summary>The total byte count the callback will hand over.</summary>
+    public nuint ContentLength;
+
+    /// <summary>
+    /// The callback. It writes the address of the next chunk through its first argument and the chunk
+    /// length through its second, and returns <see cref="ContentExport.DataProvideInProgress"/> while
+    /// more remains.
+    /// </summary>
+    public delegate* unmanaged[Cdecl]<void**, nuint*, void*, int> Func;
+
+    /// <summary>A pointer passed back to the callback, or null.</summary>
+    public void* UserData;
+}
+
+/// <summary>
 /// Content-export bindings: copy a file into the console content library. The service is loaded as a
 /// system module and paired with an export session id from <see cref="sceContentExportStart"/>.
 /// </summary>
@@ -93,6 +115,57 @@ public static unsafe partial class ContentExport
     [LibraryImport(Lib)]
     public static partial int sceContentExportFromFile(
         int expId, SceContentExportParam* param, byte* srcPath, byte* path, nuint pathBufferLength);
+
+    /// <summary>A data-provide callback returns this while it still has more to hand over.</summary>
+    public const int DataProvideInProgress = 0;
+
+    /// <summary>A data-provide callback returns this once it has handed over the last chunk.</summary>
+    public const int DataProvideDone = 1;
+
+    /// <summary>The most exports that may run at once.</summary>
+    public const int MaxExecution = 10;
+
+    /// <summary>
+    /// Copies bytes handed over by <paramref name="func"/> into the content library, so an image the
+    /// application built in memory needs no temporary file. <paramref name="contentLength"/> is the total
+    /// byte count; the destination path is written into <paramref name="path"/>.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceContentExportFromData(
+        int expId,
+        SceContentExportParam* param,
+        nuint contentLength,
+        delegate* unmanaged[Cdecl]<void**, nuint*, void*, int> func,
+        void* userData,
+        byte* path,
+        nuint pathBufferLength);
+
+    /// <summary>
+    /// Copies the file at <paramref name="srcPath"/> into the content library and attaches the image at
+    /// <paramref name="thumbnailPath"/> as its thumbnail.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceContentExportFromFileWithThumbnail(
+        int expId,
+        SceContentExportParam* param,
+        byte* srcPath,
+        byte* thumbnailPath,
+        byte* path,
+        nuint pathBufferLength);
+
+    /// <summary>
+    /// Copies callback-fed bytes into the content library and attaches a callback-fed thumbnail of media
+    /// type <paramref name="thumbnailType"/>.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceContentExportFromDataWithThumbnail(
+        int expId,
+        SceContentExportParam* param,
+        SceContentExportCallbackParam* contentCallbackParam,
+        byte* thumbnailType,
+        SceContentExportCallbackParam* thumbnailCallbackParam,
+        byte* path,
+        nuint pathBufferLength);
 
     /// <summary>Cancels the export running under <paramref name="expId"/>.</summary>
     [LibraryImport(Lib)]

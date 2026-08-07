@@ -374,3 +374,43 @@ the rendered block goes straight to `AudioOutDevice.Output`.
 Reach for this only when the `AudioMixer` above is not enough. The encoders' lower-level bindings,
 `M4aacEnc` and `At9Enc`, sit alongside it for finer control, and the spatial-audio and audio-job bindings
 are listed on the [Bindings](bindings.md) page.
+
+### Placing a sound in a scene
+
+The same class carries the calls that turn a listener and a source into the pitch and per-speaker levels
+a voice is then driven with:
+
+| Call | What it does |
+|---|---|
+| `sceNgs2GeomResetListenerParam`, `sceNgs2GeomResetSourceParam` | Fill a listener or a source with its defaults. |
+| `sceNgs2GeomCalcListener` | Turns the listener's placing into the working form the next call takes. Do this once a frame. |
+| `sceNgs2GeomApply` | Works out what one source sounds like to that listener, into a `SceNgs2GeomAttribute`. |
+
+`SceNgs2GeomAttribute.PitchRatio` goes to the voice's pitch and `Level` to its volume matrix. Choose what
+is worked out with `Ngs2GeomApplyFlags`; `Default` covers everything but the ambisonic form.
+
+Without a scene, `sceNgs2PanInit` and `sceNgs2PanGetVolumeMatrix` do the same from an angle and a
+distance per source. Prepare the workspace once with where the speakers sit, then ask for the levels.
+
+`sceNgs2ReportRegisterHandler` is the only channel a rejected rack or voice parameter is described
+through - the call that made it answers a single number - so register a handler for
+`Ngs2ReportType.Message` while bringing a graph up.
+
+## Object-based output
+
+`SharpProspero.Interop.Audio.AudioOut2` is the other output path, and an alternative to `AudioOutDevice`
+rather than a layer over it. A context holds a pool of ports and a queue; a port carries one stream of
+samples into a mix, and a port opened as an object is placed in space rather than fed to fixed channels.
+
+| Call | What it does |
+|---|---|
+| `sceAudioOut2Initialize` | Starts the service. |
+| `sceAudioOut2ContextResetParam`, `sceAudioOut2ContextQueryMemory` | Fill a context description with its defaults and report the memory it needs. |
+| `sceAudioOut2ContextCreate` | Creates the context in that memory. |
+| `sceAudioOut2PortCreate` | Opens a port of one `AudioOut2PortType`; the `Object` types are the placeable ones. |
+| `sceAudioOut2PortSetAttributes` | Supplies the samples and, for an object port, where it sits. |
+| `sceAudioOut2ContextAdvance`, `sceAudioOut2ContextPush` | Move to the next block and hand it to the output. |
+
+Samples and placing both arrive through the attribute list, so a frame is: set the attributes on each
+port, advance the context, push it. `sceAudioOut2GetSpeakerInfo` reports what the machine is playing
+through, and the speaker-array calls work out per-speaker levels for a source placed in space.

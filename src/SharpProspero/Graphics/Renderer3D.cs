@@ -2,6 +2,7 @@
 // Copyright (C) 2026 SvenGDK
 
 using SharpProspero.Graphics.Agc;
+using SharpProspero.Interop;
 using SharpProspero.Interop.Agc;
 using SharpProspero.Interop.VideoOut;
 using SharpProspero.Memory;
@@ -35,11 +36,15 @@ public sealed unsafe class Renderer3D : IDisposable
     }
 
     private const uint TargetMaskOffset = 0x008E;          // CB_TARGET_MASK
-    private const uint GsOutPrimTypeOffset = 0x029B;       // VGT_GS_OUT_PRIM_TYPE
-    private const uint PrimitiveTypeOffset = 0x0242;       // VGT_PRIMITIVE_TYPE (user-config)
-    private const uint PrimitiveTriangleList = 4;          // DI_PT_TRILIST
-    private const uint GsOutTriangles = 2;                 // CxGsOutputPrimitiveType::kTriangles
+    private const uint PrimitiveTriangleList = 4;          // the primitive type a triangle list is drawn as
     private const byte Index32Bit = 1;
+
+    // What the shader-link step fills. On the context side: one interpolant register per parameter the
+    // pixel program can read, then the enable that says which shader units run and the output primitive
+    // type. On the user-config side: the geometry-engine control, the user-VGPR enable, and the
+    // primitive type.
+    private const int ShaderLinkageRegisterCount = 34;
+    private const int PrimitiveStateRegisterCount = 3;
 
     private readonly DisplayDevice _display;
     private readonly ShaderBinary _vsBinary, _psBinary;
@@ -50,6 +55,7 @@ public sealed unsafe class Renderer3D : IDisposable
     private readonly DrawCommandBuffer[] _dcb;
     private readonly DirectMemoryRegion[] _contextState;   // combined Cx registers the GPU loads
     private readonly DirectMemoryRegion[] _shaderState;    // combined Sh registers
+    private readonly DirectMemoryRegion[] _primitiveState; // the Uc registers the link step fills
     private readonly DirectMemoryRegion[] _constants;      // the two matrices
     private readonly int _maxContext, _maxShader, _framesInFlight;
     private int _slot;
@@ -71,9 +77,9 @@ public sealed unsafe class Renderer3D : IDisposable
         _vs = _vsBinary.Prepare();
         _ps = _psBinary.Prepare();
 
-        // The combined register state: the target, the viewport, the write mask, the primitive type, and
+        // The combined register state: the target, the viewport, the write mask, the shader linkage, and
         // each shader's own registers. Sized for the block registers plus both shaders' registers.
-        _maxContext = CxRenderTarget.RegisterCount + AgcViewport.RegisterCount + 4
+        _maxContext = CxRenderTarget.RegisterCount + AgcViewport.RegisterCount + 1 + ShaderLinkageRegisterCount
                       + _vs.Shader.ContextRegisters.Length + _ps.Shader.ContextRegisters.Length;
         _maxShader = _vs.Shader.ShaderRegisters.Length + _ps.Shader.ShaderRegisters.Length;
 
@@ -83,12 +89,14 @@ public sealed unsafe class Renderer3D : IDisposable
         _dcb = new DrawCommandBuffer[_framesInFlight];
         _contextState = new DirectMemoryRegion[_framesInFlight];
         _shaderState = new DirectMemoryRegion[_framesInFlight];
+        _primitiveState = new DirectMemoryRegion[_framesInFlight];
         _constants = new DirectMemoryRegion[_framesInFlight];
         for (int i = 0; i < _framesInFlight; i++)
         {
             _dcb[i] = DrawCommandBuffer.Allocate((uint)commandBufferBytes);
             _contextState[i] = DirectMemoryRegion.Allocate((nuint)(_maxContext * sizeof(CxRegister)));
             _shaderState[i] = DirectMemoryRegion.Allocate((nuint)(_maxShader * sizeof(CxRegister)));
+            _primitiveState[i] = DirectMemoryRegion.Allocate((nuint)(PrimitiveStateRegisterCount * sizeof(CxRegister)));
             _constants[i] = DirectMemoryRegion.Allocate((nuint)sizeof(Constants));
         }
     }
@@ -107,6 +115,7 @@ public sealed unsafe class Renderer3D : IDisposable
         DrawCommandBuffer dcbObj = _dcb[_slot];
         DirectMemoryRegion contextRegion = _contextState[_slot];
         DirectMemoryRegion shaderRegion = _shaderState[_slot];
+        DirectMemoryRegion primitiveRegion = _primitiveState[_slot];
         DirectMemoryRegion constantsRegion = _constants[_slot];
 
         // The matrices the vertex program reads.
@@ -136,11 +145,25 @@ public sealed unsafe class Renderer3D : IDisposable
 
         // Assemble the combined context register state into graphics-readable memory.
         int cx = 0;
+        CxRegister* contextBase = (CxRegister*)contextRegion.Pointer;
         var context = new Span<CxRegister>(contextRegion.Pointer, _maxContext);
         target.Registers.CopyTo(context[cx..]); cx += CxRenderTarget.RegisterCount;
         cx += viewport.WriteTo(context[cx..]);
         context[cx++] = new CxRegister((ushort)TargetMaskOffset, 0xF);            // write all four channels of target 0
-        context[cx++] = new CxRegister((ushort)GsOutPrimTypeOffset, GsOutTriangles);
+
+        // Link the two programs. This is what pairs the pixel program's inputs with the vertex program's
+        // outputs and derives the shader-unit enable, the output primitive type and the geometry-engine
+        // state from the programs themselves and the primitive being drawn. Left undone, those registers
+        // keep their reset values and the draw produces nothing; written by hand they would have to
+        // repeat a derivation the library already performs from the programs in front of it. The slot is
+        // reserved before the programs' own registers so that anything a program sets wins.
+        void* linkage = contextBase + cx;
+        cx += ShaderLinkageRegisterCount;
+        SceResult.ThrowIfFailed(
+            SceAgc.sceAgcLinkShaders(
+                linkage, primitiveRegion.Pointer, null, _vs.Shader.Handle, _ps.Shader.Handle, PrimitiveTriangleList),
+            nameof(SceAgc.sceAgcLinkShaders));
+
         _vs.Shader.ContextRegisters.CopyTo(context[cx..]); cx += _vs.Shader.ContextRegisters.Length;
         _ps.Shader.ContextRegisters.CopyTo(context[cx..]); cx += _ps.Shader.ContextRegisters.Length;
 
@@ -159,7 +182,7 @@ public sealed unsafe class Renderer3D : IDisposable
 
         SceAgc.sceAgcDcbSetCxRegistersIndirect(dcb, contextRegion.Pointer, (uint)cx);
         SceAgc.sceAgcDcbSetShRegistersIndirect(dcb, shaderRegion.Pointer, (uint)sh);
-        SceAgc.sceAgcDcbSetUcRegisterDirect(dcb, Pack(PrimitiveTypeOffset, PrimitiveTriangleList));
+        SceAgc.sceAgcDcbSetUcRegistersIndirect(dcb, primitiveRegion.Pointer, (uint)PrimitiveStateRegisterCount);
 
         BindResource(dcb, ShaderResourceKind.ConstantBuffer, cbDescriptor);
         BindResource(dcb, ShaderResourceKind.ReadOnly, vbDescriptor);
@@ -187,8 +210,6 @@ public sealed unsafe class Renderer3D : IDisposable
         SceAgc.sceAgcCbSetShRegisterRangeDirect(dcb, AgcShader.GsUserDataBaseOffset + (uint)dwordOffset, words, 4);
     }
 
-    private static ulong Pack(uint offset, uint value) => offset | ((ulong)value << 32);
-
     private const uint VideoOutFlipModeVSync = 1;
 
     /// <summary>Releases the shaders, command buffer, and state memory.</summary>
@@ -203,6 +224,7 @@ public sealed unsafe class Renderer3D : IDisposable
             _dcb[i].Dispose();
             _contextState[i].Dispose();
             _shaderState[i].Dispose();
+            _primitiveState[i].Dispose();
             _constants[i].Dispose();
         }
     }

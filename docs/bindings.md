@@ -108,34 +108,37 @@ the method class name, and the library. The response files land under
 
 | Namespace | Service | Key entry points |
 |---|---|---|
+| `Interop.Kernel` | Thread bindings | the calling thread's own handle, read and set the processors a thread may run on |
+| `Interop.Kernel` (crash reports) | What an application adds to the report the system writes when it faults | register and unregister a handler, attach memory and files, write user data, read the stop information and a thread's registers |
 | `Interop.Kernel` | Direct and flexible memory, memory info, files, timing, modules, system version and identity | reserve, map, release direct memory; map, release, protect flexible memory; available flexible and direct memory, virtual query; open, read, seek, clock, load module, system software version, allowed SDK version, a named system value; the console identifier, which the same module publishes under `libSceOpenPsId` rather than `libkernel` |
 | `Interop.VideoOut` | Display output | open, set attribute, register, submit flip, wait vblank |
-| `Interop.Pad` | Controller | init, open, read, vibration, light bar, close |
+| `Interop.Pad` | Controller | init, open, read, vibration, light bar, close; adaptive trigger effects and their state, motion and orientation, controller and touch-pad information |
 | `Interop.Keyboard` | USB keyboard | init, open, read state, close |
 | `Interop.Mouse` | USB mouse | init, open, read, close |
 | `Interop.Net` | Network status, sockets, HTTP download, TLS | status; socket, bind, listen, accept, connect, send, receive, poller, name resolver; pool, ssl, request, read |
 | `Interop.Audio` | Audio output, input, decode, encode, synthesis | output: init, open, output, set volume; input: open, capture, silent state, close; decode (AAC/ATRAC9/MP3) create, decode; encode AAC-LC and ATRAC9; Ngs2 synthesis and mixing (system, rack, voice, stream) |
 | `Interop.Audio` (spatial) | Object-based spatial audio (Audio3d) | initialize, open a port, reserve objects, set position and attributes, write a bed, mix to the audio-out |
 | `Interop.Audio` (jobs) | The audio job manager (Ajm) | initialize, register memory and modules, create instances, build/start/wait batches for Opus, AAC, MP3, ATRAC9 decode and encode |
+| `Interop.Audio` (object-based) | The object-based output path (AudioOut2) | initialize, create a context, open ports of each type, set attributes, advance and push, speaker arrays and speaker info, per-user handles, mastering |
 | `Interop.Text` | Character-encoding conversion (Ces) | EUC-JP, EUC-KR, Big5 and UHC to UTF-8 (use `System.Text.Encoding` between the Unicode forms) |
 | `Interop.Video` | Video decode and recording | decode: create decoder, decode, flush, reset, query memory (H.264 and HEVC via the codec type); recording: status, query memory, open, start, stop, close |
-| `Interop.Vision` | Camera depth | query memory, initialize, set command, set region, submit, wait, get image |
+| `Interop.Vision` | Camera depth and capture | depth: query memory, initialize, set command, set region, submit, wait, get image; camera: initialize, open, configure, start, read frames, exposure and white balance, field of view, close |
 | `Interop.AvCapture` | Video capture | open a video channel, start, read frames, stop, close |
 | `Interop.Device` | Message-bus device service | initialize, generation counter, event state, query device info |
 | `Interop.Sysmodule` | System modules | load, unload, is-loaded |
 | `Interop.Image` | Image decode and encode | PNG and JPEG decode; PNG and JPEG encode (for a screenshot) |
-| `Interop.Font` | Scalable text | load a TrueType or OpenType font, scale it, render antialiased glyphs |
+| `Interop.Font` | Scalable text | load a TrueType or OpenType font, scale it by pixel, point or resolution, kerning, render antialiased glyphs |
 | `Interop.Rtc` | Real-time clock | current clock, local time, tick, resolution |
 | `Interop.Random` | Entropy | random bytes |
 | `Interop.Dialog` | Common dialog subsystem, browser dialog, on-screen keyboard, message dialog, error dialog, save-data dialog | initialize subsystem, open, status, result, close |
 | `Interop.Media` | Media playback | init, add source, start, audio frames, close |
-| `Interop.UserService` | Users | initialize, initial user, the signed-in users, a user's name, terminate |
+| `Interop.UserService` | Users | initialize, initial user, the signed-in users, a user's name, sign-in and sign-out events, accessibility settings, terminate |
 | `Interop.SystemService` | System | hide splash, read a parameter, launch another title, keep awake, receive events, read status, safe area, load an executable |
-| `Interop.SaveData` | Save data | mount, read the parameters, search directories, delete |
-| `Interop.AppContent` | Additional content | initialize, read the boot parameters |
+| `Interop.SaveData` | Save data | mount, read and write the parameters and the icon, search directories, transactions, back up, delete |
+| `Interop.AppContent` | Additional content | initialize, read the boot parameters, mount and unmount additional content, queue a download and read its progress, the writable scratch area |
 | `Interop.PlayGo` | Install progress | initialize, open, read the install progress |
 | `Interop.Compression` | Compression | inflate a zlib or deflate stream |
-| `Interop.Content` | Content library | delete by path or id, count, size, search photos and videos, export a file |
+| `Interop.Content` | Content library | delete by path or id, count, size, search photos and videos, export a file or a block of memory, with or without a thumbnail |
 | `Interop.Share` | System capture | initialize, capture a screenshot or a video clip of the composited screen, recording status, screenshot overlay, permit or prohibit a feature |
 | `Interop.Notification` | Notification service | send a message, send by id, show and hide the persistent PS-button banner |
 | `Interop.Np` | Trophies and events | trophy2: contexts, game and group and trophy info, icons, show list; universal data system: post named events with properties |

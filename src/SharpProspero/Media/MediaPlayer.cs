@@ -171,36 +171,21 @@ public sealed unsafe class MediaPlayer : IDisposable
 
     /// <summary>
     /// Starts a player for the file at <paramref name="path"/>. The player reads the file itself, so
-    /// the path must be one it can reach.
+    /// the path must be one it can reach, and its extension must be one the player recognises:
+    /// <c>.mp4</c>, <c>.m4v</c>, <c>.m4a</c> or <c>.mov</c> for MPEG-4, or <c>.webm</c>.
     /// </summary>
+    /// <remarks>
+    /// Only a local file plays. A stream over the network is a separate source form that needs the
+    /// player's second initialization call and a network context out of services this SDK does not yet
+    /// bind, so there is no address-based counterpart to this method.
+    /// </remarks>
     /// <param name="path">Absolute path of the media file.</param>
     /// <param name="basePriority">Player thread priority; zero takes the default.</param>
     /// <exception cref="ProsperoException">The player would not start or would not take the source.</exception>
     public static MediaPlayer Open(string path, uint basePriority = 0)
     {
         ArgumentException.ThrowIfNullOrEmpty(path);
-        return OpenSource(path, basePriority);
-    }
 
-    /// <summary>
-    /// Starts a player for a network stream at <paramref name="url"/>, an <c>http://</c> or
-    /// <c>https://</c> address. The player opens the stream itself over its own network source, so the
-    /// console must have a working connection; the same decode and frame pull as a file follow.
-    /// </summary>
-    /// <param name="url">The <c>http</c> or <c>https</c> address of the stream.</param>
-    /// <param name="basePriority">Player thread priority; zero takes the default.</param>
-    /// <exception cref="ProsperoException">The player would not start or would not take the source.</exception>
-    public static MediaPlayer OpenUrl(string url, uint basePriority = 0)
-    {
-        ArgumentException.ThrowIfNullOrEmpty(url);
-        if (!url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
-            !url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
-            throw new ArgumentException("The stream address must be an http:// or https:// URL.", nameof(url));
-        return OpenSource(url, basePriority);
-    }
-
-    private static MediaPlayer OpenSource(string source, uint basePriority)
-    {
         AvPlayerInitData data;
         AvPlayer.InitializeData(&data);
         data.MemoryReplacement.Allocate = &AllocateGeneral;
@@ -217,9 +202,9 @@ public sealed unsafe class MediaPlayer : IDisposable
         var player = new MediaPlayer(handle);
         try
         {
-            int byteCount = Encoding.UTF8.GetByteCount(source);
+            int byteCount = Encoding.UTF8.GetByteCount(path);
             Span<byte> buffer = byteCount < 512 ? stackalloc byte[byteCount + 1] : new byte[byteCount + 1];
-            int written = Encoding.UTF8.GetBytes(source, buffer);
+            int written = Encoding.UTF8.GetBytes(path, buffer);
             buffer[written] = 0;
             int rc;
             fixed (byte* p = buffer)
@@ -471,7 +456,9 @@ public sealed unsafe class MediaPlayer : IDisposable
                 ExitTextureLock();
             }
 
-            // The table is full; this many concurrent frame buffers is not expected, so release and fail.
+            // The table is full; this many concurrent frame buffers is not expected, so give the
+            // reservation and the addresses it was mapped at back and fail.
+            KernelMemory.sceKernelMunmap(address, bytes);
             KernelMemory.sceKernelReleaseDirectMemory(offset, bytes);
             return null;
         }
@@ -510,7 +497,12 @@ public sealed unsafe class MediaPlayer : IDisposable
             ExitTextureLock();
         }
 
+        // This callback both releases and unmaps: releasing alone gives the reservation back but leaves
+        // the address range taken, so a player that cycles frame buffers exhausts the address space.
         if (found)
+        {
+            KernelMemory.sceKernelMunmap(memory, size);
             KernelMemory.sceKernelReleaseDirectMemory(offset, size);
+        }
     }
 }

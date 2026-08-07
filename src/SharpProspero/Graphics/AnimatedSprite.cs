@@ -92,17 +92,29 @@ public sealed class AnimatedSprite
         _complete = Mode == SpriteMode.Once && _count <= 1;
     }
 
+    // The most frames one call steps through. Reaching it means the rate is far above the frame rate.
+    private const int MaxFramesPerUpdate = 100_000;
+
     /// <summary>Advances the animation by <paramref name="deltaSeconds"/>, stepping frames as time passes.</summary>
     public void Update(float deltaSeconds)
     {
-        if (deltaSeconds <= 0f || FramesPerSecond <= 0f || _count <= 1 || _complete)
+        // A delta that is not a number would otherwise be added to the accumulator, and every
+        // comparison against it afterwards answers false - the animation stops for good, with nothing
+        // to show why.
+        if (!float.IsFinite(deltaSeconds) || deltaSeconds <= 0f || FramesPerSecond <= 0f
+            || _count <= 1 || _complete)
             return;
 
         float frameDuration = 1f / FramesPerSecond;
         _time += deltaSeconds;
-        while (_time >= frameDuration)
+
+        // How many frames are due, by division: subtracting in a loop cannot finish when the frame
+        // duration is small enough that the accumulator does not change by it, which a high enough
+        // rate reaches from an ordinary frame.
+        int due = (int)Math.Min((long)(_time / frameDuration), MaxFramesPerUpdate);
+        _time -= due * frameDuration;
+        for (int i = 0; i < due; i++)
         {
-            _time -= frameDuration;
             Step();
             if (_complete)
             {

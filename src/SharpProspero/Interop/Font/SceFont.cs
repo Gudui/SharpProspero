@@ -190,6 +190,23 @@ public struct SceFontHorizontalLayout
     public float EffectHeight;
 }
 
+/// <summary>How a glyph pair is nudged together, in pixels for the scale it was read at.</summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct SceFontKerning
+{
+    /// <summary>Horizontal adjustment to the advance between the two glyphs.</summary>
+    public float OffsetX;
+
+    /// <summary>Vertical adjustment to the advance between the two glyphs.</summary>
+    public float OffsetY;
+
+    /// <summary>Horizontal adjustment to the second glyph's placement.</summary>
+    public float PositionX;
+
+    /// <summary>Vertical adjustment to the second glyph's placement.</summary>
+    public float PositionY;
+}
+
 /// <summary>What a glyph render produced: where it wrote, the region it changed, and the metrics.</summary>
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct SceFontRenderResult
@@ -321,9 +338,43 @@ public static unsafe partial class SceFont
     [LibraryImport(Lib)]
     public static partial int sceFontUnbindRenderer(void* fontHandle);
 
-    /// <summary>Sets the render pixel size for a font handle.</summary>
+    /// <summary>
+    /// Sets the render pixel size for a font handle. A font handle carries two independent scales: this
+    /// one drives the glyph rasterizer, and the one <see cref="sceFontSetScalePixel"/> writes drives the
+    /// layout queries. Setting one leaves the other where the open left it, so both are set together.
+    /// </summary>
     [LibraryImport(Lib)]
     public static partial int sceFontSetupRenderScalePixel(void* fontHandle, float w, float h);
+
+    /// <summary>
+    /// Sets the pixel size the layout queries answer at, which is what
+    /// <see cref="sceFontGetHorizontalLayout"/> reads.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceFontSetScalePixel(void* fontHandle, float w, float h);
+
+    /// <summary>Reads back the layout scale in pixels.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceFontGetScalePixel(void* fontHandle, float* w, float* h);
+
+    /// <summary>
+    /// Sets the layout scale in points. Points are converted through the resolution
+    /// <see cref="sceFontSetResolutionDpi"/> set, so that call comes first.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceFontSetScalePoint(void* fontHandle, float w, float h);
+
+    /// <summary>Sets the dots per inch a point size is resolved against.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceFontSetResolutionDpi(void* fontHandle, uint hDpi, uint vDpi);
+
+    /// <summary>
+    /// Reads the kerning between two characters at the render scale, so it lines up with the advances
+    /// <see cref="sceFontGetRenderCharGlyphMetrics"/> reports.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceFontGetRenderScaledKerning(void* fontHandle, uint preCode, uint code,
+        SceFontKerning* kerning);
 
     /// <summary>Reads a character's glyph metrics at the current scale.</summary>
     [LibraryImport(Lib)]

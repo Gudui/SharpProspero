@@ -2108,8 +2108,8 @@ public sealed class DynamicWriterTests
         // A lookup hashes a name, reduces by the bucket count and walks that bucket's chain. Two things
         // have to hold. Every symbol has to sit in exactly one chain and every walk has to end, or an
         // import becomes unreachable or a lookup never returns. And the bucket a symbol sits in is the
-        // hash of the name it was written with, not of the shortened name the string table holds -
-        // which is what every module measured that starts does.
+        // hash of its long form - identifier, publishing library, carrying module - which is where two
+        // modules the console ships put all twenty-six of the exports measured in them.
         byte[] file = WriteShape(shape);
         ulong hashAddr = DynamicTagValue(file, 0x04);
         ulong symtab = DynamicTagValue(file, 0x06), strtab = DynamicTagValue(file, 0x05);
@@ -2147,34 +2147,34 @@ public sealed class DynamicWriterTests
         for (uint i = 1; i < nchain; i++)
             Assert.True(bucketOf.ContainsKey(i), $"symbol {i} is on no chain");
 
-        // The bucket is the hash of the plain name. The string table holds the shortened name, so the
-        // plain names the fixtures use are shortened the same way and matched back.
-        var plainByShort = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (string plain in FixtureSymbolNames)
-            plainByShort[SceNid.Compute(plain)] = plain;
+        // Every symbol sits where its long form hashes to. The long form is rebuilt from what the
+        // module itself records: the identifier out of the stored name, the library the identifier's
+        // own suffix names, and the module's own name.
+        Dictionary<int, string> libraries = ExportAndImportLibraries(file);
+        string moduleName = PublishedModuleName(file);
 
-        int checked_ = 0;
         for (uint i = 1; i < nchain; i++)
         {
             uint nameOff = BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan(sym + (int)i * 24));
             int end = Array.IndexOf(file, (byte)0, str + (int)nameOff);
             string stored = Encoding.ASCII.GetString(file, str + (int)nameOff, end - (str + (int)nameOff));
-            string shortName = stored.Split('#')[0];
-            if (!plainByShort.TryGetValue(shortName, out string? plain))
+            string[] parts = stored.Split('#');
+            if (parts.Length != 3)
                 continue;
-            Assert.Equal((int)(ElfHash(plain) % nbucket), bucketOf[i]);
-            checked_++;
+            // An import's long form names the module that publishes it; an export's names this one.
+            int owningModule = DecodeId(parts[2]);
+            string owner = owningModule == 0 ? moduleName : NeededModules(file)[owningModule];
+            string library = libraries[DecodeId(parts[1])];
+            Assert.Equal((int)(ElfHash($"{parts[0]}#{library}#{owner}") % nbucket), bucketOf[i]);
         }
-        // Not every shape names a symbol this can match back; the rule itself is pinned below.
-        Assert.True(checked_ >= 0);
     }
 
     [Fact]
-    public void Write_PutsASymbolInTheBucketItsPlainNameHashesTo()
+    public void Write_PutsASymbolInTheBucketItsLongFormHashesTo()
     {
-        // The string table holds the shortened name and the bucket comes from the plain one, so the two
-        // disagree - which is the whole point. Hashing what the string table holds puts nearly every
-        // symbol in the wrong bucket, and that is what this module did before.
+        // The string table holds the shortened name while the bucket comes from the long form, so the
+        // two disagree - which is the whole point. Hashing what the string table holds, or the plain
+        // name it was computed from, files the symbol where no lookup reaches.
         const string Plain = "sceKernelFoo";
         byte[] file = WriteShape("plain");
         ulong hashAddr = DynamicTagValue(file, 0x04);
@@ -2201,15 +2201,100 @@ public sealed class DynamicWriterTests
                 index = (int)i;
         }
         Assert.True(index > 0, $"'{Plain}' is not in the symbol table as '{shortName}'");
-        Assert.NotEqual(ElfHash(shortName) % nbucket, ElfHash(Plain) % nbucket);
 
-        uint j = BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan(h + 8 + (int)(ElfHash(Plain) % nbucket) * 4));
+        uint nameOffset = BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan(sym + index * 24));
+        int nameEnd = Array.IndexOf(file, (byte)0, str + (int)nameOffset);
+        string[] storedParts = Encoding.ASCII
+            .GetString(file, str + (int)nameOffset, nameEnd - (str + (int)nameOffset)).Split('#');
+        int owningModuleId = DecodeId(storedParts[2]);
+        string longForm = $"{storedParts[0]}#{ExportAndImportLibraries(file)[DecodeId(storedParts[1])]}#"
+            + (owningModuleId == 0 ? PublishedModuleName(file) : NeededModules(file)[owningModuleId]);
+
+        // Which bucket the other two forms would land in is not asserted: this fixture has few enough
+        // buckets that two forms can share one by chance. That the long form is the rule, rather than
+        // one of three that happen to work here, is what the exhaustive test above pins.
+
+        uint j = BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan(h + 8 + (int)(ElfHash(longForm) % nbucket) * 4));
         for (int guard = 0; j != 0 && j != index; guard++)
         {
             Assert.True(guard <= nchain, "the chain does not end");
             j = BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan(h + 8 + (int)(nbucket + j) * 4));
         }
         Assert.Equal((uint)index, j);
+    }
+
+    // The libraries the module records, keyed by the id a mangled name's middle field carries.
+    private static Dictionary<int, string> ExportAndImportLibraries(byte[] file)
+    {
+        (ulong dynOff, ulong dynSize) = FindDynamic(file);
+        ulong strtab = DynamicTagValue(file, 0x05);
+        List<Phdr> phdrs = ReadProgramHeaders(file);
+        Phdr seg = Assert.Single(phdrs, q => q.Type == 1 && q.Addr <= strtab && strtab < q.Addr + q.FileSize);
+        int str = (int)(seg.Offset + (strtab - seg.Addr));
+
+        var libraries = new Dictionary<int, string>();
+        for (ulong d = dynOff; d + 16 <= dynOff + dynSize; d += 16)
+        {
+            long tag = BinaryPrimitives.ReadInt64LittleEndian(file.AsSpan((int)d));
+            ulong val = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan((int)d + 8));
+            if (tag is not (0x61000047 or 0x61000049))
+                continue;
+            int off = str + (int)(val & 0xFFFFFFFF);
+            int end = Array.IndexOf(file, (byte)0, off);
+            libraries[(int)((val >> 48) & 0xFFFF)] = Encoding.ASCII.GetString(file, off, end - off);
+        }
+        return libraries;
+    }
+
+    // The modules this one binds against, by the id a mangled name's last field carries.
+    private static Dictionary<int, string> NeededModules(byte[] file)
+    {
+        (ulong dynOff, ulong dynSize) = FindDynamic(file);
+        ulong strtab = DynamicTagValue(file, 0x05);
+        List<Phdr> phdrs = ReadProgramHeaders(file);
+        Phdr seg = Assert.Single(phdrs, q => q.Type == 1 && q.Addr <= strtab && strtab < q.Addr + q.FileSize);
+        int str = (int)(seg.Offset + (strtab - seg.Addr));
+
+        var modules = new Dictionary<int, string>();
+        for (ulong d = dynOff; d + 16 <= dynOff + dynSize; d += 16)
+        {
+            if (BinaryPrimitives.ReadInt64LittleEndian(file.AsSpan((int)d)) != 0x61000045)
+                continue;
+            ulong val = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan((int)d + 8));
+            int off = str + (int)(val & 0xFFFFFFFF);
+            modules[(int)((val >> 48) & 0xFFFF)] =
+                Encoding.ASCII.GetString(file, off, Array.IndexOf(file, (byte)0, off) - off);
+        }
+        return modules;
+    }
+
+    // The name the module publishes itself under.
+    private static string PublishedModuleName(byte[] file)
+    {
+        (ulong dynOff, ulong dynSize) = FindDynamic(file);
+        ulong strtab = DynamicTagValue(file, 0x05);
+        List<Phdr> phdrs = ReadProgramHeaders(file);
+        Phdr seg = Assert.Single(phdrs, q => q.Type == 1 && q.Addr <= strtab && strtab < q.Addr + q.FileSize);
+        int str = (int)(seg.Offset + (strtab - seg.Addr));
+        for (ulong d = dynOff; d + 16 <= dynOff + dynSize; d += 16)
+        {
+            if (BinaryPrimitives.ReadInt64LittleEndian(file.AsSpan((int)d)) != 0x61000043)
+                continue;
+            ulong val = BinaryPrimitives.ReadUInt64LittleEndian(file.AsSpan((int)d + 8));
+            int off = str + (int)(val & 0xFFFFFFFF);
+            return Encoding.ASCII.GetString(file, off, Array.IndexOf(file, (byte)0, off) - off);
+        }
+        throw new Xunit.Sdk.XunitException("the module records no name of its own");
+    }
+
+    // The base-64-ish alphabet a mangled name's id fields use.
+    private static int DecodeId(string field)
+    {
+        const string Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+-";
+        int value = 0;
+        foreach (char c in field)
+            value = value * 64 + Alphabet.IndexOf(c);
+        return value;
     }
 
     // The names the fixtures give their symbols, used to match a shortened name back to the plain one.

@@ -1,6 +1,8 @@
 // SharpProspero - a C# SDK for on-device application modules.
 // Copyright (C) 2026 SvenGDK
 
+using SharpProspero.Interop;
+using SharpProspero.Interop.Kernel;
 using System;
 using System.Collections.Concurrent;
 using System.Runtime.ExceptionServices;
@@ -25,19 +27,33 @@ public sealed class WorkQueue : IDisposable
     private readonly BlockingCollection<Action> _jobs = [];
     private readonly Thread[] _workers;
     private readonly Lock _gate = new();
+    private int _affinityResult;
     private bool _disposed;
 
     /// <summary>Creates a queue served by <paramref name="workerCount"/> background threads.</summary>
     /// <param name="workerCount">How many worker threads run jobs at once.</param>
     /// <param name="name">A base name for the threads, or null to leave them unnamed.</param>
+    /// <param name="affinityMask">
+    /// The processors the workers may run on, as a <see cref="SceKernelCpumask"/> bit mask, or zero to
+    /// leave their processor set alone. Pinning the workers keeps them off the processor the frame loop
+    /// is on, so a long job cannot steal time from drawing.
+    /// </param>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="workerCount"/> is not positive.</exception>
-    public WorkQueue(int workerCount = 2, string? name = null)
+    /// <exception cref="ProsperoException">The platform refused <paramref name="affinityMask"/>.</exception>
+    public WorkQueue(int workerCount = 2, string? name = null, ulong affinityMask = 0)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(workerCount);
+        AffinityMask = affinityMask;
         _workers = new Thread[workerCount];
+
+        // A thread's processor set is addressed by a handle only that thread can read back, so each
+        // worker pins itself and reports the outcome here. The constructor waits for those reports so a
+        // rejected mask surfaces as a throw from the call that asked for it, not silently on a worker.
+        using var pinned = affinityMask == 0 ? null : new CountdownEvent(workerCount);
+
         for (int i = 0; i < workerCount; i++)
         {
-            var thread = new Thread(WorkerLoop)
+            var thread = new Thread(() => WorkerLoop(pinned))
             {
                 IsBackground = true,
                 Name = name is null ? null : $"{name} #{i}",
@@ -45,10 +61,25 @@ public sealed class WorkQueue : IDisposable
             _workers[i] = thread;
             thread.Start();
         }
+
+        if (pinned is null)
+            return;
+
+        pinned.Wait();
+        if (SceResult.Failed(_affinityResult))
+        {
+            // The workers are already consuming, so wind them down before the throw rather than leaving
+            // a queue nobody holds a reference to with live threads on it.
+            Dispose();
+            SceResult.ThrowIfFailed(_affinityResult, nameof(KernelThread.scePthreadSetaffinity));
+        }
     }
 
     /// <summary>How many worker threads serve the queue.</summary>
     public int WorkerCount => _workers.Length;
+
+    /// <summary>The processors the workers are confined to, or zero when they were left unpinned.</summary>
+    public ulong AffinityMask { get; }
 
     /// <summary>How many jobs are waiting to start.</summary>
     public int PendingCount => _jobs.Count;
@@ -104,8 +135,26 @@ public sealed class WorkQueue : IDisposable
         _jobs.Dispose();
     }
 
-    private void WorkerLoop()
+    private void WorkerLoop(CountdownEvent? pinned)
     {
+        if (pinned is not null)
+        {
+            try
+            {
+                int code = KernelThread.scePthreadSetaffinity(KernelThread.scePthreadSelf(), AffinityMask);
+                // Keep the first refusal: every worker is given the same mask, so the later ones would
+                // only repeat it, and the constructor reports one code.
+                if (SceResult.Failed(code))
+                    Interlocked.CompareExchange(ref _affinityResult, code, SceResult.Ok);
+            }
+            finally
+            {
+                // Signalling from a finally keeps the constructor's wait from hanging if the call above
+                // could not be made at all.
+                pinned.Signal();
+            }
+        }
+
         foreach (Action job in _jobs.GetConsumingEnumerable())
         {
             try
