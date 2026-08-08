@@ -3,6 +3,7 @@
 
 using SharpProspero.Interop;
 using SharpProspero.Interop.Keyboard;
+using SharpProspero.Platform;
 using System;
 using Native = SharpProspero.Interop.Keyboard.Keyboard;
 
@@ -73,9 +74,18 @@ public sealed unsafe class Keyboard : IDisposable
     /// Starts the keyboard service and opens the keyboard for <paramref name="userId"/> (the
     /// signed-in user by default).
     /// </summary>
-    /// <exception cref="ProsperoException">The service or the keyboard could not be opened.</exception>
-    public static Keyboard Open(int userId = SceUser.System)
+    /// <remarks>
+    /// The device belongs to a signed-in user. The platform registers the handle against the user it
+    /// was opened for and routes that user's samples to it, so a handle opened for the system user is
+    /// accepted and then never delivers anything.
+    /// </remarks>
+    /// <exception cref="ProsperoException">
+    /// The user could not be read, or the service or the keyboard could not be opened.
+    /// </exception>
+    public static Keyboard Open(int userId = SceUser.Invalid)
     {
+        if (userId == SceUser.Invalid)
+            userId = Users.InitialUserId;
         SceResult.ThrowIfFailed(Native.sceKeyboardInit(), nameof(Native.sceKeyboardInit));
         int handle = Native.sceKeyboardOpen(userId, Native.PortTypeStandard, 0, null);
         SceResult.ThrowIfFailed(handle, nameof(Native.sceKeyboardOpen));

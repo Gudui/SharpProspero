@@ -3,6 +3,7 @@
 
 using SharpProspero.Interop;
 using SharpProspero.Interop.Pad;
+using SharpProspero.Platform;
 using System;
 using System.Buffers.Binary;
 using System.Numerics;
@@ -166,13 +167,24 @@ public sealed unsafe class GamePad : IDisposable
     private GamePad(int handle) => _handle = handle;
 
     /// <summary>
-    /// Initializes the controller subsystem and opens a handle for <paramref name="userId"/>.
+    /// Initializes the controller subsystem and opens a handle for <paramref name="userId"/>, which
+    /// defaults to the user who started the application.
     /// </summary>
-    /// <exception cref="ProsperoException">Initialization or opening the handle failed.</exception>
-    public static GamePad Open(int userId = SceUser.System)
+    /// <remarks>
+    /// A standard controller belongs to a signed-in user. The platform registers the handle against
+    /// the user it was opened for and routes that user's samples to it, so a handle opened for the
+    /// system user is accepted and then never delivers anything - every button reads as released for
+    /// as long as the module runs. Only the remote control is opened for the system user.
+    /// </remarks>
+    /// <exception cref="ProsperoException">
+    /// The user could not be read, or initialization or opening the handle failed.
+    /// </exception>
+    public static GamePad Open(int userId = SceUser.Invalid)
     {
+        if (userId == SceUser.Invalid)
+            userId = Users.InitialUserId;
         SceResult.ThrowIfFailed(Pad.scePadInit(), nameof(Pad.scePadInit));
-        int handle = Pad.scePadOpen(userId, 0, 0, null);
+        int handle = Pad.scePadOpen(userId, Pad.PortTypeStandard, 0, null);
         SceResult.ThrowIfFailed(handle, nameof(Pad.scePadOpen));
         return new GamePad(handle);
     }

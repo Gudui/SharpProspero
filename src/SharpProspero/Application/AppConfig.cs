@@ -19,10 +19,19 @@ public sealed class AppConfig
     public int BufferCount { get; set; } = 2;
 
     /// <summary>
-    /// The user the controller opens for. The display is not opened for a user: an application of this
-    /// kind owns the whole output, and the call that opens it takes only the system.
+    /// The user the controller opens for. <see cref="SceUser.Invalid"/>, the default, means the user
+    /// who started the application, read when the controller opens.
     /// </summary>
-    public int UserId { get; set; } = SceUser.System;
+    /// <remarks>
+    /// A standard controller belongs to a signed-in user, and the platform routes its samples to
+    /// whoever the handle was opened for. Opening one for the system user is accepted and then never
+    /// delivers anything: the application draws, the system hands it the controller, and every button
+    /// reads as released. Only the remote control is opened for the system user.
+    ///
+    /// The display is a separate matter and is not opened for a user at all - an application of this
+    /// kind owns the whole output, and the call that opens it takes only the system.
+    /// </remarks>
+    public int UserId { get; set; } = SceUser.Invalid;
 
     /// <summary>Flip timing used each frame.</summary>
     public VideoOutFlipMode FlipMode { get; set; } = VideoOutFlipMode.VSync;

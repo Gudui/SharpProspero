@@ -70,7 +70,12 @@ internal static class Program
 {
     private static void Main()
     {
-        using var app = new Tool();
-        app.Run();
+        using (var app = new Tool())
+            app.Run();
+
+        // Returning from here is reported to the platform as a fault and the user is shown the
+        // box that says the application closed unexpectedly, even when everything went as
+        // intended. The process is ended through the C library instead.
+        ProcessExit.Exit();
     }
 }

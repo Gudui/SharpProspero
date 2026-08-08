@@ -27,6 +27,33 @@ public sealed record ZipEntry(
     bool IsDirectory)
 {
     internal long LocalHeaderOffset { get; init; }
+
+    /// <summary>
+    /// Writes the members out for <see cref="object.ToString"/>. This is written by hand rather than
+    /// left to the compiler because the generated one hands the modification time to the general
+    /// formatter, which carries the time-zone specifiers, which asks for the local time zone, which
+    /// reads a time-zone database off the file system. That database is not there, and the cost is not
+    /// a failure at run time: the reader pulls in the process layer of the run-time support library,
+    /// and thirteen of the names that layer needs are published by nothing, so any module that so much
+    /// as mentions this type fails to link. The failure names those thirteen and says nothing about an
+    /// archive entry. Building the time from its parts keeps the whole chain out of the module.
+    /// </summary>
+    private bool PrintMembers(StringBuilder builder)
+    {
+        builder.Append("Name = ").Append(Name)
+            .Append(", Crc32 = ").Append(Crc32)
+            .Append(", CompressedSize = ").Append(CompressedSize)
+            .Append(", UncompressedSize = ").Append(UncompressedSize)
+            .Append(", Method = ").Append(Method)
+            .Append(", LastModified = ").Append(Timestamp(LastModified))
+            .Append(", IsDirectory = ").Append(IsDirectory);
+        return true;
+    }
+
+    private static string Timestamp(DateTime when)
+        => $"{when.Year:0000}-{Two(when.Month)}-{Two(when.Day)} {Two(when.Hour)}:{Two(when.Minute)}:{Two(when.Second)}";
+
+    private static string Two(int value) => value < 10 ? "0" + value.ToString() : value.ToString();
 }
 
 /// <summary>
