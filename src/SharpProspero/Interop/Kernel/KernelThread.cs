@@ -41,4 +41,42 @@ public static unsafe partial class KernelThread
     /// <returns>Zero on success, or a negative error code.</returns>
     [LibraryImport(Lib)]
     public static partial int scePthreadGetaffinity(nint thread, ulong* mask);
+
+    /// <summary>The scheduling priority a thread is created with. Value 700.</summary>
+    public const int PriorityDefault = 700;
+
+    /// <summary>The most urgent priority a thread may be given. Value 256.</summary>
+    /// <remarks>
+    /// The scale runs the other way round from the number: a smaller number is served first.
+    /// </remarks>
+    public const int PriorityHighest = 256;
+
+    /// <summary>The least urgent priority a thread may be given. Value 767.</summary>
+    public const int PriorityLowest = 767;
+
+    /// <summary>Sets <paramref name="thread"/>'s scheduling priority.</summary>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int scePthreadSetprio(nint thread, int priority);
+
+    /// <summary>Reads <paramref name="thread"/>'s scheduling priority.</summary>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int scePthreadGetprio(nint thread, int* priority);
+
+    /// <summary>
+    /// Names <paramref name="thread"/> from a null-terminated UTF-8 string, which is what a profiler and
+    /// a crash report show in place of a bare thread number.
+    /// </summary>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int scePthreadRename(nint thread, byte* name);
+
+    /// <summary>The identifier the scheduler tracks the calling thread by.</summary>
+    [LibraryImport(Lib)]
+    public static partial int scePthreadGetthreadid();
+
+    /// <summary>Gives up the rest of the calling thread's slice to another thread that is ready.</summary>
+    [LibraryImport(Lib)]
+    public static partial void scePthreadYield();
 }

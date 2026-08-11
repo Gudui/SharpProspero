@@ -204,3 +204,40 @@ Direct and flexible regions live outside the managed heap and do not count again
 `ProsperoHeapHardLimitBytes`, so moving large buffers off the heap is one of the most effective ways to
 stay under the ceiling. See [Graphics](graphics.md) for how a `Surface` draws into a direct region, and
 [Guides](guides.md) for the same discipline in context.
+
+## Reading the address space back
+
+`MemoryMap` asks the platform what the process's own address space looks like. Use it when an
+allocation was refused and the reason is not obvious, when chasing a leak, or when a memory report
+needs to be legible.
+
+```csharp
+using SharpProspero.Memory;
+
+foreach (MappedRange range in MemoryMap.Enumerate())
+    Log.Info(range.ToString());
+```
+
+Each `MappedRange` carries its bounds and size, what backs it (`MappingBacking.Direct`, `Flexible`,
+`Pooled`), whether it is a stack, whether it has memory behind it or is a reservation with nothing in
+it yet, its protection bits (`CpuCanRead`, `CpuCanWrite`, `GpuCanRead`, `GpuCanWrite`) and the name it
+was tagged with. `MemoryMap.Query` describes the single mapping covering one address, and `TryQuery`
+reports a miss rather than throwing.
+
+Tagging a range makes both the report above and the system's own tools name it:
+
+```csharp
+MemoryMap.NameRange((nuint)region.Pointer, region.Size, "frame buffers");
+```
+
+Two ceilings are worth watching alongside the byte counts:
+
+```csharp
+var (cpuTotal, cpuLeft, gpuTotal, gpuLeft) = MemoryMap.PageTableStats();
+nuint configured = MemoryMap.ConfiguredFlexibleBytes();
+```
+
+A build that maps many small ranges runs out of page-table entries before it runs out of memory, and
+the failure that follows reads like an out-of-memory one. `ConfiguredFlexibleBytes` is the flexible
+ceiling the module was built with, as opposed to `SystemMemory.AvailableFlexibleBytes`, which is what
+is left of it.

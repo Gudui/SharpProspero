@@ -68,6 +68,41 @@ the output.
 > `Output` blocks until the block has played, so a full audio loop paces itself to the hardware. Run it
 > on its own thread rather than the frame thread — see [Threading](threading.md).
 
+`LastOutputTime` reads the audio clock at the port's last output, so the difference between two readings
+says how far the output has advanced — which is how a caller works out whether its own mixing is keeping
+up. `GetPortState` reports where the samples are going and how many channels the destination takes;
+watching its `RerouteCounter` catches the player moving from the television to a headset, which is when a
+mix built for one speaker layout has to be rebuilt for another.
+
+## Output that never blocks the caller
+
+`AudioOutDevice` publishes no way to ask how much room its queue has left, so there is no telling in
+advance whether a push will block. `AudioQueueDevice` is the output that does answer that. It reports how
+many blocks are queued and how many more will fit, so a frame loop can mix exactly as much as the output
+can take and never stall.
+
+```csharp
+using var audio = AudioQueueDevice.OpenStereo(grain: 256, sampleRate: 48000, queueDepth: 4);
+short[] block = new short[audio.SamplesPerBlock];
+
+// In the frame loop:
+while (audio.FreeBlocks > 0)
+{
+    mixer.Fill(block);
+    audio.TryOutput(block);
+}
+```
+
+The queue holds `QueueDepth` blocks of `Grain` frames each. At 48 kHz a grain of 256 frames is about
+5.3 ms, so a depth of two is roughly 11 ms of buffered audio and a depth of eight about 43 ms — deeper
+survives a longer frame spike, shallower answers sooner. `QueuedBlocks` and `FreeBlocks` read one side
+each; `ReadQueue` reads both in one call. `TryOutput` queues a block only if there is room and reports
+whether it did; `Output` waits for room the way the blocking output does. `Gain` scales the port from 0
+to 1.
+
+This is a separate output path rather than a layer over `AudioOutDevice`, and an application uses one or
+the other.
+
 ## Generate tones and effects
 
 `ToneGenerator` fills those blocks with a simple tone or effect — a beep, an alert, a coin, a hit — with

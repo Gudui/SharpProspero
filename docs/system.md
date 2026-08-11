@@ -6,7 +6,7 @@ nav_order: 1
 
 # System information
 
-`SystemInfo`, `SystemParameters` and `Users` read what the console is and who is signed in; `SystemControl` and `SystemSettings` act on the running system. All of these live in `SharpProspero.Platform`, and a system or diagnostics utility usually touches every one of them.
+`SystemInfo`, `SystemParameters` and `Users` read what the console is and who is signed in; `SystemControl` and `SystemSettings` act on the running system; `Sysctl` and `SystemTelemetry` read the values the kernel publishes, including how hot the machine is. All of these live in `SharpProspero.Platform`, and a system or diagnostics utility usually touches every one of them.
 
 <details open markdown="block">
   <summary>On this page</summary>
@@ -157,6 +157,74 @@ The service is loaded at run time and unloaded when you dispose the object, so o
 
 {: .important }
 > Reaching this service depends on what the running build is permitted to do. `TryOpen` and the `Try` forms report a refusal rather than throwing, so a tool can offer the feature only where it works and carry on where it does not. `Log` lives in `SharpProspero.Diagnostics` — see [Diagnostics](diagnostics.md).
+
+## Named system values
+
+The kernel publishes a tree of values under dotted names — `hw.ncpu`, `kern.ostype`, `hw.acpi.thermal.tz0.temperature` and many more. `Sysctl` reads them. Every value is a block of bytes with a name and a size, so there is a reader for each shape that block takes: a fixed-width integer, a NUL-terminated string, and an opaque run of bytes.
+
+```csharp
+using SharpProspero.Platform;
+using SharpProspero.Diagnostics;
+
+int cores = Sysctl.ReadInt32("hw.ncpu");
+
+if (Sysctl.TryReadString("kern.ostype", out string os))
+    Log.Information(os);
+
+byte[] block = Sysctl.ReadRaw("hw.acpi.thermal.tz0._ACx");
+```
+
+| Call | What it does |
+|---|---|
+| `Exists(name)` | Report whether the machine publishes anything under that name. |
+| `GetSize(name)` / `TryGetSize(name, out size)` | Ask how many bytes the value takes. |
+| `ReadInt32` / `ReadUInt32` / `ReadInt64` / `ReadUInt64` | Read a fixed-width number, each with a `Try` form. |
+| `ReadString(name)` / `TryReadString(name, out value)` | Read text, without the terminating NUL. |
+| `ReadRaw(name)` / `TryReadRaw(name, out value)` | Read the whole block, sized from the system. |
+| `TryReadRaw(name, destination, out written)` | Read into a buffer you already have. |
+| `LastErrorNumber` | Why the last call failed, read straight afterwards. |
+
+Which names exist depends on what the running kernel configured, so a name that answers on one machine can be missing on another. A `Try` form returning false means "this machine does not publish that"; `LastErrorNumber` tells an absent name (`Sysctl.NotPresentError`) from a refused one (`Sysctl.NotPermittedError`).
+
+## Temperature and cooling
+
+`SystemTelemetry` reads the platform's thermal zones through those named values. Ask which zones the machine has first — an empty list means it declares none, and nothing else will answer.
+
+```csharp
+using SharpProspero.Platform;
+using SharpProspero.Diagnostics;
+
+foreach (int zone in SystemTelemetry.EnumerateThermalZones())
+{
+    if (!SystemTelemetry.TryReadZone(zone, out ThermalZoneReading reading))
+        continue;
+
+    Log.Information($"zone {zone}: {reading.Temperature}");   // for example "48.9 C"
+
+    if (reading.Alarms.HasFlag(ThermalAlarms.PassiveThresholdReached))
+        Log.Warning("the system is slowing the processor down to cool off");
+}
+```
+
+`Temperature` holds the reading the way the platform reports it — a whole number of tenths of a kelvin, in `DeciKelvin` — and converts to `Celsius`, `Kelvin` and `Fahrenheit` from there. `ToString()` gives degrees Celsius to one decimal place.
+
+| Reading | What it is |
+|---|---|
+| `TryReadTemperature(zone, out t)` | The temperature the zone recorded at its last poll. |
+| `TryReadAlarms(zone, out alarms)` | Which of the zone's thresholds that poll found crossed. |
+| `TryReadActiveCoolingLevel(zone, out level)` | The active-cooling step engaged; negative when none is. |
+| `TryReadPassiveCoolingEnabled(zone, out on)` | Whether the zone may cool by slowing the processor down. |
+| `TryReadPassiveTripPoint` / `TryReadHotTripPoint` / `TryReadCriticalTripPoint` | The temperature at which the system slows down, suspends, or shuts down. |
+| `TryReadActiveTripPoints(zone, out points)` | The temperature at which each active-cooling step engages. |
+| `TryReadPollingIntervalSeconds(out seconds)` | How often the driver samples the zones. |
+| `TryReadMinimumCoolingRuntimeSeconds(out seconds)` | How long a cooling step stays engaged before it drops back. |
+
+Each of these has a throwing `Read…` twin. A trip point comes back as `Temperature?`, with null meaning the platform firmware defines no such threshold — that is different from the machine refusing to answer, which is what a false return means.
+
+{: .important }
+> Whether any thermal zone exists is decided by the platform firmware of the machine the module runs on, and a retail machine may declare none. Write the reading as optional: show it where it answers and leave it out where it does not.
+>
+> Fan duty, fan speed and electrical measurements are not available. Nothing publishes a named value for them and no library an application links exports one, so an application cannot ask. `TryReadActiveCoolingLevel` is the nearest reachable substitute: it names the cooling step the zone has engaged, not a duty cycle or a speed.
 
 ## Related pages
 

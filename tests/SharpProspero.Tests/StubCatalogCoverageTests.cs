@@ -39,10 +39,13 @@ public sealed class StubCatalogCoverageTests
     public void EveryImportedSymbolIsProvidedByAStubCatalogEntry()
     {
         // A name resolves either because a module publishes it, in which case the catalog names it, or
-        // because the compat object defines it. The catalog may only name what a module really
-        // publishes: a name listed there that nothing publishes produces an import the loader cannot
-        // bind, and a module whose imports do not bind never reaches its first instruction.
+        // because the compat object or the payload start object defines it. The catalog may only name
+        // what a module really publishes: a name listed there that nothing publishes produces an import
+        // the loader cannot bind, and a module whose imports do not bind never reaches its first
+        // instruction.
         var provided = new HashSet<string>(SharpProspero.Link.CompatEmitter.DefinedNames);
+        foreach (string name in SharpProspero.Link.PayloadCrtEmitter.DefinedNames)
+            provided.Add(name);
         foreach (StubCatalog.Entry entry in StubCatalog.Core)
             foreach (string name in entry.Exports)
                 provided.Add(name);

@@ -28,6 +28,27 @@ public static class PayloadCrtEmitter
     /// <summary>The entry symbol the loader jumps to.</summary>
     public const string StartSymbol = "_start";
 
+    /// <summary>The symbol the managed accessor imports to retrieve the payload arguments pointer.</summary>
+    public const string GetArgsSymbol = "__prospero_get_payload_args";
+
+    /// <summary>
+    /// The names this start object defines. A payload link resolves these from the start object rather
+    /// than through the stub catalog or the compat object.
+    /// </summary>
+    public static IReadOnlyList<string> DefinedNames { get; } =
+    [
+        StartSymbol,
+        ImportTableSymbol,
+        "__prospero_payload_args",
+        "__prospero_payload_isthreaded",
+        "__prospero_payload_isthreaded_name",
+        "__prospero_payload_calloc",
+        "__prospero_payload_calloc_name",
+        "__prospero_payload_setfsbase",
+        "__prospero_payload_setfsbase_name",
+        GetArgsSymbol,
+    ];
+
     /// <summary>
     /// The symbol whose header the writer fills: the resolver-table bounds, the global-constructor array
     /// bounds, then the thread-local template address and its file and aligned-memory sizes.
@@ -60,7 +81,7 @@ public static class PayloadCrtEmitter
     //   ; run the global constructors [header+16, header+24)
     // iastart: mov r15,[r13+16]; mov r12,[r13+24]; ia: cmp r15,r12; jae iadone; mov rax,[r15]; call rax;
     //      add r15,8; jmp ia
-    // iadone: call main; mov rcx,[r14+0x28]; test rcx,rcx; jz ret; mov [rcx],eax
+    // iadone: mov rdi,r14; call main; mov rcx,[r14+0x28]; test rcx,rcx; jz ret; mov [rcx],eax
     // ret: pop r15/r14/r13/r12/rbx; ret
     private static byte[] BuildCode()
     {
@@ -152,17 +173,21 @@ public static class PayloadCrtEmitter
             0xFF, 0xD0,                         // 0x142 call rax
             0x49, 0x83, 0xC7, 0x08,             // 0x144 add r15,8
             0xEB, 0xEC,                         // 0x148 jmp ia
-            0xE8, 0,0,0,0,                      // 0x14A call main         (iadone) (disp @0x14B)
-            0x49, 0x8B, 0x4E, 0x28,             // 0x14F mov rcx,[r14+0x28]
-            0x48, 0x85, 0xC9,                   // 0x153 test rcx,rcx
-            0x74, 0x02,                         // 0x156 jz ret
-            0x89, 0x01,                         // 0x158 mov [rcx],eax
-            0x41, 0x5F,                         // 0x15A pop r15            (ret)
-            0x41, 0x5E,                         // 0x15C pop r14
-            0x41, 0x5D,                         // 0x15E pop r13
-            0x41, 0x5C,                         // 0x160 pop r12
-            0x5B,                               // 0x162 pop rbx
-            0xC3,                               // 0x163 ret
+            0x4C, 0x89, 0xF7,                   // 0x14A mov rdi,r14        (iadone) pass args to main
+            0xE8, 0,0,0,0,                      // 0x14D call main          (disp @0x14E)
+            0x49, 0x8B, 0x4E, 0x28,             // 0x152 mov rcx,[r14+0x28]
+            0x48, 0x85, 0xC9,                   // 0x156 test rcx,rcx
+            0x74, 0x02,                         // 0x159 jz ret
+            0x89, 0x01,                         // 0x15B mov [rcx],eax
+            0x41, 0x5F,                         // 0x15D pop r15            (ret)
+            0x41, 0x5E,                         // 0x15F pop r14
+            0x41, 0x5D,                         // 0x161 pop r13
+            0x41, 0x5C,                         // 0x163 pop r12
+            0x5B,                               // 0x165 pop rbx
+            0xC3,                               // 0x166 ret
+            // ---- getter for the saved payload_args pointer ----
+            0x48, 0x8B, 0x05, 0,0,0,0,          // 0x167 mov rax,[rip+g_args] (disp @0x16A)
+            0xC3,                               // 0x16E ret
         ];
         return c;
     }
@@ -172,7 +197,8 @@ public static class PayloadCrtEmitter
     private const int RelNameA = 0x5D, RelSlotA = 0x64, RelNameB = 0x79, RelSlotB = 0x80, RelSlotC = 0x91;
     private const int RelCallocName = 0xB0, RelCallocSlotA = 0xB7, RelFsbaseName = 0xC8, RelFsbaseSlotA = 0xCF;
     private const int RelCallocSlotB = 0xE0, RelFsbaseSlotB = 0x11F;
-    private const int RelMain = 0x14B;
+    private const int RelMain = 0x14E;
+    private const int RelGetArgsRef = 0x16A;
 
     /// <summary>Builds the payload start object bytes.</summary>
     public static byte[] BuildStartObject()
@@ -202,12 +228,13 @@ public static class PayloadCrtEmitter
         int nNameCa = strtab.Add("__prospero_payload_calloc_name");
         int nSlotFb = strtab.Add("__prospero_payload_setfsbase");
         int nNameFb = strtab.Add("__prospero_payload_setfsbase_name");
+        int nGetArgs = strtab.Add(GetArgsSymbol);
         byte[] strtabBytes = strtab.ToBytes();
 
         const int shText = 1, shRela = 2, shData = 3, shSym = 4, shStr = 5, shShStr = 6;
         const int symStart = 1, symMain = 2, symImports = 3, symArgs = 4, symSlotIt = 5, symNameIt = 6,
-            symSlotCa = 7, symNameCa = 8, symSlotFb = 9, symNameFb = 10;
-        byte[] symtab = new byte[24 * 11];
+            symSlotCa = 7, symNameCa = 8, symSlotFb = 9, symNameFb = 10, symGetArgs = 11;
+        byte[] symtab = new byte[24 * 12];
         WriteSym(symtab, symStart, nStart, GlobalFunc, shText, 0, (ulong)text.Length);
         WriteSym(symtab, symMain, nMain, GlobalNoType, 0, 0, 0);
         WriteSym(symtab, symImports, nImports, GlobalObject, shData, 0, 56);
@@ -218,8 +245,9 @@ public static class PayloadCrtEmitter
         WriteSym(symtab, symNameCa, nNameCa, GlobalObject, shData, 101, 7);
         WriteSym(symtab, symSlotFb, nSlotFb, GlobalObject, shData, 80, 8);
         WriteSym(symtab, symNameFb, nNameFb, GlobalObject, shData, 108, 17);
+        WriteSym(symtab, symGetArgs, nGetArgs, GlobalFunc, shText, 0x167, 8);
 
-        byte[] rela = new byte[24 * 14];
+        byte[] rela = new byte[24 * 15];
         WriteRela(rela, 0, RelHeaderA, symImports, RPc32, -4);
         WriteRela(rela, 1, RelGArgs, symArgs, RPc32, -4);
         WriteRela(rela, 2, RelNameA, symNameIt, RPc32, -4);
@@ -234,6 +262,7 @@ public static class PayloadCrtEmitter
         WriteRela(rela, 11, RelCallocSlotB, symSlotCa, RPc32, -4);
         WriteRela(rela, 12, RelFsbaseSlotB, symSlotFb, RPc32, -4);
         WriteRela(rela, 13, RelMain, symMain, RPlt32, -4);
+        WriteRela(rela, 14, RelGetArgsRef, symArgs, RPc32, -4);
 
         var shstr = new StringTable();
         int nTextS = shstr.Add(".text");

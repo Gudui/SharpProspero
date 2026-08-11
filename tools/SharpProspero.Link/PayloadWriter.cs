@@ -55,7 +55,13 @@ public static class PayloadWriter
         var externs = new List<Extern>();
         void AddExtern(string name)
         {
-            if (name.Length == 0 || externByName.ContainsKey(name)) return;
+            // A name the linker itself settles is not an outside reference. The four self-description
+            // names and the constructor-array bounds are given real addresses in linkerDefined below.
+            // Left to become resolver slots they would resolve to a stub address at link time and never
+            // be filled at run time, so the module's own description of where its code and its exception
+            // index lie would read as garbage - and the first exception unwound through it would end the
+            // process instead of reaching its handler.
+            if (name.Length == 0 || externByName.ContainsKey(name) || Linker.LinkerProvided.Contains(name)) return;
             var e = new Extern { Name = name };
             externByName[name] = e;
             externs.Add(e);
@@ -165,14 +171,41 @@ public static class PayloadWriter
             if (tlsFileLen > 0) dataFile = tlsTemplateOffsetInData + tlsFileLen;
         }
 
-        // The stub table follows the object text; each outside reference gets a sixteen-byte stub.
-        ulong pltBase = Align(textLen, 16);
-        ulong textSize = pltBase + (ulong)externs.Count * 16;
+        // The exception-frame index is built from the object frame sections when the compiler emitted
+        // them in a form the index covers; otherwise it is omitted and the frames still resolve by a
+        // linear scan. Sized here so the read-only group can hold it; the bytes are built after
+        // relocation, once the frames carry runtime addresses.
+        var ehFrames = new List<(ElfObject Obj, int Index)>();
+        foreach (ElfObject obj in resolution.Included)
+            for (int i = 0; i < obj.Sections.Count; i++)
+                if (obj.Sections[i] is { IsAlloc: true, IsExecutable: false, IsWritable: false, IsNoBits: false } s
+                    && s.Name == ".eh_frame")
+                    ehFrames.Add((obj, i));
+        int ehFrameCount = 0;
+        bool ehFrameOk = ehFrames.Count > 0;
+        foreach ((ElfObject obj, int i) in ehFrames)
+        {
+            var probe = new List<EhFrame.Entry>();
+            if (!EhFrame.TryParse(obj.Sections[i].Data, 0, probe)) { ehFrameOk = false; break; }
+            ehFrameCount += probe.Count;
+        }
+        int ehFrameHdrSize = ehFrameOk && ehFrameCount > 0 ? 12 + ehFrameCount * 8 : 0;
 
-        // Read-only group: the object read-only sections, then the resolver name strings.
+        // The stub table follows the object text; each outside reference gets a sixteen-byte stub. A
+        // single return instruction follows the stubs: _init and _fini are named by the run time but the
+        // start code runs the constructors itself, so these point at a routine that does nothing rather
+        // than at a resolver slot that would fail and fault if anything called it.
+        ulong pltBase = Align(textLen, 16);
+        ulong retStubOffset = pltBase + (ulong)externs.Count * 16;
+        ulong textSize = retStubOffset + 1;
+
+        // Read-only group: the object read-only sections, then the exception-frame index, then the
+        // resolver name strings. The index is placed here (aligned to eight) even before its bytes are
+        // built, so its address is fixed and the self-description names below can point at it.
+        ulong ehFrameHdrOffset = Align(roLen, 8);
         var nameOffset = new Dictionary<string, ulong>(StringComparer.Ordinal);
         var nameBytes = new List<byte>();
-        ulong namesBase = Align(roLen, 1);
+        ulong namesBase = Align(ehFrameHdrOffset + (ulong)ehFrameHdrSize, 1);
         foreach (Extern e in externs)
         {
             nameOffset[e.Name] = namesBase + (ulong)nameBytes.Count;
@@ -207,6 +240,23 @@ public static class PayloadWriter
             externs[i].PltAddress = textAddr + pltBase + (ulong)i * 16;
         }
 
+        // The names the linker settles rather than the run time. The image start and the code end let
+        // the module say where its code lies; the exception-index bounds let it say where its unwind
+        // table lies, or name the image start twice when it carries none, which the reader takes as
+        // absent. The two constructor entry points name a routine that returns at once, since the start
+        // code walks the constructor array itself.
+        ulong retStubAddr = textAddr + retStubOffset;
+        ulong ehFrameHdrAddr = ehFrameHdrSize > 0 ? roAddr + ehFrameHdrOffset : textAddr;
+        var linkerDefined = new Dictionary<string, ulong>(StringComparer.Ordinal)
+        {
+            [CompatEmitter.ModuleBaseSymbol] = textAddr,
+            [CompatEmitter.TextEndSymbol] = textAddr + textSize,
+            [CompatEmitter.FrameIndexSymbol] = ehFrameHdrAddr,
+            [CompatEmitter.FrameIndexEndSymbol] = ehFrameHdrSize > 0 ? ehFrameHdrAddr + (ulong)ehFrameHdrSize : textAddr,
+            ["_init"] = retStubAddr,
+            ["_fini"] = retStubAddr,
+        };
+
         ulong SectionAddr(ElfObject o, int i)
         {
             if (i == ShnCommon)
@@ -227,7 +277,7 @@ public static class PayloadWriter
         var tlsGotSlots = new List<(ulong Slot, ulong Value)>(); // initial-exec slots hold a thread-pointer offset, not an address
         Dictionary<(ElfObject, int), byte[]> sectionData = Relocate(
             resolution, externByName, SectionAddr, relatives, internalGot, extraGotSlots, tlsGotSlots,
-            gotAddr, externs.Count, importTableAddr, tlsOffset, tlsAlignedMem);
+            gotAddr, externs.Count, importTableAddr, tlsOffset, tlsAlignedMem, linkerDefined);
 
         // The resolver slots for the outside references start empty; the start code fills them. The
         // internal global-offset slots hold a defined address and take a base-relative relocation. A
@@ -300,20 +350,37 @@ public static class PayloadWriter
             }
         }
 
+        // Build the exception-frame index from the relocated frame bytes, whose function pointers now
+        // carry runtime addresses. The reader walks it PC-relative, so it is built for the address the
+        // layout fixed above.
+        byte[] ehFrameHdr = [];
+        if (ehFrameHdrSize > 0)
+        {
+            var entries = new List<EhFrame.Entry>();
+            bool ok = true;
+            foreach ((ElfObject obj, int i) in ehFrames)
+            {
+                byte[] bytes = sectionData.TryGetValue((obj, i), out byte[]? d) ? d : obj.Sections[i].Data;
+                if (!EhFrame.TryParse(bytes, SectionAddr(obj, i), entries)) { ok = false; break; }
+            }
+            if (ok && entries.Count > 0)
+                ehFrameHdr = EhFrame.Build(ehFrameHdrAddr, SectionAddr(ehFrames[0].Obj, ehFrames[0].Index), entries);
+        }
+
         ulong entry = 0;
         if (!string.IsNullOrEmpty(entrySymbol) && TryFindSymbol(resolution, entrySymbol, out ElfObject? eo, out ElfSymbol? es))
             entry = SectionAddr(eo!, es!.SectionIndex) + es.Value;
 
         return WriteFile(resolution, entry, sectionData, SectionAddr,
-            textAddr, textSize, pltBase, pltData, roAddr, roSize, namesBase, [.. nameBytes],
-            dataAddr, dataFileEnd, dataMemEnd, gotBase, gotData, importTableBase, importTable, relatives);
+            textAddr, textSize, pltBase, pltData, retStubOffset, roAddr, roSize, namesBase, [.. nameBytes],
+            ehFrameHdrOffset, ehFrameHdr, dataAddr, dataFileEnd, dataMemEnd, gotBase, gotData, importTableBase, importTable, relatives);
     }
 
     private static Dictionary<(ElfObject, int), byte[]> Relocate(
         LinkResolution resolution, Dictionary<string, Extern> externByName, Func<ElfObject, int, ulong> sectionAddr,
         List<Relative> relatives, Dictionary<string, ulong> internalGot, List<(ulong, ulong)> extraGotSlots,
         List<(ulong, ulong)> tlsGotSlots, ulong gotAddr, int externCount, ulong importTableAddr,
-        Dictionary<(ElfObject, int), ulong> tlsOffset, ulong tlsAlignedMem)
+        Dictionary<(ElfObject, int), ulong> tlsOffset, ulong tlsAlignedMem, Dictionary<string, ulong> linkerDefined)
     {
         var result = new Dictionary<(ElfObject, int), byte[]>();
         ulong NextInternalGot() => gotAddr + (ulong)(externCount + internalGot.Count) * 8;
@@ -401,12 +468,12 @@ public static class PayloadWriter
 
                     if (RelType.IsGotPcRel(r.Type))
                     {
-                        ulong slot = GotSlotFor(resolution, externByName, sectionAddr, obj, sym, gotAddr, externCount, internalGot, extraGotSlots, NextInternalGot);
+                        ulong slot = GotSlotFor(resolution, externByName, sectionAddr, obj, sym, gotAddr, externCount, internalGot, extraGotSlots, NextInternalGot, linkerDefined);
                         BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(at), (uint)(long)(slot + (ulong)r.Addend - place));
                         continue;
                     }
 
-                    ulong s = SymbolValue(resolution, externByName, sectionAddr, obj, sym);
+                    ulong s = SymbolValue(resolution, externByName, sectionAddr, obj, sym, linkerDefined);
                     switch (r.Type)
                     {
                         case RelType.None:
@@ -468,7 +535,7 @@ public static class PayloadWriter
     private static ulong GotSlotFor(
         LinkResolution resolution, Dictionary<string, Extern> externByName, Func<ElfObject, int, ulong> sectionAddr,
         ElfObject obj, ElfSymbol sym, ulong gotAddr, int externCount, Dictionary<string, ulong> internalGot,
-        List<(ulong, ulong)> extraGotSlots, Func<ulong> nextInternalGot)
+        List<(ulong, ulong)> extraGotSlots, Func<ulong> nextInternalGot, Dictionary<string, ulong> linkerDefined)
     {
         if (externByName.TryGetValue(sym.Name, out Extern? e))
             return e.GotAddress;
@@ -477,7 +544,7 @@ public static class PayloadWriter
             return slot;
         slot = nextInternalGot();
         internalGot[key] = slot;
-        ulong value = SymbolValueDefined(resolution, sectionAddr, obj, sym);
+        ulong value = SymbolValueDefined(resolution, sectionAddr, obj, sym, linkerDefined);
         extraGotSlots.Add((slot, value));
         return slot;
     }
@@ -524,11 +591,14 @@ public static class PayloadWriter
 
     private static ulong SymbolValue(
         LinkResolution resolution, Dictionary<string, Extern> externByName,
-        Func<ElfObject, int, ulong> sectionAddr, ElfObject obj, ElfSymbol sym)
+        Func<ElfObject, int, ulong> sectionAddr, ElfObject obj, ElfSymbol sym, Dictionary<string, ulong> linkerDefined)
     {
         if (sym.SectionIndex == ShnAbs) return sym.Value;
         if (sym.Type == SymType.Section) return sectionAddr(obj, sym.SectionIndex);
         if (!sym.IsUndefined) return sectionAddr(obj, sym.SectionIndex) + sym.Value;
+        // A name the linker settles takes its fixed address before any resolver slot is considered, so a
+        // reference to the image start, the code end or the exception index reads the real address.
+        if (linkerDefined.TryGetValue(sym.Name, out ulong provided)) return provided;
         if (resolution.Defined.TryGetValue(sym.Name, out ElfObject? defObj))
             foreach (ElfSymbol d in defObj.Symbols)
                 if (!d.IsUndefined && d.Name == sym.Name)
@@ -540,12 +610,14 @@ public static class PayloadWriter
     }
 
     // The address an internal global-offset slot holds. A symbol defined in the referencing object
-    // resolves through that object; an undefined reference resolves through its defining object.
-    private static ulong SymbolValueDefined(LinkResolution resolution, Func<ElfObject, int, ulong> sectionAddr, ElfObject obj, ElfSymbol sym)
+    // resolves through that object; an undefined reference resolves through its defining object; a name
+    // the linker settles takes its fixed address.
+    private static ulong SymbolValueDefined(LinkResolution resolution, Func<ElfObject, int, ulong> sectionAddr, ElfObject obj, ElfSymbol sym, Dictionary<string, ulong> linkerDefined)
     {
         if (sym.SectionIndex == ShnAbs) return sym.Value;
         if (sym.Type == SymType.Section) return sectionAddr(obj, sym.SectionIndex);
         if (!sym.IsUndefined) return sectionAddr(obj, sym.SectionIndex) + sym.Value;
+        if (linkerDefined.TryGetValue(sym.Name, out ulong provided)) return provided;
         if (resolution.Defined.TryGetValue(sym.Name, out ElfObject? defObj))
             foreach (ElfSymbol d in defObj.Symbols)
                 if (!d.IsUndefined && d.Name == sym.Name)
@@ -590,8 +662,9 @@ public static class PayloadWriter
 
     private static byte[] WriteFile(
         LinkResolution resolution, ulong entry, Dictionary<(ElfObject, int), byte[]> sectionData, Func<ElfObject, int, ulong> sectionAddr,
-        ulong textAddr, ulong textSize, ulong pltBase, byte[] pltData,
+        ulong textAddr, ulong textSize, ulong pltBase, byte[] pltData, ulong retStubOffset,
         ulong roAddr, ulong roSize, ulong namesBase, byte[] nameBytes,
+        ulong ehFrameHdrOffset, byte[] ehFrameHdr,
         ulong dataAddr, ulong dataFileEnd, ulong dataMemEnd, ulong gotBase, byte[] gotData,
         ulong importTableBase, byte[] importTable, List<Relative> relatives)
     {
@@ -672,6 +745,11 @@ public static class PayloadWriter
                 Put(segFileOff, segBase, a, bytes);
             }
         Put(textFileOff, textAddr, textAddr + pltBase, pltData);
+        // A single return instruction stands in for _init and _fini; the start code runs the
+        // constructors itself, so anything that calls these returns at once.
+        file[(int)(textFileOff + retStubOffset)] = 0xC3;
+        if (ehFrameHdr.Length > 0)
+            Put(roFileOff, roAddr, roAddr + ehFrameHdrOffset, ehFrameHdr);
         Put(roFileOff, roAddr, roAddr + namesBase, nameBytes);
         Put(dataFileOff, dataAddr, dataAddr + gotBase, gotData);
         Put(dataFileOff, dataAddr, dataAddr + importTableBase, importTable);

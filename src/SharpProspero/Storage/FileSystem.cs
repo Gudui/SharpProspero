@@ -71,35 +71,109 @@ public static unsafe class FileSystem
     // 4-byte file number, a 2-byte record length, a 1-byte type and a 1-byte name length, then the
     // name; the record length steps to the next entry.
     private const int RecordHeaderSize = 8;
+
+    // The kernel re-reads a directory into a buffer of its own when a caller's is too small to hold one
+    // record, but only for a request between 512 bytes and 64 kilobytes. Staying inside that band keeps
+    // that second chance available.
     private const int ReadBufferSize = 8192;
+
+    // What a failed listing is reported as. The open, the read and the retry are one operation as far as
+    // a caller is concerned, and naming the individual call would say more about the SDK than the fault.
+    private const string ListOperation = nameof(EnumerateDirectory);
 
     /// <summary>Lists the entries of the directory at <paramref name="path"/>, excluding . and .. .</summary>
     /// <exception cref="ProsperoException">The directory could not be opened or read.</exception>
+    /// <remarks>
+    /// Prefer <see cref="TryEnumerateDirectory"/> where a directory may not be there: a module sees only
+    /// the part of the file system its own start-up left it, so a path that answers on one console or in
+    /// one process is absent in the next, and that is expected rather than exceptional.
+    /// </remarks>
     public static IReadOnlyList<DirectoryEntry> EnumerateDirectory(string path)
     {
         ArgumentException.ThrowIfNullOrEmpty(path);
-        int fd = OpenPath(path, KernelFile.ReadOnly | KernelFile.Directory, 0);
+        int code = Read(path, out List<DirectoryEntry> entries);
+        return code < 0 ? throw new ProsperoException(ListOperation, code) : entries;
+    }
+
+    /// <summary>
+    /// Lists the entries of the directory at <paramref name="path"/> and reports why when it cannot,
+    /// instead of only that it could not.
+    /// </summary>
+    /// <param name="path">The directory to list.</param>
+    /// <param name="entries">The entries, excluding . and .. . Empty when the listing failed.</param>
+    /// <param name="errorCode">
+    /// Zero on success, otherwise the code the failing call returned. Pass it to
+    /// <see cref="SceResult.Describe"/> for a reason worth showing, or to
+    /// <see cref="SceResult.ErrorNumber"/> to branch on it.
+    /// </param>
+    /// <returns>True when the directory was listed.</returns>
+    public static bool TryEnumerateDirectory(string path, out IReadOnlyList<DirectoryEntry> entries, out int errorCode)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(path);
+        errorCode = Read(path, out List<DirectoryEntry> found);
+        entries = found;
+        return errorCode == 0;
+    }
+
+    // Opens the directory and reads it, first with the plain call and then, if that refuses, once more
+    // with the form that also reports the directory offset. Both reach one routine inside the kernel, so
+    // the retry is insurance rather than a known cure; it costs one call on a path that already failed
+    // and it is the form the system's own directory walks use. Returns zero, or the code that failed.
+    private static int Read(string path, out List<DirectoryEntry> entries)
+    {
+        entries = [];
+        byte[] owned = ToNullTerminated(path);
+        int fd;
+        fixed (byte* p = owned)
+            fd = KernelFile.sceKernelOpen(p, KernelFile.ReadOnly | KernelFile.Directory, 0);
+        if (fd < 0)
+            return fd;
         try
         {
-            var entries = new List<DirectoryEntry>();
-            byte[] buffer = new byte[ReadBufferSize];
-            fixed (byte* p = buffer)
+            int code = ReadInto(fd, entries, reportPosition: false);
+            if (code == 0)
+                return 0;
+
+            // The first attempt consumed part of the directory before it failed, so the retry has to
+            // start over. Rewinding the descriptor is what the kernel itself does when it re-reads a
+            // directory on a caller's behalf; if it will not rewind, the first reason still stands.
+            if (KernelFile.sceKernelLseek(fd, 0, KernelFile.SeekSet) >= 0)
             {
-                while (true)
-                {
-                    int read = KernelFile.sceKernelGetdents(fd, p, buffer.Length);
-                    if (read < 0)
-                        throw new ProsperoException(nameof(KernelFile.sceKernelGetdents), read);
-                    if (read == 0)
-                        break;
-                    DecodeEntries(buffer.AsSpan(0, read), entries);
-                }
+                entries.Clear();
+                if (ReadInto(fd, entries, reportPosition: true) == 0)
+                    return 0;
             }
-            return entries;
+
+            // A half-read directory is worse than none: a caller shown four of nine names has no way to
+            // tell that from a directory holding four. The reason reported is the one the plain call
+            // gave, which is why the listing was refused; the retry only ever adds a second chance.
+            entries.Clear();
+            return code;
         }
         finally
         {
             KernelFile.sceKernelClose(fd);
+        }
+    }
+
+    // Reads one directory to its end. Returns zero, or the negative code the read returned.
+    private static int ReadInto(int fd, List<DirectoryEntry> entries, bool reportPosition)
+    {
+        byte[] buffer = new byte[ReadBufferSize];
+        long position = 0;
+        fixed (byte* p = buffer)
+        {
+            while (true)
+            {
+                int read = reportPosition
+                    ? KernelFile.sceKernelGetdirentries(fd, p, buffer.Length, &position)
+                    : KernelFile.sceKernelGetdents(fd, p, buffer.Length);
+                if (read < 0)
+                    return read;
+                if (read == 0)
+                    return 0;
+                DecodeEntries(buffer.AsSpan(0, read), entries);
+            }
         }
     }
 
@@ -121,7 +195,17 @@ public static unsafe class FileSystem
 
             var type = (FileEntryType)buffer[offset + 6];
             int nameLength = Math.Min(buffer[offset + 7], recordLength - RecordHeaderSize);
-            string name = Encoding.UTF8.GetString(buffer.Slice(offset + RecordHeaderSize, nameLength));
+            ReadOnlySpan<byte> nameBytes = buffer.Slice(offset + RecordHeaderSize, nameLength);
+
+            // The name is padded to a four-byte boundary with zero bytes and the record can be longer
+            // still, because a listing that had to be split reports the remainder of the buffer as part
+            // of the last record. The length byte says where the name ends, but a name carried past a
+            // zero byte would go on to build a path no call could open, so the first zero wins.
+            int terminator = nameBytes.IndexOf((byte)0);
+            if (terminator >= 0)
+                nameBytes = nameBytes[..terminator];
+
+            string name = Encoding.UTF8.GetString(nameBytes);
             if (name.Length > 0 && name != "." && name != "..")
                 entries.Add(new DirectoryEntry { Name = name, Type = type });
             offset += recordLength;
@@ -223,7 +307,29 @@ public static unsafe class FileSystem
     }
 
     /// <summary>Reads the whole file at <paramref name="path"/>.</summary>
+    /// <remarks>
+    /// The whole file goes into one array, so this can only serve a file the heap can hold. Use
+    /// <see cref="OpenRead"/> for anything larger, or for anything whose size is not known in advance.
+    /// </remarks>
     public static byte[] ReadAllBytes(string path) => PackageFile.ReadAllBytes(path);
+
+    /// <summary>Opens the file at <paramref name="path"/> for reading in pieces.</summary>
+    /// <exception cref="ProsperoException">The file could not be opened.</exception>
+    public static DeviceFileStream OpenRead(string path) => DeviceFileStream.OpenRead(path);
+
+    /// <summary>
+    /// Creates the file at <paramref name="path"/>, or empties it when it is already there, and opens it
+    /// for writing in pieces.
+    /// </summary>
+    /// <exception cref="ProsperoException">The file could not be opened.</exception>
+    public static DeviceFileStream Create(string path) => DeviceFileStream.Create(path);
+
+    /// <summary>
+    /// Opens the file at <paramref name="path"/> for writing at its end, creating it when it is not
+    /// there.
+    /// </summary>
+    /// <exception cref="ProsperoException">The file could not be opened.</exception>
+    public static DeviceFileStream OpenAppend(string path) => DeviceFileStream.OpenAppend(path);
 
     /// <summary>Writes <paramref name="data"/> to <paramref name="path"/>, replacing any existing file.</summary>
     public static void WriteAllBytes(string path, ReadOnlySpan<byte> data)
@@ -289,13 +395,28 @@ public static unsafe class FileSystem
         return files;
     }
 
-    /// <summary>Copies the file at <paramref name="source"/> to <paramref name="destination"/>, overwriting it.</summary>
+    /// <summary>
+    /// Copies the file at <paramref name="source"/> to <paramref name="destination"/>, overwriting it.
+    /// The copy runs through a buffer of <paramref name="bufferSize"/> bytes, so a file larger than the
+    /// heap copies as readily as a small one.
+    /// </summary>
     /// <exception cref="ProsperoException">The read or write failed.</exception>
-    public static void CopyFile(string source, string destination)
+    public static void CopyFile(string source, string destination, int bufferSize = 1 << 20)
     {
         ArgumentException.ThrowIfNullOrEmpty(source);
         ArgumentException.ThrowIfNullOrEmpty(destination);
-        WriteAllBytes(destination, ReadAllBytes(source));
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bufferSize);
+
+        using DeviceFileStream from = DeviceFileStream.OpenRead(source);
+        using DeviceFileStream to = DeviceFileStream.Create(destination);
+        byte[] buffer = new byte[bufferSize];
+        while (true)
+        {
+            int read = from.Read(buffer);
+            if (read == 0)
+                break;
+            to.Write(buffer.AsSpan(0, read));
+        }
     }
 
     /// <summary>Copies the directory tree at <paramref name="source"/> to <paramref name="destination"/>, creating it.</summary>

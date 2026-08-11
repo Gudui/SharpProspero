@@ -4,6 +4,7 @@
 using SharpProspero.Interop;
 using SharpProspero.Interop.Dialog;
 using SharpProspero.Interop.Sysmodule;
+using SharpProspero.Modules;
 using System;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -56,10 +57,15 @@ public sealed unsafe class MessageDialog : IDisposable
     // unmanaged heap for the dialog's lifetime and are freed on dispose.
     private byte* _message;
     private void* _subParam;
+
+    // The loadable module the dialog lives in, owned from the moment it is loaded so that every way out
+    // of the open sequence gives it back rather than leaving it mapped for the life of the process.
+    private readonly SystemModule _module;
     private bool _disposed;
+    private bool _initialized;
     private bool _finished;
 
-    private MessageDialog() { }
+    private MessageDialog(SystemModule module) => _module = module;
 
     /// <summary>The button the user chose. Meaningful once <see cref="Update"/> reports finished.</summary>
     public MsgDialogButtonId ChosenButton { get; private set; }
@@ -164,23 +170,36 @@ public sealed unsafe class MessageDialog : IDisposable
         if (_disposed)
             return;
         _disposed = true;
-        if (!_finished)
-            Native.sceMsgDialogClose();
-        Native.sceMsgDialogTerminate();
-        Sysmodule.sceSysmoduleUnloadModule((ushort)SystemModuleId.MessageDialog);
+        if (_initialized)
+        {
+            if (!_finished)
+                Native.sceMsgDialogClose();
+            Native.sceMsgDialogTerminate();
+        }
+        _module.Dispose();
 
         if (_message != null) { NativeMemory.Free(_message); _message = null; }
         if (_subParam != null) { NativeMemory.Free(_subParam); _subParam = null; }
     }
 
+    // Brings the dialog up as far as its own initialize. The module is handed to the object before that
+    // initialize runs, so a refusal there leaves through the object's own dispose and gives the module
+    // back; loading it and then throwing would leave it mapped with nothing left holding it.
     private static MessageDialog Begin()
     {
         CommonDialog.EnsureInitialized();
-        SceResult.ThrowIfFailed(
-            Sysmodule.sceSysmoduleLoadModule((ushort)SystemModuleId.MessageDialog),
-            "sceSysmoduleLoadModule(MessageDialog)");
-        SceResult.ThrowIfFailed(Native.sceMsgDialogInitialize(), nameof(Native.sceMsgDialogInitialize));
-        return new MessageDialog();
+        var dialog = new MessageDialog(SystemModule.Load(SystemModuleId.MessageDialog));
+        try
+        {
+            SceResult.ThrowIfFailed(Native.sceMsgDialogInitialize(), nameof(Native.sceMsgDialogInitialize));
+            dialog._initialized = true;
+            return dialog;
+        }
+        catch
+        {
+            dialog.Dispose();
+            throw;
+        }
     }
 
     private static byte* Utf8(string value)

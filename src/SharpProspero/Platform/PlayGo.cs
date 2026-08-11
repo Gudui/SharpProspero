@@ -4,6 +4,7 @@
 using SharpProspero.Interop;
 using SharpProspero.Interop.PlayGo;
 using SharpProspero.Interop.Sysmodule;
+using SharpProspero.Modules;
 using System;
 using System.Runtime.InteropServices;
 using Native = SharpProspero.Interop.PlayGo.PlayGo;
@@ -34,10 +35,15 @@ public sealed unsafe class PlayGo : IDisposable
 {
     private readonly int _handle;
     private void* _workBuffer;
+
+    // The loadable module the service lives in, owned from the moment it is loaded so that every way
+    // out of the open sequence gives it back rather than leaving it mapped for the life of the process.
+    private readonly SystemModule _module;
     private bool _disposed;
 
-    private PlayGo(int handle, void* workBuffer)
+    private PlayGo(SystemModule module, int handle, void* workBuffer)
     {
+        _module = module;
         _handle = handle;
         _workBuffer = workBuffer;
     }
@@ -46,28 +52,28 @@ public sealed unsafe class PlayGo : IDisposable
     /// <exception cref="ProsperoException">PlayGo could not be started.</exception>
     public static PlayGo Open()
     {
-        SceResult.ThrowIfFailed(
-            Sysmodule.sceSysmoduleLoadModule((ushort)SystemModuleId.PlayGo),
-            "sceSysmoduleLoadModule(PlayGo)");
-
+        SystemModule module = SystemModule.Load(SystemModuleId.PlayGo);
         void* buffer = NativeMemory.AllocZeroed(Native.HeapSize);
-        var init = new ScePlayGoInitParams { BufAddr = buffer, BufSize = Native.HeapSize };
-        int result = Native.scePlayGoInitialize(&init);
-        if (result < 0)
+        try
         {
-            NativeMemory.Free(buffer);
-            SceResult.ThrowIfFailed(result, nameof(Native.scePlayGoInitialize));
-        }
+            var init = new ScePlayGoInitParams { BufAddr = buffer, BufSize = Native.HeapSize };
+            SceResult.ThrowIfFailed(Native.scePlayGoInitialize(&init), nameof(Native.scePlayGoInitialize));
 
-        int handle;
-        int opened = Native.scePlayGoOpen(&handle, null);
-        if (opened < 0)
-        {
-            Native.scePlayGoTerminate();
-            NativeMemory.Free(buffer);
-            SceResult.ThrowIfFailed(opened, nameof(Native.scePlayGoOpen));
+            int handle;
+            int opened = Native.scePlayGoOpen(&handle, null);
+            if (opened < 0)
+            {
+                Native.scePlayGoTerminate();
+                SceResult.ThrowIfFailed(opened, nameof(Native.scePlayGoOpen));
+            }
+            return new PlayGo(module, handle, buffer);
         }
-        return new PlayGo(handle, buffer);
+        catch
+        {
+            NativeMemory.Free(buffer);
+            module.Dispose();
+            throw;
+        }
     }
 
     /// <summary>Reads the download progress of the given content chunks.</summary>
@@ -97,7 +103,7 @@ public sealed unsafe class PlayGo : IDisposable
         return loci;
     }
 
-    /// <summary>Closes the handle, stops PlayGo, and frees its buffer.</summary>
+    /// <summary>Closes the handle, stops PlayGo, frees its buffer, and unloads its module.</summary>
     public void Dispose()
     {
         if (_disposed)
@@ -106,5 +112,6 @@ public sealed unsafe class PlayGo : IDisposable
         Native.scePlayGoClose(_handle);
         Native.scePlayGoTerminate();
         if (_workBuffer != null) { NativeMemory.Free(_workBuffer); _workBuffer = null; }
+        _module.Dispose();
     }
 }

@@ -182,7 +182,7 @@ public static class StubCatalog
         "sceKernelAvailableDirectMemorySize", "sceKernelAvailableFlexibleMemorySize", "sceKernelCheckReachability", "sceKernelClockGettime",
         "sceKernelClose", "sceKernelDlsym", "sceKernelGetCurrentCpu", "sceKernelGetDirectMemorySize",
         "sceKernelGetProcessTime",
-        "sceKernelGetdents", "sceKernelLoadStartModule", "sceKernelLseek", "sceKernelMapDirectMemory",
+        "sceKernelGetdents", "sceKernelGetdirentries", "sceKernelLoadStartModule", "sceKernelLseek", "sceKernelMapDirectMemory",
         "sceKernelConfiguredFlexibleMemorySize",
         "sceKernelReserveVirtualRange", "sceKernelQueryMemoryProtection",
         "sceKernelMapFlexibleMemory", "sceKernelMapNamedFlexibleMemory", "sceKernelMemoryPoolCommit",
@@ -203,6 +203,55 @@ public static class StubCatalog
         "scePthreadCondattrSetclock", "scePthreadGetaffinity", "scePthreadSetaffinity",
         "scePthreadSelf", "scePthreadSetspecific",
         "scePthreadYield",
+        // Fine-grained timing: a counter far smaller than the microsecond the process-time call reports,
+        // the processor's own cycle counter, the frequencies that turn either into seconds, the sleep
+        // that takes nanoseconds, and the smallest step a clock can report.
+        "sceKernelGetProcessTimeCounter", "sceKernelGetProcessTimeCounterFrequency",
+        "sceKernelReadTsc", "sceKernelGetTscFrequency",
+        "sceKernelNanosleep", "sceKernelClockGetres",
+        // Placing work on a processor. The affinity pair above says where a thread may run; these say how
+        // urgently it is served once it is there.
+        "scePthreadSetprio", "scePthreadGetprio",
+        // The event queue: one place a thread waits for timers, descriptor readiness, file changes and
+        // events the application raises itself, instead of polling each source in turn.
+        "sceKernelCreateEqueue", "sceKernelDeleteEqueue", "sceKernelWaitEqueue",
+        "sceKernelAddTimerEvent", "sceKernelDeleteTimerEvent",
+        "sceKernelAddHRTimerEvent", "sceKernelDeleteHRTimerEvent",
+        "sceKernelAddReadEvent", "sceKernelDeleteReadEvent",
+        "sceKernelAddWriteEvent", "sceKernelDeleteWriteEvent",
+        "sceKernelAddFileEvent", "sceKernelDeleteFileEvent",
+        "sceKernelAddUserEvent", "sceKernelAddUserEventEdge", "sceKernelDeleteUserEvent",
+        "sceKernelTriggerUserEvent",
+        "sceKernelGetEventFilter", "sceKernelGetEventId", "sceKernelGetEventData",
+        "sceKernelGetEventFflags", "sceKernelGetEventError", "sceKernelGetEventUserData",
+        // Event flags and counting semaphores. Both keep state the platform's scheduler knows about, so
+        // a thread blocked on either is visible to the system rather than only to the runtime.
+        "sceKernelCreateEventFlag", "sceKernelDeleteEventFlag", "sceKernelWaitEventFlag",
+        "sceKernelPollEventFlag", "sceKernelSetEventFlag", "sceKernelClearEventFlag",
+        "sceKernelCancelEventFlag",
+        "sceKernelCreateSema", "sceKernelDeleteSema", "sceKernelWaitSema", "sceKernelPollSema",
+        "sceKernelSignalSema", "sceKernelCancelSema",
+        // Scheduling policy and the attribute block a thread's settings are chosen from before it starts.
+        "scePthreadGetschedparam", "scePthreadSetschedparam", "scePthreadGetcpuclockid",
+        "scePthreadEqual",
+        "scePthreadAttrInit", "scePthreadAttrDestroy", "scePthreadAttrGet",
+        "scePthreadAttrSetstacksize", "scePthreadAttrGetstacksize", "scePthreadAttrGetstack",
+        "scePthreadAttrSetguardsize", "scePthreadAttrGetguardsize",
+        "scePthreadAttrSetdetachstate", "scePthreadAttrGetdetachstate",
+        "scePthreadAttrSetaffinity", "scePthreadAttrGetaffinity",
+        "scePthreadAttrSetschedparam", "scePthreadAttrGetschedparam",
+        "scePthreadAttrSetschedpolicy", "scePthreadAttrGetschedpolicy",
+        "scePthreadAttrSetinheritsched", "scePthreadAttrGetinheritsched",
+        // Reading the address space back: what covers an address, what backs it, what it is named, and
+        // how many page-table entries are left. A build that maps many small ranges exhausts those
+        // before it exhausts memory.
+        "sceKernelDirectMemoryQuery", "sceKernelGetDirectMemoryType", "sceKernelIsStack",
+        "sceKernelSetVirtualRangeName", "sceKernelGetPageTableStats",
+        "sceKernelMsync", "sceKernelMtypeprotect",
+        "sceKernelAllocateMainDirectMemory", "sceKernelMapNamedDirectMemory",
+        "sceKernelCheckedReleaseDirectMemory", "sceKernelMemoryPoolGetBlockStats",
+        // What the process is and what it was started with.
+        "getargc", "getargv", "sceKernelUuidCreate",
     ];
 
     // The portable operating-system interface the platform layer forwards to. These are published
@@ -211,6 +260,9 @@ public static class StubCatalog
     private static readonly string[] Posix =
     [
         "chmod", "clock_gettime", "close", "fchmod",
+        // The platform's own socket calls under their plain names, which a payload reaches by name at run
+        // time and an application may link directly.
+        "socket", "bind", "listen", "accept", "connect", "send", "recv", "setsockopt", "shutdown",
         "fcntl", "flock", "fstat", "fsync",
         "ftruncate", "getdents", "getpid", "getsockopt", "gettimeofday",
         "lseek", "madvise", "mkdir", "mlock",
@@ -229,6 +281,12 @@ public static class StubCatalog
         "pthread_setspecific", "pthread_sigmask", "pwrite", "pwritev",
         "read", "rename", "rmdir", "sched_yield",
         "stat", "sync", "unlink", "write",
+        // Sizes the system imposes on the process, and the priority bounds a policy accepts. These four
+        // are published here only: the kernel library carries no spelling of its own for them.
+        "getpagesize", "getdtablesize", "sched_get_priority_max", "sched_get_priority_min",
+        // Pinning the whole address space. The per-range pair above is listed already; these two act on
+        // everything at once and are refused for a process that has not been granted the right.
+        "mlockall", "munlockall",
         // Naming a thread. The compat object forwards to this one rather than to the kernel library's
         // own, because this one answers a plain error number and the other wraps it into a code.
         "pthread_rename_np",
@@ -352,6 +410,9 @@ public static class StubCatalog
         "sceSystemServiceGetDisplaySafeAreaInfo",
         "sceSystemServiceDisableMediaPlay",
         "sceSystemServiceReenableMediaPlay",
+        "sceSystemServiceSetGpuLoadEmulationMode",
+        "sceSystemServiceGetGpuLoadEmulationMode",
+        "sceSystemServiceReportAbnormalTermination",
     ];
 
     private static readonly string[] AudioOut =
@@ -360,7 +421,11 @@ public static class StubCatalog
         "sceAudioOutOpen",
         "sceAudioOutClose",
         "sceAudioOutOutput",
+        "sceAudioOutOutputs",
         "sceAudioOutSetVolume",
+        // What a port will say about itself: where its samples are going, and how far the output has got.
+        "sceAudioOutGetPortState",
+        "sceAudioOutGetLastOutputTime",
     ];
 
     // The object-based output path: ports placed in space rather than fed to fixed channels.

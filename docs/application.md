@@ -236,6 +236,24 @@ public sealed record ScoreChanged(int Total);
 
 Dispose the token from `Subscribe` to stop receiving; a handler may subscribe or unsubscribe while a message is being delivered without disturbing the one in flight. An exception a handler throws propagates to the publisher and stops the remaining handlers for that message, so keep handlers from throwing on the normal path. `SubscriberCount<T>()` reports how many handlers are registered for one message type, and `Clear` drops every subscription at once — useful when a screen tears down and its handlers go with it.
 
+## What the process is
+
+`ProcessInfo` in `SharpProspero.Application` answers the plain questions about the running process:
+its identifier, the size of a memory page, how many descriptors it may hold open at once, and the
+arguments it was started with.
+
+```csharp
+using SharpProspero.Application;
+
+int ceiling = ProcessInfo.MaximumOpenDescriptors;   // how many files or sockets can be open at once
+string[] args = ProcessInfo.Arguments();            // the first is the module's own path
+Guid id = ProcessInfo.NewIdentifier();              // drawn by the system, unique across processes
+```
+
+Read `MaximumOpenDescriptors` before a build decides how many files or sockets to keep open rather
+than fixing a number in the source. `NewIdentifier` is the route to naming a save slot, a capture or a
+session so two runs cannot collide.
+
 ## Where to go next
 
 - [Timing](timing.md) — turn `DeltaSeconds` into clocks, cooldowns and a fixed timestep.

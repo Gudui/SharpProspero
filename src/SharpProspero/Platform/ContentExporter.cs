@@ -4,6 +4,7 @@
 using SharpProspero.Interop;
 using SharpProspero.Interop.Content;
 using SharpProspero.Interop.Sysmodule;
+using SharpProspero.Modules;
 using System;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -37,29 +38,39 @@ public sealed unsafe class ContentExporter : IDisposable
     [UnmanagedCallersOnly]
     private static void Release(void* block, void* userData) => NativeMemory.Free(block);
 
+    // The loadable module the service lives in, owned from the moment it is loaded so that every way
+    // out of the open sequence gives it back rather than leaving it mapped for the life of the process.
+    private readonly SystemModule _module;
     private bool _disposed;
+    private bool _initialized;
 
-    private ContentExporter() { }
+    private ContentExporter(SystemModule module) => _module = module;
 
     /// <summary>Loads and starts the content-export service.</summary>
     /// <exception cref="ProsperoException">The service could not be loaded or started.</exception>
     public static ContentExporter Open()
     {
-        SceResult.ThrowIfFailed(
-            Sysmodule.sceSysmoduleLoadModule((ushort)SystemModuleId.ContentExport),
-            "sceSysmoduleLoadModule(ContentExport)");
-
-        // The service allocates through routines the caller supplies and has none of its own to fall
-        // back on: it checks both are there and refuses the whole call otherwise, so a cleared
-        // parameter meant the service could never be started. The buffer size is genuinely optional and
-        // is left at zero, which selects the service's own.
-        var param = new SceContentExportInitParam2
+        var exporter = new ContentExporter(SystemModule.Load(SystemModuleId.ContentExport));
+        try
         {
-            MallocFunc = (nint)(delegate* unmanaged<nuint, void*, void*>)&Allocate,
-            FreeFunc = (nint)(delegate* unmanaged<void*, void*, void>)&Release,
-        };
-        SceResult.ThrowIfFailed(Native.sceContentExportInit2(&param), nameof(Native.sceContentExportInit2));
-        return new ContentExporter();
+            // The service allocates through routines the caller supplies and has none of its own to fall
+            // back on: it checks both are there and refuses the whole call otherwise, so a cleared
+            // parameter meant the service could never be started. The buffer size is genuinely optional
+            // and is left at zero, which selects the service's own.
+            var param = new SceContentExportInitParam2
+            {
+                MallocFunc = (nint)(delegate* unmanaged<nuint, void*, void*>)&Allocate,
+                FreeFunc = (nint)(delegate* unmanaged<void*, void*, void>)&Release,
+            };
+            SceResult.ThrowIfFailed(Native.sceContentExportInit2(&param), nameof(Native.sceContentExportInit2));
+            exporter._initialized = true;
+            return exporter;
+        }
+        catch
+        {
+            exporter.Dispose();
+            throw;
+        }
     }
 
     /// <summary>
@@ -107,8 +118,9 @@ public sealed unsafe class ContentExporter : IDisposable
         if (_disposed)
             return;
         _disposed = true;
-        Native.sceContentExportTerm();
-        Sysmodule.sceSysmoduleUnloadModule((ushort)SystemModuleId.ContentExport);
+        if (_initialized)
+            Native.sceContentExportTerm();
+        _module.Dispose();
     }
 
     private static void WriteCString(byte* dest, int capacity, string value)

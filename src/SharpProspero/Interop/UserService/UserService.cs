@@ -105,6 +105,12 @@ public static unsafe partial class UserService
     [LibraryImport(Lib)]
     public static partial int sceUserServiceGetEvent(SceUserServiceEvent* @event);
 
+    /// <summary>
+    /// The list held nothing more. This is what <see cref="sceUserServiceGetEvent"/> returns once it has
+    /// been drained, and it is the ordinary end of a drain rather than a fault.
+    /// </summary>
+    public const int ErrorNoEvent = unchecked((int)0x80960007);
+
     /// <summary>Reads <paramref name="userId"/>'s cross-game preferences.</summary>
     [LibraryImport(Lib)]
     public static partial int sceUserServiceGetGamePresets(int userId, SceUserServiceGamePresets* presets);

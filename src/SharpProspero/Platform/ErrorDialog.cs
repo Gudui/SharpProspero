@@ -4,6 +4,7 @@
 using SharpProspero.Interop;
 using SharpProspero.Interop.Dialog;
 using SharpProspero.Interop.Sysmodule;
+using SharpProspero.Modules;
 using System;
 using Native = SharpProspero.Interop.Dialog.ErrorDialog;
 
@@ -33,10 +34,14 @@ public enum ErrorDialogState
 /// </example>
 public sealed unsafe class ErrorDialog : IDisposable
 {
+    // The loadable module the dialog lives in, owned from the moment it is loaded so that every way out
+    // of the open sequence gives it back rather than leaving it mapped for the life of the process.
+    private readonly SystemModule _module;
     private bool _disposed;
+    private bool _initialized;
     private bool _opened;
 
-    private ErrorDialog() { }
+    private ErrorDialog(SystemModule module) => _module = module;
 
     /// <summary>
     /// Opens the error dialog for <paramref name="errorCode"/>. Brings the dialog subsystem up and
@@ -46,14 +51,12 @@ public sealed unsafe class ErrorDialog : IDisposable
     public static ErrorDialog Show(int errorCode, int userId = SceUser.System)
     {
         CommonDialog.EnsureInitialized();
-        SceResult.ThrowIfFailed(
-            Sysmodule.sceSysmoduleLoadModule((ushort)SystemModuleId.ErrorDialog),
-            "sceSysmoduleLoadModule(ErrorDialog)");
-        SceResult.ThrowIfFailed(Native.sceErrorDialogInitialize(), nameof(Native.sceErrorDialogInitialize));
-
-        var dialog = new ErrorDialog();
+        var dialog = new ErrorDialog(SystemModule.Load(SystemModuleId.ErrorDialog));
         try
         {
+            SceResult.ThrowIfFailed(Native.sceErrorDialogInitialize(), nameof(Native.sceErrorDialogInitialize));
+            dialog._initialized = true;
+
             SceErrorDialogParam param;
             Native.InitializeParam(&param);
             param.ErrorCode = errorCode;
@@ -86,7 +89,8 @@ public sealed unsafe class ErrorDialog : IDisposable
         _disposed = true;
         if (_opened)
             Native.sceErrorDialogClose();
-        Native.sceErrorDialogTerminate();
-        Sysmodule.sceSysmoduleUnloadModule((ushort)SystemModuleId.ErrorDialog);
+        if (_initialized)
+            Native.sceErrorDialogTerminate();
+        _module.Dispose();
     }
 }

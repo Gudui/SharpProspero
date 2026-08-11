@@ -4,6 +4,7 @@
 using SharpProspero.Interop;
 using SharpProspero.Interop.Content;
 using SharpProspero.Interop.Sysmodule;
+using SharpProspero.Modules;
 using System;
 using System.Collections.Generic;
 using System.Text;
@@ -51,9 +52,13 @@ public sealed unsafe class ContentLibrary : IDisposable
     /// <summary>The default working heap the service is started with, in bytes.</summary>
     public const int DefaultMemorySize = 3 * 1024 * 1024;
 
+    // The loadable module the service lives in, owned from the moment it is loaded so that every way
+    // out of the open sequence gives it back rather than leaving it mapped for the life of the process.
+    private readonly SystemModule _module;
     private bool _disposed;
+    private bool _initialized;
 
-    private ContentLibrary() { }
+    private ContentLibrary(SystemModule module) => _module = module;
 
     /// <summary>
     /// Loads and starts the content-search service. <paramref name="memorySize"/> is the working heap;
@@ -62,13 +67,19 @@ public sealed unsafe class ContentLibrary : IDisposable
     /// <exception cref="ProsperoException">The service could not be loaded or started.</exception>
     public static ContentLibrary Open(int memorySize = DefaultMemorySize)
     {
-        SceResult.ThrowIfFailed(
-            Sysmodule.sceSysmoduleLoadModule((ushort)SystemModuleId.ContentSearch),
-            "sceSysmoduleLoadModule(ContentSearch)");
-
-        var param = new SceContentSearchInitParam { MemorySize = (nuint)memorySize };
-        SceResult.ThrowIfFailed(Native.sceContentSearchInit(&param), nameof(Native.sceContentSearchInit));
-        return new ContentLibrary();
+        var library = new ContentLibrary(SystemModule.Load(SystemModuleId.ContentSearch));
+        try
+        {
+            var param = new SceContentSearchInitParam { MemorySize = (nuint)memorySize };
+            SceResult.ThrowIfFailed(Native.sceContentSearchInit(&param), nameof(Native.sceContentSearchInit));
+            library._initialized = true;
+            return library;
+        }
+        catch
+        {
+            library.Dispose();
+            throw;
+        }
     }
 
     /// <summary>Counts the items of <paramref name="type"/> in the library.</summary>
@@ -203,8 +214,9 @@ public sealed unsafe class ContentLibrary : IDisposable
         if (_disposed)
             return;
         _disposed = true;
-        Native.sceContentSearchTerm();
-        Sysmodule.sceSysmoduleUnloadModule((ushort)SystemModuleId.ContentSearch);
+        if (_initialized)
+            Native.sceContentSearchTerm();
+        _module.Dispose();
     }
 
     private static string ReadUtf8(byte* start, int maxLength)

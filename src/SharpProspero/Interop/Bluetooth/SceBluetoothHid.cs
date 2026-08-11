@@ -9,7 +9,7 @@ namespace SharpProspero.Interop.Bluetooth;
 /// Bluetooth HID bindings (libSceBluetoothHid). This is the low-level driver surface for Bluetooth
 /// human-interface devices: it opens the <c>/dev/bt</c> and <c>/dev/bluetooth_hid</c> device nodes and
 /// forwards each call to the kernel as an ioctl. Every function returns a status code (0 on success,
-/// a negative 0x8154xxxx value on failure); <see cref="sceBluetoothHidInit"/> must run first.
+/// a negative 0x8154xxxx value on failure); <see cref="SceBluetoothHid.sceBluetoothHidInit"/> must run first.
 /// </summary>
 /// <remarks>
 /// The module has no public header, so these signatures were recovered from the module itself: the

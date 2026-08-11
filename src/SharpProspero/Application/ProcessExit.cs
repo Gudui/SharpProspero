@@ -1,6 +1,7 @@
 // SharpProspero - a C# SDK for on-device application modules.
 // Copyright (C) 2026 SvenGDK
 
+using SharpProspero.Interop.SystemService;
 using System.Runtime.InteropServices;
 
 namespace SharpProspero.Application;
@@ -35,7 +36,7 @@ namespace SharpProspero.Application;
 /// runs, but nothing else does.
 /// </para>
 /// </remarks>
-public static partial class ProcessExit
+public static unsafe partial class ProcessExit
 {
     private const string Lib = "libc";
 
@@ -53,6 +54,35 @@ public static partial class ProcessExit
         while (true)
         {
         }
+    }
+
+    /// <summary>
+    /// Ends the process and records it as an abnormal termination. Does not return.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Use this where the module has decided it cannot carry on and wants that written down: the
+    /// system raises the process into a fault, tears it down, and files a report describing the end as
+    /// abnormal. The user is shown the box that says the application closed unexpectedly, which is the
+    /// point - it is the reporting path, not the tidy way out. <see cref="Exit"/> remains the way a
+    /// module that finished its work leaves.
+    /// </para>
+    /// <para>
+    /// Nothing registered for teardown runs, so release anything that would outlive the process, such
+    /// as an open file being written, before calling it.
+    /// </para>
+    /// </remarks>
+    public static void ExitAbnormally()
+    {
+        // The service takes a descriptor pointer and accepts only a null one, which is why this takes
+        // no argument: the descriptor's shape is not published, so there is nothing a caller could
+        // build to pass.
+        SystemService.sceSystemServiceReportAbnormalTermination(null);
+
+        // Reached only if a future platform ever declines the report and returns. Ending the process
+        // some other way is still better than returning to the entry point, which this type exists to
+        // avoid.
+        Exit(1);
     }
 
     [LibraryImport(Lib)]

@@ -97,6 +97,50 @@ public sealed unsafe class AudioOutDevice : IDisposable
     }
 
     /// <summary>
+    /// The time of the port's last output, on the audio clock. The difference between two readings says
+    /// how far the output has advanced between them, which is how a caller works out whether its own
+    /// mixing is keeping up.
+    /// </summary>
+    /// <remarks>
+    /// This port publishes no way to ask how much room the queue has left, so there is no way to tell in
+    /// advance whether <see cref="Output"/> will block. <see cref="AudioQueueDevice"/> is the output that
+    /// does answer that, and is what an application uses when audio must never hold up a frame.
+    /// </remarks>
+    /// <exception cref="ProsperoException">The time could not be read.</exception>
+    public ulong LastOutputTime
+    {
+        get
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            ulong time = 0;
+            SceResult.ThrowIfFailed(
+                AudioOut.sceAudioOutGetLastOutputTime(_handle, &time),
+                nameof(AudioOut.sceAudioOutGetLastOutputTime));
+            return time;
+        }
+    }
+
+    /// <summary>
+    /// Reads where the port's samples are going and how loud. Watch
+    /// <see cref="SceAudioOutPortState.RerouteCounter"/> to notice the player moving from the television
+    /// to a headset, which is when a mix built for one speaker layout has to be rebuilt for another.
+    /// </summary>
+    /// <exception cref="ProsperoException">The state could not be read.</exception>
+    public SceAudioOutPortState GetPortState()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        SceAudioOutPortState state = default;
+        SceResult.ThrowIfFailed(
+            AudioOut.sceAudioOutGetPortState(_handle, &state),
+            nameof(AudioOut.sceAudioOutGetPortState));
+        return state;
+    }
+
+    /// <summary>Which outputs the port's samples are reaching.</summary>
+    /// <exception cref="ProsperoException">The state could not be read.</exception>
+    public AudioOutStateOutput ConnectedOutputs => (AudioOutStateOutput)GetPortState().Output;
+
+    /// <summary>
     /// Waits for the block already queued to finish playing and leaves the port idle. Pushing again
     /// afterwards resumes output.
     /// </summary>

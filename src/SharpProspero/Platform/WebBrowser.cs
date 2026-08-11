@@ -5,6 +5,7 @@ using SharpProspero.Interop;
 using SharpProspero.Interop.Dialog;
 using SharpProspero.Interop.Sysmodule;
 using SharpProspero.Interop.UserService;
+using SharpProspero.Modules;
 using System;
 using System.Text;
 
@@ -24,10 +25,15 @@ namespace SharpProspero.Platform;
 /// </example>
 public sealed unsafe class WebBrowser : IDisposable
 {
+    // The loadable module the browser lives in. It is owned from the moment it is loaded so that every
+    // way out of the open sequence gives it back: a module loaded and not unloaded stays mapped for the
+    // life of the process, and a caller that retries after a refusal loads it again each time.
+    private readonly SystemModule _module;
     private bool _disposed;
+    private bool _initialized;
     private bool _opened;
 
-    private WebBrowser() { }
+    private WebBrowser(SystemModule module) => _module = module;
 
     /// <summary>
     /// Starts the browser subsystem and opens <paramref name="url"/> for <paramref name="userId"/>,
@@ -53,15 +59,14 @@ public sealed unsafe class WebBrowser : IDisposable
         // The browser sits on the shared dialog subsystem and its own loadable module. Both come up
         // before its own initialize, in this order, or that initialize fails.
         CommonDialog.EnsureInitialized();
-        SceResult.ThrowIfFailed(
-            Sysmodule.sceSysmoduleLoadModule((ushort)SystemModuleId.WebBrowserDialog),
-            "sceSysmoduleLoadModule(WebBrowserDialog)");
-        SceResult.ThrowIfFailed(WebBrowserDialog.sceWebBrowserDialogInitialize(),
-            nameof(WebBrowserDialog.sceWebBrowserDialogInitialize));
-
-        var browser = new WebBrowser();
+        SystemModule module = SystemModule.Load(SystemModuleId.WebBrowserDialog);
+        var browser = new WebBrowser(module);
         try
         {
+            SceResult.ThrowIfFailed(WebBrowserDialog.sceWebBrowserDialogInitialize(),
+                nameof(WebBrowserDialog.sceWebBrowserDialogInitialize));
+            browser._initialized = true;
+
             int byteCount = Encoding.UTF8.GetByteCount(url);
             Span<byte> address = byteCount < 512 ? stackalloc byte[byteCount + 1] : new byte[byteCount + 1];
             int written = Encoding.UTF8.GetBytes(url, address);
@@ -84,7 +89,7 @@ public sealed unsafe class WebBrowser : IDisposable
         }
         catch
         {
-            WebBrowserDialog.sceWebBrowserDialogTerminate();
+            browser.Dispose();
             throw;
         }
     }
@@ -111,7 +116,7 @@ public sealed unsafe class WebBrowser : IDisposable
         return result.Result;
     }
 
-    /// <summary>Closes the browser if it is open and shuts the subsystem down.</summary>
+    /// <summary>Closes the browser if it is open, shuts the subsystem down, and unloads its module.</summary>
     public void Dispose()
     {
         if (_disposed)
@@ -119,7 +124,9 @@ public sealed unsafe class WebBrowser : IDisposable
         _disposed = true;
         if (_opened)
             WebBrowserDialog.sceWebBrowserDialogClose();
-        WebBrowserDialog.sceWebBrowserDialogTerminate();
+        if (_initialized)
+            WebBrowserDialog.sceWebBrowserDialogTerminate();
+        _module.Dispose();
     }
 }
 

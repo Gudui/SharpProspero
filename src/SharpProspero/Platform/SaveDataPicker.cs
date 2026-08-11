@@ -5,6 +5,7 @@ using SharpProspero.Interop;
 using SharpProspero.Interop.Dialog;
 using SharpProspero.Interop.SaveData;
 using SharpProspero.Interop.Sysmodule;
+using SharpProspero.Modules;
 using System;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -28,9 +29,18 @@ namespace SharpProspero.Platform;
 public sealed unsafe class SaveDataPicker : IDisposable
 {
     private SceSaveDataDialogItems* _items;
-    private bool _disposed;
 
-    private SaveDataPicker(SceSaveDataDialogItems* items) => _items = items;
+    // The loadable module the dialog lives in, owned from the moment it is loaded so that every way out
+    // of the open sequence gives it back rather than leaving it mapped for the life of the process.
+    private readonly SystemModule _module;
+    private bool _disposed;
+    private bool _initialized;
+
+    private SaveDataPicker(SystemModule module, SceSaveDataDialogItems* items)
+    {
+        _module = module;
+        _items = items;
+    }
 
     /// <summary>
     /// Opens a dialog listing the saves of <paramref name="userId"/> for the running application, with
@@ -40,37 +50,36 @@ public sealed unsafe class SaveDataPicker : IDisposable
     public static SaveDataPicker OpenList(int userId, SaveDataDialogType type = SaveDataDialogType.Load)
     {
         CommonDialog.EnsureInitialized();
-        SceResult.ThrowIfFailed(
-            Sysmodule.sceSysmoduleLoadModule((ushort)SystemModuleId.SaveDataDialog),
-            "sceSysmoduleLoadModule(SaveDataDialog)");
-        SceResult.ThrowIfFailed(Native.sceSaveDataDialogInitialize(), nameof(Native.sceSaveDataDialogInitialize));
 
         // The item list is read by the service while the dialog is open, so it lives on the heap for
-        // the picker's lifetime and is freed on dispose.
+        // the picker's lifetime and is freed on dispose. The picker owns both the module and the list
+        // from the moment each is taken, so every way out of this sequence gives both back.
         var items = (SceSaveDataDialogItems*)NativeMemory.AllocZeroed((nuint)sizeof(SceSaveDataDialogItems));
-        items->UserId = userId;
-        items->ItemStyle = SaveDataDialogItemStyle.TitleDateSizeSubtitle;
-        items->FocusPos = SaveDataDialogFocusPos.DataLatest;
-
-        SceSaveDataDialogParam param;
-        new Span<byte>(&param, sizeof(SceSaveDataDialogParam)).Clear();
-        Native.InitializeParam(&param);
-        param.Mode = SaveDataDialogMode.List;
-        param.DispType = type;
-        param.Items = items;
-
+        var picker = new SaveDataPicker(SystemModule.Load(SystemModuleId.SaveDataDialog), items);
         try
         {
+            SceResult.ThrowIfFailed(Native.sceSaveDataDialogInitialize(), nameof(Native.sceSaveDataDialogInitialize));
+            picker._initialized = true;
+
+            items->UserId = userId;
+            items->ItemStyle = SaveDataDialogItemStyle.TitleDateSizeSubtitle;
+            items->FocusPos = SaveDataDialogFocusPos.DataLatest;
+
+            SceSaveDataDialogParam param;
+            new Span<byte>(&param, sizeof(SceSaveDataDialogParam)).Clear();
+            Native.InitializeParam(&param);
+            param.Mode = SaveDataDialogMode.List;
+            param.DispType = type;
+            param.Items = items;
+
             SceResult.ThrowIfFailed(Native.sceSaveDataDialogOpen(&param), nameof(Native.sceSaveDataDialogOpen));
+            return picker;
         }
         catch
         {
-            NativeMemory.Free(items);
-            Native.sceSaveDataDialogTerminate();
-            Sysmodule.sceSysmoduleUnloadModule((ushort)SystemModuleId.SaveDataDialog);
+            picker.Dispose();
             throw;
         }
-        return new SaveDataPicker(items);
     }
 
     /// <summary>The dialog's status. Poll it until it is <see cref="CommonDialogStatus.Finished"/>.</summary>
@@ -118,8 +127,9 @@ public sealed unsafe class SaveDataPicker : IDisposable
         if (_disposed)
             return;
         _disposed = true;
-        Native.sceSaveDataDialogTerminate();
-        Sysmodule.sceSysmoduleUnloadModule((ushort)SystemModuleId.SaveDataDialog);
+        if (_initialized)
+            Native.sceSaveDataDialogTerminate();
+        _module.Dispose();
         if (_items is not null)
         {
             NativeMemory.Free(_items);

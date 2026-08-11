@@ -1,6 +1,7 @@
 // SharpProspero - a C# SDK for on-device application modules.
 // Copyright (C) 2026 SvenGDK
 
+using System;
 using System.Runtime.InteropServices;
 
 namespace SharpProspero.Interop.Audio;
@@ -52,11 +53,83 @@ public enum AudioOutFormat : uint
     FloatEight = 5,
 }
 
+/// <summary>Which outputs a port's samples are reaching. Several bits can be set at once.</summary>
+[Flags]
+public enum AudioOutStateOutput : ushort
+{
+    /// <summary>Nothing is carrying the port.</summary>
+    Unknown = 0,
+
+    /// <summary>The main output.</summary>
+    Primary = 1 << 0,
+
+    /// <summary>The second output.</summary>
+    Secondary = 1 << 1,
+
+    /// <summary>The controller speaker.</summary>
+    ControllerSpeaker = 1 << 2,
+
+    /// <summary>A headset attached over USB or a wireless link.</summary>
+    Headphone = 1 << 6,
+
+    /// <summary>Something outside the machine: a recording, a remote session, a spectator.</summary>
+    External = 1 << 7,
+}
+
+/// <summary>
+/// Where a port's samples are going and how loud, as a status call fills it in.
+/// </summary>
+[StructLayout(LayoutKind.Sequential, Size = 32)]
+public unsafe struct SceAudioOutPortState
+{
+    /// <summary>Which outputs carry the port, from <see cref="AudioOutStateOutput"/>.</summary>
+    public ushort Output;
+
+    /// <summary>How many channels those outputs take: 1, 2, 6 or 8, and 0 when nothing is attached.</summary>
+    public byte Channel;
+
+    private byte _reserved;
+
+    /// <summary>The port's level.</summary>
+    public short Volume;
+
+    /// <summary>
+    /// Counts up each time the output the port reaches changes. A different value from the last frame
+    /// means the samples are now going somewhere else, which is when a mix built for a speaker layout
+    /// has to be rebuilt.
+    /// </summary>
+    public ushort RerouteCounter;
+
+    /// <summary>Reserved for future use.</summary>
+    public ulong Flag;
+
+    private fixed ulong _reserved64[2];
+}
+
+/// <summary>One entry of a multi-port push: which port, and the samples for it.</summary>
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct SceAudioOutOutputParam
+{
+    /// <summary>The port handle.</summary>
+    public int Handle;
+
+    private int _pad;
+
+    /// <summary>The block of samples for that port, in the port's own format.</summary>
+    public void* Ptr;
+}
+
 /// <summary>
 /// Audio-output bindings. Initialize the subsystem, open a port for a user with a grain (samples per
 /// output block), a sample rate and a format, then push one block of samples at a time. Each output
 /// call blocks until the queue has room for the block, which paces the caller to the audio clock.
 /// </summary>
+/// <remarks>
+/// This library publishes no way to ask how much room the queue has left, so a caller cannot decide
+/// whether a push will block before making it. The object-based path in <see cref="AudioOut2"/> does
+/// publish one - <see cref="AudioOut2.sceAudioOut2ContextGetQueueLevel"/> - and is the path to take when
+/// output must never stall the caller.
+/// </remarks>
 public static unsafe partial class AudioOut
 {
     private const string Lib = "libSceAudioOut";
@@ -101,4 +174,25 @@ public static unsafe partial class AudioOut
     /// <summary>Sets the per-channel volume; <paramref name="flag"/> selects the channels in <paramref name="vol"/>.</summary>
     [LibraryImport(Lib)]
     public static partial int sceAudioOutSetVolume(int handle, int flag, int* vol);
+
+    /// <summary>The most ports one <see cref="sceAudioOutOutputs"/> call may carry.</summary>
+    public const int MaxOutputs = 8;
+
+    /// <summary>
+    /// Pushes a block to each of <paramref name="num"/> ports at once, so several ports stay in step
+    /// rather than drifting apart as separate blocking pushes would let them.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceAudioOutOutputs(SceAudioOutOutputParam* param, uint num);
+
+    /// <summary>
+    /// Reads the time of the port's last output, on the audio clock. Comparing successive readings says
+    /// how far the output has advanced, which is what tells a caller how far behind its own mixing is.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceAudioOutGetLastOutputTime(int handle, ulong* outputTime);
+
+    /// <summary>Reads where a port's samples are going and how loud.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceAudioOutGetPortState(int handle, SceAudioOutPortState* state);
 }

@@ -69,6 +69,14 @@ public static unsafe partial class KernelSystem
     /// </summary>
     [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
     public static partial int sysctlbyname(string name, void* oldp, nuint* oldlenp, void* newp, nuint newlen);
+
+    /// <summary>
+    /// Returns the address of the calling thread's error number. The libc-style calls report failure
+    /// with -1 and leave the reason here, so a caller reads it immediately after the call it belongs to
+    /// and before anything else on the same thread can overwrite it.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int* __error();
 }
 
 /// <summary>Which thread the process stopped on, and why.</summary>

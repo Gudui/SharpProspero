@@ -2,23 +2,39 @@
 // starts it; it listens on a port, answers each request with a status page, and keeps serving. A payload
 // has no screen and no controller - it runs inside another process - so this is a plain program, not a
 // frame loop. Add cases to Route to answer your own paths.
+//
+// A payload reaches the network through SharpProspero.Payload.PayloadNetwork, the plain socket calls the
+// operating-system library publishes by name, because a payload has no dynamic linker to bind the
+// wrapped network types an application module uses.
 
 using System;
 using System.Text;
-using SharpProspero.Platform;
+using SharpProspero.Payload;
 
 namespace SampleApp;
 
 internal static class Program
 {
-    private const int Port = 8080;
+    private const ushort Port = 8080;
 
-    private static void Main()
+    private static int Main()
     {
-        using var listener = TcpListener.Listen(SocketAddress.Any(Port));
+        int listener;
+        try
+        {
+            listener = PayloadNetwork.Listen(Port);
+        }
+        catch (Exception)
+        {
+            // The port could not be opened; a payload ends by returning.
+            return -1;
+        }
+
         while (true)
         {
-            TcpConnection client = listener.Accept();
+            int client = PayloadNetwork.Accept(listener);
+            if (client < 0)
+                continue;
             try
             {
                 Serve(client);
@@ -29,18 +45,18 @@ internal static class Program
             }
             finally
             {
-                client.Dispose();
+                PayloadNetwork.Close(client);
             }
         }
     }
 
-    private static void Serve(TcpConnection client)
+    private static void Serve(int client)
     {
         Span<byte> buffer = stackalloc byte[2048];
-        int read = client.Receive(buffer);
+        long read = PayloadNetwork.Receive(client, buffer);
         if (read <= 0)
             return;
-        string path = RequestPath(Encoding.ASCII.GetString(buffer[..read]));
+        string path = RequestPath(Encoding.ASCII.GetString(buffer[..(int)read]));
         (int status, string body) = Route(path);
         WriteResponse(client, status, body);
     }
@@ -63,7 +79,7 @@ internal static class Program
         _ => (404, "not found"),
     };
 
-    private static void WriteResponse(TcpConnection client, int status, string body)
+    private static void WriteResponse(int client, int status, string body)
     {
         string reason = status == 200 ? "OK" : "Not Found";
         byte[] bodyBytes = Encoding.UTF8.GetBytes(body);
@@ -71,7 +87,7 @@ internal static class Program
             + "Content-Type: text/html; charset=utf-8\r\n"
             + $"Content-Length: {bodyBytes.Length}\r\n"
             + "Connection: close\r\n\r\n";
-        client.SendAll(Encoding.ASCII.GetBytes(header));
-        client.SendAll(bodyBytes);
+        PayloadNetwork.SendAll(client, Encoding.ASCII.GetBytes(header));
+        PayloadNetwork.SendAll(client, bodyBytes);
     }
 }

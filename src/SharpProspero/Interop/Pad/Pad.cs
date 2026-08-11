@@ -330,6 +330,37 @@ public unsafe struct ScePadControllerInformation
     private fixed byte _reserved[8];
 }
 
+/// <summary>The codes the controller service returns when it refuses a request.</summary>
+public static class ScePadError
+{
+    /// <summary>An argument was outside what the call accepts, or a required pointer was null.</summary>
+    public const int InvalidArg = unchecked((int)0x80920001);
+
+    /// <summary>The port does not exist.</summary>
+    public const int InvalidPort = unchecked((int)0x80920002);
+
+    /// <summary>The handle is not one the service issued, or it has been closed.</summary>
+    public const int InvalidHandle = unchecked((int)0x80920003);
+
+    /// <summary>The port is already open.</summary>
+    public const int AlreadyOpened = unchecked((int)0x80920004);
+
+    /// <summary>The subsystem has not been initialized.</summary>
+    public const int NotInitialized = unchecked((int)0x80920005);
+
+    /// <summary>The light-bar color is not one the service accepts.</summary>
+    public const int InvalidLightBarSetting = unchecked((int)0x80920006);
+
+    /// <summary>No device is attached to the handle.</summary>
+    public const int DeviceNotConnected = unchecked((int)0x80920007);
+
+    /// <summary>No handle exists for the request.</summary>
+    public const int NoHandle = unchecked((int)0x80920008);
+
+    /// <summary>The service failed in a way it does not describe further.</summary>
+    public const int Fatal = unchecked((int)0x809200FF);
+}
+
 /// <summary>An 8-bit-per-channel color for the controller light bar.</summary>
 [StructLayout(LayoutKind.Sequential)]
 public struct ScePadColor
@@ -380,6 +411,18 @@ public static unsafe partial class Pad
 
     /// <summary>The remote control. Only the system user may open one.</summary>
     public const int PortTypeRemoteControl = 16;
+
+    /// <summary>
+    /// A handle for this user, type and index is already open. Ask <see cref="scePadGetHandle"/> for it
+    /// rather than opening a second one.
+    /// </summary>
+    public const int ErrorAlreadyOpened = unchecked((int)0x80920004);
+
+    /// <summary>No device is attached to the handle.</summary>
+    public const int ErrorDeviceNotConnected = unchecked((int)0x80920007);
+
+    /// <summary>Nothing has opened a handle for this user, type and index.</summary>
+    public const int ErrorNoHandle = unchecked((int)0x80920008);
 
     /// <summary>Initializes the controller subsystem. Call once before opening a handle.</summary>
     [LibraryImport(Lib)]

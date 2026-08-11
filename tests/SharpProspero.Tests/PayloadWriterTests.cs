@@ -2,6 +2,7 @@ using SharpProspero.Link;
 using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using Xunit;
 
@@ -231,6 +232,96 @@ public class PayloadWriterTests
         return PayloadWriter.Write(res, PayloadCrtEmitter.StartSymbol);
     }
 
+    [Fact]
+    public void LinkerProvidedSymbolsAreNotResolvedAsOutsideReferences()
+    {
+        // The image start, the code end and the exception-index bounds are names the writer settles once
+        // the layout is fixed, not outside references a payload resolves at run time. A payload has no
+        // definition for them and no dynamic linker, so left as resolver names they would resolve to a
+        // stub and read as garbage - and the first exception unwound through the index would end the
+        // process. Referencing them must therefore leave no resolver name behind.
+        byte[] elf = BuildLinkerProvidedPayload();
+        foreach (string name in new[] { "__executable_start", "_etext", "__GNU_EH_FRAME_HDR", "__GNU_EH_FRAME_HDR_END" })
+            Assert.False(ContainsBytes(elf, Encoding.ASCII.GetBytes(name + "\0")), $"'{name}' was left as a resolver name.");
+    }
+
+    [Fact]
+    public void LinkerProvidedReferencesTakeBaseRelativeFixups()
+    {
+        // Resolved to real link-time addresses, references to the self-description names collect base-
+        // relative fix-ups like any absolute pointer - never a symbolic relocation the loader cannot apply.
+        byte[] elf = BuildLinkerProvidedPayload();
+        Assert.True(TryFindRela(elf, out int relaOff, out int relaSize));
+        for (int i = 0; i < relaSize / 24; i++)
+        {
+            ulong info = BinaryPrimitives.ReadUInt64LittleEndian(elf.AsSpan(relaOff + i * 24 + 8));
+            Assert.Equal(8u, info & 0xFFFFFFFF); // R_X86_64_RELATIVE
+            Assert.Equal(0u, info >> 32);         // no symbol
+        }
+    }
+
+    [Fact]
+    public void ImageStartAndCodeEndResolveToTheirRealAddresses()
+    {
+        // The image start is the text segment address; the code end is one past it. Both must appear as
+        // base-relative addends - the writer filled the pointers with real addresses. Were either left a
+        // resolver name it would resolve to a stub inside the code group, not to these addresses.
+        byte[] elf = BuildLinkerProvidedPayload();
+        (ulong textAddr, ulong textSize) = ReadTextSegment(elf);
+        List<ulong> addends = RelativeAddends(elf);
+        Assert.Contains(textAddr, addends);            // __executable_start
+        Assert.Contains(textAddr + textSize, addends); // _etext
+    }
+
+    // A payload object whose data holds pointers to the four names the linker settles: the image start,
+    // the code end, and the exception-index bounds. Each pointer takes an absolute relocation, so a
+    // working writer fills it with the real address and a broken one would route it through a resolver
+    // slot and record the name.
+    private static byte[] BuildLinkerProvidedPayload()
+    {
+        string[] names = ["__executable_start", "_etext", "__GNU_EH_FRAME_HDR", "__GNU_EH_FRAME_HDR_END"];
+        var nullSec = new ElfSection { Name = "", Type = 0, Flags = 0, Address = 0, Size = 0, Link = 0, Info = 0, AddrAlign = 0, EntSize = 0, Data = [] };
+        byte[] code = [0xC3]; // ret
+        var text = new ElfSection { Name = ".text", Type = 1, Flags = 0x2 | 0x4, Address = 0, Size = 1, Link = 0, Info = 0, AddrAlign = 16, EntSize = 0, Data = code };
+        var data = new ElfSection { Name = ".data", Type = 1, Flags = 0x2 | 0x1, Address = 0, Size = (ulong)(names.Length * 8), Link = 0, Info = 0, AddrAlign = 8, EntSize = 0, Data = new byte[names.Length * 8] };
+        var syms = new List<ElfSymbol>
+        {
+            new() { Name = "", Info = 0, Other = 0, SectionIndex = 0, Value = 0, Size = 0 },
+            new() { Name = "main", Info = (1 << 4) | 2, Other = 0, SectionIndex = 1, Value = 0, Size = 1 },
+        };
+        var dataRelocs = new List<ElfRelocation>();
+        for (int i = 0; i < names.Length; i++)
+        {
+            syms.Add(new ElfSymbol { Name = names[i], Info = (1 << 4) | 0, Other = 0, SectionIndex = 0, Value = 0, Size = 0 });
+            dataRelocs.Add(new ElfRelocation(Offset: (ulong)(i * 8), SymbolIndex: (uint)(2 + i), Type: RelType.R64, Addend: 0));
+        }
+        var relocs = new Dictionary<int, IReadOnlyList<ElfRelocation>> { [2] = dataRelocs };
+        var obj = new ElfObject { Origin = "linker-provided-payload", Sections = [nullSec, text, data], Symbols = syms, Relocations = relocs };
+        var crt = ElfObjectReader.Read(PayloadCrtEmitter.BuildStartObject(), "crt");
+        var options = new LinkOptions();
+        options.ExtraObjects.Add(crt);
+        options.ExtraObjects.Add(obj);
+        LinkResolution res = Linker.Resolve(options);
+        return PayloadWriter.Write(res, PayloadCrtEmitter.StartSymbol);
+    }
+
+    // The executable load segment's virtual address and file size: the image start and, added, the code end.
+    private static (ulong Addr, ulong Size) ReadTextSegment(byte[] elf)
+    {
+        ulong phoff = BinaryPrimitives.ReadUInt64LittleEndian(elf.AsSpan(0x20));
+        int phnum = BinaryPrimitives.ReadUInt16LittleEndian(elf.AsSpan(0x38));
+        for (int i = 0; i < phnum; i++)
+        {
+            int p = (int)phoff + i * 0x38;
+            if (BinaryPrimitives.ReadUInt32LittleEndian(elf.AsSpan(p)) != 1) continue;        // PT_LOAD
+            if ((BinaryPrimitives.ReadUInt32LittleEndian(elf.AsSpan(p + 4)) & 1) == 0) continue; // PF_X
+            ulong vaddr = BinaryPrimitives.ReadUInt64LittleEndian(elf.AsSpan(p + 16));
+            ulong filesz = BinaryPrimitives.ReadUInt64LittleEndian(elf.AsSpan(p + 32));
+            return (vaddr, filesz);
+        }
+        throw new InvalidOperationException("the payload has no executable load segment.");
+    }
+
     private static List<ulong> RelativeAddends(byte[] elf)
     {
         Assert.True(TryFindRela(elf, out int off, out int size));
@@ -251,6 +342,19 @@ public class PayloadWriterTests
             if (match) return true;
         }
         return false;
+    }
+
+    [Fact]
+    public void DefinedNamesMatchesTheCrtObjectsGlobalSymbols()
+    {
+        ElfObject crt = ElfObjectReader.Read(PayloadCrtEmitter.BuildStartObject(), "crt");
+        string[] defined = crt.Symbols
+            .Where(s => !s.IsUndefined && s.Name.Length > 0 && (s.Info >> 4) == 1)
+            .Select(s => s.Name)
+            .Order()
+            .ToArray();
+        string[] declared = PayloadCrtEmitter.DefinedNames.Order().ToArray();
+        Assert.Equal(declared, defined);
     }
 
     private static bool TryFindRela(byte[] elf, out int offset, out int size)

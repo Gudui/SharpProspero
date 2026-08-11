@@ -152,6 +152,25 @@ public static unsafe partial class KernelFile
     [LibraryImport(Lib)]
     public static partial int sceKernelGetdents(int descriptor, byte* buffer, int length);
 
+    /// <summary>
+    /// Reads directory entries the same way <see cref="sceKernelGetdents"/> does, and additionally
+    /// writes to <paramref name="position"/> the offset within the directory the returned run began at.
+    /// </summary>
+    /// <param name="descriptor">A descriptor opened with <see cref="Directory"/>.</param>
+    /// <param name="buffer">Where the packed run of records is written.</param>
+    /// <param name="length">How many bytes <paramref name="buffer"/> can take.</param>
+    /// <param name="position">
+    /// Receives the directory offset the run started at, so a later seek can resume there. May be null,
+    /// in which case this behaves exactly as <see cref="sceKernelGetdents"/>.
+    /// </param>
+    /// <returns>Bytes written (zero at the end of the directory), or a negative error code.</returns>
+    /// <remarks>
+    /// This is the form the system's own directory walks use. Both calls reach one routine inside the
+    /// kernel; the plain form is a wrapper that passes no position pointer.
+    /// </remarks>
+    [LibraryImport(Lib)]
+    public static partial int sceKernelGetdirentries(int descriptor, byte* buffer, int length, long* position);
+
     /// <summary>Creates the directory at <paramref name="path"/>.</summary>
     [LibraryImport(Lib)]
     public static partial int sceKernelMkdir(byte* path, ushort mode);
@@ -220,4 +239,12 @@ public static unsafe partial class KernelFile
     /// <returns>The number of bytes written, or -1.</returns>
     [LibraryImport(Lib)]
     public static partial long pwrite(int descriptor, void* buffer, nuint length, long offset);
+
+    /// <summary>
+    /// Sets the length of an open file. Growing a file this way leaves the added bytes reading as zero
+    /// without writing them, which is how a large output file is sized up front.
+    /// </summary>
+    /// <returns>Zero on success, or -1.</returns>
+    [LibraryImport(Lib)]
+    public static partial int ftruncate(int descriptor, long length);
 }
