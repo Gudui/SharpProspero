@@ -59,6 +59,19 @@ public sealed unsafe class Renderer3D : IDisposable
     private bool _disposed;
 
     /// <summary>
+    /// Which colour channels of render target 0 the pixel program is allowed to write, as the four-bit
+    /// mask <c>CB_TARGET_MASK</c> takes: <c>0xF</c> writes all four and is the default, <c>0</c> writes
+    /// none.
+    /// </summary>
+    /// <remarks>
+    /// Setting this to zero keeps the whole pipeline running - vertices are still fetched, transformed and
+    /// rasterised, and the pixel program still runs - while nothing reaches the framebuffer. That makes it
+    /// the way to ask whether a pipeline that does not complete is failing at the colour target or before
+    /// it, which is otherwise hard to separate: both look like a frame that never appears.
+    /// </remarks>
+    public uint TargetWriteMask { get; set; } = 0xF;
+
+    /// <summary>
     /// Builds a renderer for a display, using the built-in mesh shaders. The display's framebuffers are
     /// the render targets.
     /// </summary>
@@ -154,7 +167,7 @@ public sealed unsafe class Renderer3D : IDisposable
         var context = new Span<CxRegister>(contextRegion.Pointer, _maxContext);
         target.Registers.CopyTo(context[cx..]); cx += CxRenderTarget.RegisterCount;
         cx += viewport.WriteTo(context[cx..]);
-        context[cx++] = new CxRegister((ushort)TargetMaskOffset, 0xF);            // write all four channels of target 0
+        context[cx++] = new CxRegister((ushort)TargetMaskOffset, TargetWriteMask);
         context[cx++] = new CxRegister((ushort)GsOutPrimTypeOffset, GsOutTriangles);
         _vs.Shader.ContextRegisters.CopyTo(context[cx..]); cx += _vs.Shader.ContextRegisters.Length;
         _ps.Shader.ContextRegisters.CopyTo(context[cx..]); cx += _ps.Shader.ContextRegisters.Length;
@@ -164,6 +177,7 @@ public sealed unsafe class Renderer3D : IDisposable
         _vs.Shader.ShaderRegisters.CopyTo(shader[sh..]); sh += _vs.Shader.ShaderRegisters.Length;
         _ps.Shader.ShaderRegisters.CopyTo(shader[sh..]); sh += _ps.Shader.ShaderRegisters.Length;
         if (trace) _trace?.Invoke("AGC_STAGE_STATE_OK cx=" + cx + " sh=" + sh);
+        if (trace) DumpRegisters(context[..cx], shader[..sh]);
 
         // The descriptors the vertex program reads its constants and vertices through.
         AgcBufferDescriptor cbDescriptor = AgcBufferDescriptor.Constant((ulong)constantsRegion.Pointer, (uint)sizeof(Constants));
@@ -212,6 +226,26 @@ public sealed unsafe class Renderer3D : IDisposable
         _display.AdvanceFrame();
         if (trace) _trace?.Invoke("AGC_STAGE_FLIP_OK");
         _slot = (_slot + 1) % _framesInFlight;
+    }
+
+    // Reports the assembled register state, one line per register, before it is handed to the processor.
+    // A count of how many registers were written says nothing about what is in them, and the state is the
+    // first thing to suspect when a pipeline that builds cleanly does not complete: a register the driver
+    // listed no reset value for arrives here as a zero that is indistinguishable from a deliberate one.
+    // Only the first draw reports, so this costs one burst of lines at start-up rather than a flood.
+    private void DumpRegisters(ReadOnlySpan<CxRegister> context, ReadOnlySpan<CxRegister> shader)
+    {
+        if (_trace is null) return;
+        for (int i = 0; i < context.Length; i++)
+            _trace("AGC_REG_CX index=" + i +
+                   " offset=0x" + context[i].Offset.ToString("X4") +
+                   " value=0x" + context[i].Value.ToString("X8"));
+        for (int i = 0; i < shader.Length; i++)
+            _trace("AGC_REG_SH index=" + i +
+                   " offset=0x" + shader[i].Offset.ToString("X4") +
+                   " value=0x" + shader[i].Value.ToString("X8"));
+        _trace("AGC_REG_DUMP_OK cx=" + context.Length + " sh=" + shader.Length +
+               " target_write_mask=0x" + TargetWriteMask.ToString("X"));
     }
 
     // Writes a resource descriptor into the vertex program's user data at the slot the program declares.
