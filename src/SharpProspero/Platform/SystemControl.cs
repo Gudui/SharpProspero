@@ -96,6 +96,33 @@ public static unsafe class SystemControl
         SceResult.ThrowIfFailed(SystemService.sceSystemServiceReenableMediaPlay(), nameof(SystemService.sceSystemServiceReenableMediaPlay));
 
     /// <summary>
+    /// Ends the application and hands the console back to the system software. Call it last, once the
+    /// display, the controller and every service have been released.
+    /// </summary>
+    /// <remarks>
+    /// A module that returns from its entry point has not, as far as the process manager is concerned,
+    /// finished: returning is an abnormal termination, and the system answers it with a fatal signal
+    /// carrying reason <c>Returned from main with zero</c> (<c>0xA0020001</c>), a core dump, and a crash
+    /// notification shown to the user — for an application that in fact completed its work and cleaned up
+    /// after itself. Asking the system software to take the title down is the difference between an
+    /// application that quits and one that appears to have crashed on the way out.
+    ///
+    /// On success the process is gone before this returns, so a return means the request was refused and
+    /// the caller is free to fall back to returning from its entry point, which is what a module without
+    /// this call does anyway.
+    /// </remarks>
+    /// <returns>
+    /// The system's answer, negative on failure. Only ever observed when the request was refused; there
+    /// is no success value to read, because success does not come back.
+    /// </returns>
+    public static int ReturnToSystem()
+    {
+        ReadOnlySpan<byte> request = "exit\0"u8;
+        fixed (byte* p = request)
+            return SystemService.sceSystemServiceLoadExec(p, null);
+    }
+
+    /// <summary>
     /// Replaces the running module with the executable at <paramref name="path"/>, for chain-loading
     /// another module. On success this call does not return, since the current module is gone.
     /// </summary>
