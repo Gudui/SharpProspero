@@ -2,6 +2,7 @@
 // Copyright (C) 2026 SvenGDK
 
 using SharpProspero.Graphics.Agc;
+using SharpProspero.Interop;
 using SharpProspero.Interop.Agc;
 using SharpProspero.Interop.VideoOut;
 using SharpProspero.Memory;
@@ -52,6 +53,8 @@ public sealed unsafe class Renderer3D : IDisposable
     private readonly DirectMemoryRegion[] _shaderState;    // combined Sh registers
     private readonly DirectMemoryRegion[] _constants;      // the two matrices
     private readonly int _maxContext, _maxShader, _framesInFlight;
+    private readonly Action<string>? _trace;
+    private bool _firstDraw = true;
     private int _slot;
     private bool _disposed;
 
@@ -59,11 +62,20 @@ public sealed unsafe class Renderer3D : IDisposable
     /// Builds a renderer for a display, using the built-in mesh shaders. The display's framebuffers are
     /// the render targets.
     /// </summary>
+    /// <param name="display">The display whose framebuffers are drawn into.</param>
+    /// <param name="commandBufferBytes">Size of each per-frame command buffer.</param>
+    /// <param name="trace">
+    /// Optional diagnostic sink. When set, the first <see cref="DrawMesh"/> reports each stage it reaches
+    /// as it reaches it. Bringing a renderer up on a new firmware is largely a matter of finding which
+    /// stage is the last one to complete, and a stage that never reports is far easier to act on than a
+    /// picture that never appears.
+    /// </param>
     /// <exception cref="Interop.ProsperoException">The graphics device or a shader could not be prepared.</exception>
-    public Renderer3D(DisplayDevice display, int commandBufferBytes = 256 * 1024)
+    public Renderer3D(DisplayDevice display, int commandBufferBytes = 256 * 1024, Action<string>? trace = null)
     {
         ArgumentNullException.ThrowIfNull(display);
         _display = display;
+        _trace = trace;
         AgcDevice.Initialize();
 
         _vsBinary = BuiltInShaders.MeshVertex();
@@ -101,6 +113,8 @@ public sealed unsafe class Renderer3D : IDisposable
     {
         ArgumentNullException.ThrowIfNull(mesh);
         ObjectDisposedException.ThrowIf(_disposed, this);
+        bool trace = _firstDraw;
+        _firstDraw = false;
 
         // The set of graphics-readable memory this frame records into. It rotates with the framebuffers so
         // recording never overwrites memory an earlier frame's draw is still reading.
@@ -122,7 +136,7 @@ public sealed unsafe class Renderer3D : IDisposable
         // The channel order matches the buffer the display registers, which carries blue first. Saying
         // the ordinary one puts what the program wrote as red into the byte the output reads as blue,
         // so the picture comes out with those two exchanged and nothing reports a fault.
-        var target = new CxRenderTarget().Init(RegisterDefaults.RenderTargetBlock());
+        var target = new CxRenderTarget().Init(RegisterDefaults.RenderTargetBlock(trace ? _trace : null));
         var spec = new RenderTargetSpec(
             CxRenderTarget.Format.k8_8_8_8, CxRenderTarget.ChannelType.kUNorm, CxRenderTarget.ChannelOrder.kAlt,
             (uint)_display.Width, (uint)_display.Height, (ulong)_display.BackBufferAddress,
@@ -130,6 +144,7 @@ public sealed unsafe class Renderer3D : IDisposable
                 ? CxRenderTarget.TileMode.kRenderTarget
                 : CxRenderTarget.TileMode.kLinear);
         AgcRenderTargetSetup.Initialize(target, spec);
+        if (trace) _trace?.Invoke("AGC_STAGE_TARGET_OK");
 
         var viewport = new AgcViewport();
         viewport.SetViewport(0, 0, _display.Width, _display.Height);
@@ -148,6 +163,7 @@ public sealed unsafe class Renderer3D : IDisposable
         var shader = new Span<CxRegister>(shaderRegion.Pointer, _maxShader);
         _vs.Shader.ShaderRegisters.CopyTo(shader[sh..]); sh += _vs.Shader.ShaderRegisters.Length;
         _ps.Shader.ShaderRegisters.CopyTo(shader[sh..]); sh += _ps.Shader.ShaderRegisters.Length;
+        if (trace) _trace?.Invoke("AGC_STAGE_STATE_OK cx=" + cx + " sh=" + sh);
 
         // The descriptors the vertex program reads its constants and vertices through.
         AgcBufferDescriptor cbDescriptor = AgcBufferDescriptor.Constant((ulong)constantsRegion.Pointer, (uint)sizeof(Constants));
@@ -168,12 +184,33 @@ public sealed unsafe class Renderer3D : IDisposable
         dcbObj.SetIndexBuffer(mesh.IndexAddress);
         dcbObj.SetIndexCount((uint)mesh.IndexCount);
         dcbObj.DrawIndex((uint)mesh.IndexCount, mesh.IndexAddress);
+        if (trace) _trace?.Invoke("AGC_STAGE_COMMAND_OK cx=" + cx + " sh=" + sh);
 
         // Record the flip on the graphics timeline so it runs after the draw completes (not immediately on
         // the processor as a display-side flip would), then pace to the vertical blank and rotate the set.
         SceAgc.sceAgcDcbSetFlip(dcb, (uint)_display.OutputHandle, _display.CurrentBufferIndex, VideoOutFlipModeVSync, (long)_display.FrameIndex);
+        if (trace) _trace?.Invoke("AGC_STAGE_SUBMIT_BEGIN");
         AgcDevice.Submit(dcbObj);
+        if (trace) _trace?.Invoke("AGC_STAGE_SUBMIT_OK");
+
+        // The suspend point has to run between handing work to the processor and waiting on the flip. It is
+        // where the driver services whatever the system asks of a running graphics context, and a context
+        // that never reaches one is a context the system cannot step through. Skipping it does not fail
+        // here - it fails as a flip that never retires, and the watchdog then takes down the graphics
+        // pipeline and the system interface with it, forty-five seconds later, far from the cause.
+        //
+        // The three stages below are traced as begin/return/ok rather than just ok, because each can hang
+        // rather than fail: a stage that reports its begin and never its ok is the one to look at, and
+        // that distinction is the whole diagnostic value of the trace.
+        if (trace) _trace?.Invoke("AGC_STAGE_SUSPEND_BEGIN");
+        int suspendResult = AgcDevice.SuspendPoint();
+        if (trace) _trace?.Invoke("AGC_STAGE_SUSPEND_RETURN result=0x" + suspendResult.ToString("X8"));
+        SceResult.ThrowIfFailed(suspendResult, nameof(AgcDevice.SuspendPoint));
+        if (trace) _trace?.Invoke("AGC_STAGE_SUSPEND_OK");
+
+        if (trace) _trace?.Invoke("AGC_STAGE_FLIP_BEGIN frame=" + _display.FrameIndex);
         _display.AdvanceFrame();
+        if (trace) _trace?.Invoke("AGC_STAGE_FLIP_OK");
         _slot = (_slot + 1) % _framesInFlight;
     }
 

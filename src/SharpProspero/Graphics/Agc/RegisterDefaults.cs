@@ -2,6 +2,7 @@
 // Copyright (C) 2026 SvenGDK
 
 using SharpProspero.Interop.Agc;
+using System;
 
 namespace SharpProspero.Graphics.Agc;
 
@@ -28,17 +29,37 @@ public static unsafe class RegisterDefaults
     private static void Ensure()
     {
         if (_descriptor is null) _descriptor = (byte*)SceAgc.sceAgcGetRegisterDefaults();
+        if (_descriptor is null)
+            throw new InvalidOperationException("sceAgcGetRegisterDefaults returned null.");
+    }
+
+    // The table the driver hands back is not uniformly populated. On firmware 5.50 a 481-entry table
+    // carries null record pointers at indices 107, 129, 311 and 467, reproducibly across runs and across
+    // consoles. Reading through one of those is a crash before the first draw is ever submitted, so every
+    // pointer is checked rather than assumed. The count and the table itself are checked for the same
+    // reason: a descriptor that does not look like a table is better reported than walked.
+    private static void Locate(out CxRegister** table, out uint count)
+    {
+        Ensure();
+        // The context space is a pointer to a table of per-register record pointers.
+        table = *(CxRegister***)(_descriptor + 0x00);
+        count = *(uint*)(_descriptor + 0x20);
+        if (table is null)
+            throw new InvalidOperationException("AGC context register-default table is null.");
+        if (count == 0 || count > 0x10000)
+            throw new InvalidOperationException("AGC context register-default count is invalid: " + count);
     }
 
     /// <summary>The reset value the driver holds for a context register, or zero if it lists none.</summary>
     public static uint GetContextValue(ushort offset)
     {
-        Ensure();
-        // The context space is a pointer to a table of per-register record pointers.
-        CxRegister** table = *(CxRegister***)(_descriptor + 0x00);
-        uint count = *(uint*)(_descriptor + 0x20);
+        Locate(out CxRegister** table, out uint count);
         for (uint i = 0; i < count; i++)
-            if (table[i]->Offset == offset) return table[i]->Value;
+        {
+            CxRegister* record = table[i];
+            if (record is not null && record->Offset == offset)
+                return record->Value;
+        }
         return 0;
     }
 
@@ -46,11 +67,44 @@ public static unsafe class RegisterDefaults
     /// The sixteen colour render-target registers, each carrying its offset and the driver's reset value,
     /// ready to hand to <see cref="CxRenderTarget.Init"/>.
     /// </summary>
-    public static CxRegister[] RenderTargetBlock()
+    /// <param name="trace">
+    /// Optional diagnostic sink, called once with the table size, the number of null records, and how many
+    /// of the sixteen offsets the driver actually listed. Worth wiring up on a new firmware: the block is
+    /// silently zero-filled for every offset the table omits, so a renderer that draws nothing looks
+    /// identical to one that was handed no defaults at all. On firmware 5.50 only 0x0318 is listed, and it
+    /// is listed as zero, which makes the whole block zeroes.
+    /// </param>
+    public static CxRegister[] RenderTargetBlock(Action<string>? trace = null)
     {
+        Locate(out CxRegister** table, out uint count);
+
         var block = new CxRegister[RenderTargetOffsets.Length];
+        int matched = 0;
         for (int i = 0; i < block.Length; i++)
-            block[i] = new CxRegister(RenderTargetOffsets[i], GetContextValue(RenderTargetOffsets[i]));
+        {
+            ushort offset = RenderTargetOffsets[i];
+            uint value = 0;
+            for (uint tableIndex = 0; tableIndex < count; tableIndex++)
+            {
+                CxRegister* record = table[tableIndex];
+                if (record is null || record->Offset != offset) continue;
+                value = record->Value;
+                matched++;
+                break;
+            }
+            block[i] = new CxRegister(offset, value);
+        }
+
+        if (trace is not null && !_traced)
+        {
+            _traced = true;
+            uint nulls = 0;
+            for (uint i = 0; i < count; i++)
+                if (table[i] is null) nulls++;
+            trace($"AGC_DEFAULTS context_count={count} null_records={nulls} render_target_matches={matched}/{block.Length}");
+        }
         return block;
     }
+
+    private static bool _traced;
 }
