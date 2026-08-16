@@ -44,7 +44,9 @@ public static class TextFormat
             unit++;
         }
 
-        string number = unit == 0 ? ((long)value).ToString() : value.ToString("0.#");
+        string number = unit == 0
+            ? ((long)value).ToString(System.Globalization.CultureInfo.InvariantCulture)
+            : value.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture);
         return (negative ? "-" : string.Empty) + number + " " + suffixes[unit];
     }
 

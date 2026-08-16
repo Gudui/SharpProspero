@@ -119,15 +119,38 @@ public sealed unsafe class Renderer3D : IDisposable
     }
 
     /// <summary>
+    /// Submits shader and context register state without binding resource descriptors or issuing a draw command,
+    /// and presents the frame. Used to isolate register loading from descriptor/draw execution.
+    /// </summary>
+    public void SubmitShaderStateOnly()
+    {
+        SubmitPipeline(bindDescriptors: false, issueDraw: false, null, Matrix4x4.Identity, Matrix4x4.Identity);
+    }
+
+    /// <summary>
+    /// Submits shader and context register state and binds resource descriptors (constant and structured vertex buffers)
+    /// without issuing a draw command, and presents the frame. Used to isolate descriptor binding from draw execution.
+    /// </summary>
+    public void SubmitDescriptorsOnly(MeshBuffer mesh, in Matrix4x4 mvp, in Matrix4x4 model)
+    {
+        ArgumentNullException.ThrowIfNull(mesh);
+        SubmitPipeline(bindDescriptors: true, issueDraw: false, mesh, mvp, model);
+    }
+
+    /// <summary>
     /// Draws a mesh this frame, transformed by <paramref name="mvp"/> (world to clip) with
     /// <paramref name="model"/> used to orient its normals, and presents the frame. Call once per frame.
     /// </summary>
     public void DrawMesh(MeshBuffer mesh, in Matrix4x4 mvp, in Matrix4x4 model)
     {
         ArgumentNullException.ThrowIfNull(mesh);
+        SubmitPipeline(bindDescriptors: true, issueDraw: true, mesh, mvp, model);
+    }
+
+    private void SubmitPipeline(bool bindDescriptors, bool issueDraw, MeshBuffer? mesh, in Matrix4x4 mvp, in Matrix4x4 model)
+    {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        bool trace = _firstDraw;
-        _firstDraw = false;
+        bool trace = _trace is not null;
 
         // The set of graphics-readable memory this frame records into. It rotates with the framebuffers so
         // recording never overwrites memory an earlier frame's draw is still reading.
@@ -141,15 +164,8 @@ public sealed unsafe class Renderer3D : IDisposable
         constants->Mvp = mvp;
         constants->Model = model;
 
-        // The colour target points at the framebuffer being drawn, and has to describe it the way the
-        // display was opened: the processor writes where it is told, so a target that disagrees with
-        // the registered buffer scatters the image rather than shifting it. Reading the arrangement
-        // back from the display is what keeps the two from drifting apart when either is changed.
-        //
-        // The channel order matches the buffer the display registers, which carries blue first. Saying
-        // the ordinary one puts what the program wrote as red into the byte the output reads as blue,
-        // so the picture comes out with those two exchanged and nothing reports a fault.
-        var target = new CxRenderTarget().Init(RegisterDefaults.RenderTargetBlock(trace ? _trace : null));
+        // The colour target points at the framebuffer being drawn.
+        var target = new CxRenderTarget().Init(RegisterDefaults.RenderTargetBlock(_firstDraw && trace ? _trace : null));
         var spec = new RenderTargetSpec(
             CxRenderTarget.Format.k8_8_8_8, CxRenderTarget.ChannelType.kUNorm, CxRenderTarget.ChannelOrder.kAlt,
             (uint)_display.Width, (uint)_display.Height, (ulong)_display.BackBufferAddress,
@@ -157,7 +173,7 @@ public sealed unsafe class Renderer3D : IDisposable
                 ? CxRenderTarget.TileMode.kRenderTarget
                 : CxRenderTarget.TileMode.kLinear);
         AgcRenderTargetSetup.Initialize(target, spec);
-        if (trace) _trace?.Invoke("AGC_STAGE_TARGET_OK");
+        if (_firstDraw && trace) _trace?.Invoke("AGC_STAGE_TARGET_OK");
 
         var viewport = new AgcViewport();
         viewport.SetViewport(0, 0, _display.Width, _display.Height);
@@ -176,12 +192,11 @@ public sealed unsafe class Renderer3D : IDisposable
         var shader = new Span<CxRegister>(shaderRegion.Pointer, _maxShader);
         _vs.Shader.ShaderRegisters.CopyTo(shader[sh..]); sh += _vs.Shader.ShaderRegisters.Length;
         _ps.Shader.ShaderRegisters.CopyTo(shader[sh..]); sh += _ps.Shader.ShaderRegisters.Length;
-        if (trace) _trace?.Invoke("AGC_STAGE_STATE_OK cx=" + cx + " sh=" + sh);
-        if (trace) DumpRegisters(context[..cx], shader[..sh]);
-
-        // The descriptors the vertex program reads its constants and vertices through.
-        AgcBufferDescriptor cbDescriptor = AgcBufferDescriptor.Constant((ulong)constantsRegion.Pointer, (uint)sizeof(Constants));
-        AgcBufferDescriptor vbDescriptor = AgcBufferDescriptor.Structured((ulong)mesh.VertexAddress, (uint)MeshBuffer.VertexStride, (uint)mesh.VertexCount);
+        if (_firstDraw && trace)
+        {
+            _trace?.Invoke("AGC_STAGE_STATE_OK cx=" + cx + " sh=" + sh);
+            DumpRegisters(context[..cx], shader[..sh]);
+        }
 
         void* dcb = dcbObj.Handle;
         dcbObj.Reset();
@@ -191,31 +206,29 @@ public sealed unsafe class Renderer3D : IDisposable
         SceAgc.sceAgcDcbSetShRegistersIndirect(dcb, shaderRegion.Pointer, (uint)sh);
         SceAgc.sceAgcDcbSetUcRegisterDirect(dcb, Pack(PrimitiveTypeOffset, PrimitiveTriangleList));
 
-        BindResource(dcb, ShaderResourceKind.ConstantBuffer, cbDescriptor);
-        BindResource(dcb, ShaderResourceKind.ReadOnly, vbDescriptor);
+        if (bindDescriptors && mesh is not null)
+        {
+            AgcBufferDescriptor cbDescriptor = AgcBufferDescriptor.Constant((ulong)constantsRegion.Pointer, (uint)sizeof(Constants));
+            AgcBufferDescriptor vbDescriptor = AgcBufferDescriptor.Structured((ulong)mesh.VertexAddress, (uint)MeshBuffer.VertexStride, (uint)mesh.VertexCount);
+            BindResource(dcb, ShaderResourceKind.ConstantBuffer, cbDescriptor);
+            BindResource(dcb, ShaderResourceKind.ReadOnly, vbDescriptor);
+        }
 
-        dcbObj.SetIndexSize(Index32Bit);
-        dcbObj.SetIndexBuffer(mesh.IndexAddress);
-        dcbObj.SetIndexCount((uint)mesh.IndexCount);
-        dcbObj.DrawIndex((uint)mesh.IndexCount, mesh.IndexAddress);
-        if (trace) _trace?.Invoke("AGC_STAGE_COMMAND_OK cx=" + cx + " sh=" + sh);
+        if (issueDraw && mesh is not null)
+        {
+            dcbObj.SetIndexSize(Index32Bit);
+            dcbObj.SetIndexBuffer(mesh.IndexAddress);
+            dcbObj.SetIndexCount((uint)mesh.IndexCount);
+            dcbObj.DrawIndex((uint)mesh.IndexCount, mesh.IndexAddress);
+        }
+        if (trace) _trace?.Invoke("AGC_STAGE_COMMAND_OK cx=" + cx + " sh=" + sh + " descriptors=" + bindDescriptors + " draw=" + issueDraw);
 
-        // Record the flip on the graphics timeline so it runs after the draw completes (not immediately on
-        // the processor as a display-side flip would), then pace to the vertical blank and rotate the set.
+        // Record the flip on the graphics timeline
         SceAgc.sceAgcDcbSetFlip(dcb, (uint)_display.OutputHandle, _display.CurrentBufferIndex, VideoOutFlipModeVSync, (long)_display.FrameIndex);
         if (trace) _trace?.Invoke("AGC_STAGE_SUBMIT_BEGIN");
         AgcDevice.Submit(dcbObj);
         if (trace) _trace?.Invoke("AGC_STAGE_SUBMIT_OK");
 
-        // The suspend point has to run between handing work to the processor and waiting on the flip. It is
-        // where the driver services whatever the system asks of a running graphics context, and a context
-        // that never reaches one is a context the system cannot step through. Skipping it does not fail
-        // here - it fails as a flip that never retires, and the watchdog then takes down the graphics
-        // pipeline and the system interface with it, forty-five seconds later, far from the cause.
-        //
-        // The three stages below are traced as begin/return/ok rather than just ok, because each can hang
-        // rather than fail: a stage that reports its begin and never its ok is the one to look at, and
-        // that distinction is the whole diagnostic value of the trace.
         if (trace) _trace?.Invoke("AGC_STAGE_SUSPEND_BEGIN");
         int suspendResult = AgcDevice.SuspendPoint();
         if (trace) _trace?.Invoke("AGC_STAGE_SUSPEND_RETURN result=0x" + suspendResult.ToString("X8"));
@@ -225,6 +238,7 @@ public sealed unsafe class Renderer3D : IDisposable
         if (trace) _trace?.Invoke("AGC_STAGE_FLIP_BEGIN frame=" + _display.FrameIndex);
         _display.AdvanceFrame();
         if (trace) _trace?.Invoke("AGC_STAGE_FLIP_OK");
+        _firstDraw = false;
         _slot = (_slot + 1) % _framesInFlight;
     }
 
