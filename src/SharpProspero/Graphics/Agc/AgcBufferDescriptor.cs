@@ -27,13 +27,16 @@ public readonly struct AgcBufferDescriptor
         dest[0] = Word0; dest[1] = Word1; dest[2] = Word2; dest[3] = Word3;
     }
 
-    // The address occupies 48 bits: the low 32 in word0, the high 16 in the low half of word1. The stride
-    // is 14 bits in word1; the record count is all of word2. Word3 selects the channels and the element
-    // format and marks the descriptor a buffer (type 0).
-    private const uint RegularSwizzle = 0x204;   // channels X,0,0,1
-    private const uint RegularFormat = 5;        // one 8-bit unsigned element; the shader reads by stride
-    private const uint ConstantSwizzle = 0xfac;  // channels X,Y,Z,W
-    private const uint ConstantFormat = 77;      // four 32-bit floats
+    // Swizzle mapping: 3 bits per channel (0=0, 1=1, 4=X, 5=Y, 6=Z, 7=W).
+    private const uint SwizzleX001 = 4 | (0 << 3) | (0 << 6) | (1 << 9);  // 0x204
+    private const uint SwizzleXYZW = 4 | (5 << 3) | (6 << 6) | (7 << 9);  // 0xFAC
+
+    // RDNA2 / GFX10.3 buffer resource descriptor format encodings (Word3).
+    // In RDNA2, NUM_FORMAT is 3 bits at [14:12] and DATA_FORMAT is 6 bits at [20:15].
+    private const uint NumFormatUnorm = 0;
+    private const uint NumFormatFloat = 7;
+    private const uint DataFormat8 = 1;               // 8-bit unsigned element (BUF_DATA_FORMAT_8)
+    private const uint DataFormat32_32_32_32 = 14;    // four 32-bit floats (BUF_DATA_FORMAT_32_32_32_32, 16 bytes)
 
     /// <summary>
     /// A structured buffer of <paramref name="elementCount"/> records, each <paramref name="strideInBytes"/>
@@ -44,7 +47,7 @@ public readonly struct AgcBufferDescriptor
         if (strideInBytes >= 1u << 14) throw new ArgumentOutOfRangeException(nameof(strideInBytes), "The stride must be less than 16384 bytes.");
         uint word0 = (uint)(address & 0xFFFFFFFF);
         uint word1 = (uint)((address >> 32) & 0xFFFF) | ((strideInBytes & 0x3FFF) << 16);
-        uint word3 = RegularSwizzle | (RegularFormat << 12); // out-of-bounds mode 0, buffer type 0
+        uint word3 = SwizzleX001 | (NumFormatUnorm << 12) | (DataFormat8 << 15);
         return new AgcBufferDescriptor(word0, word1, elementCount, word3);
     }
 
@@ -58,7 +61,7 @@ public readonly struct AgcBufferDescriptor
         uint records = (sizeInBytes + recordSize - 1) / recordSize;
         uint word0 = (uint)(address & 0xFFFFFFFF);
         uint word1 = (uint)((address >> 32) & 0xFFFF) | (recordSize << 16);
-        uint word3 = ConstantSwizzle | (ConstantFormat << 12);
+        uint word3 = SwizzleXYZW | (NumFormatFloat << 12) | (DataFormat32_32_32_32 << 15);
         return new AgcBufferDescriptor(word0, word1, records, word3);
     }
 }
