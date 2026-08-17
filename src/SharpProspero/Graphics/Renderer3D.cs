@@ -118,13 +118,20 @@ public sealed unsafe class Renderer3D : IDisposable
         }
     }
 
+    private enum DrawMode
+    {
+        None,
+        Auto,
+        Indexed
+    }
+
     /// <summary>
     /// Submits shader and context register state without binding resource descriptors or issuing a draw command,
     /// and presents the frame. Used to isolate register loading from descriptor/draw execution.
     /// </summary>
     public void SubmitShaderStateOnly()
     {
-        SubmitPipeline(bindDescriptors: false, issueDraw: false, null, Matrix4x4.Identity, Matrix4x4.Identity);
+        SubmitPipeline(bindDescriptors: false, drawMode: DrawMode.None, null, Matrix4x4.Identity, Matrix4x4.Identity);
     }
 
     /// <summary>
@@ -134,7 +141,17 @@ public sealed unsafe class Renderer3D : IDisposable
     public void SubmitDescriptorsOnly(MeshBuffer mesh, in Matrix4x4 mvp, in Matrix4x4 model)
     {
         ArgumentNullException.ThrowIfNull(mesh);
-        SubmitPipeline(bindDescriptors: true, issueDraw: false, mesh, mvp, model);
+        SubmitPipeline(bindDescriptors: true, drawMode: DrawMode.None, mesh, mvp, model);
+    }
+
+    /// <summary>
+    /// Draws a mesh non-indexed using DrawIndexAuto (vertex IDs generated automatically without index buffer DMA),
+    /// transformed by <paramref name="mvp"/> and <paramref name="model"/>, and presents the frame.
+    /// </summary>
+    public void DrawAuto(MeshBuffer mesh, in Matrix4x4 mvp, in Matrix4x4 model)
+    {
+        ArgumentNullException.ThrowIfNull(mesh);
+        SubmitPipeline(bindDescriptors: true, drawMode: DrawMode.Auto, mesh, mvp, model);
     }
 
     /// <summary>
@@ -144,10 +161,10 @@ public sealed unsafe class Renderer3D : IDisposable
     public void DrawMesh(MeshBuffer mesh, in Matrix4x4 mvp, in Matrix4x4 model)
     {
         ArgumentNullException.ThrowIfNull(mesh);
-        SubmitPipeline(bindDescriptors: true, issueDraw: true, mesh, mvp, model);
+        SubmitPipeline(bindDescriptors: true, drawMode: DrawMode.Indexed, mesh, mvp, model);
     }
 
-    private void SubmitPipeline(bool bindDescriptors, bool issueDraw, MeshBuffer? mesh, in Matrix4x4 mvp, in Matrix4x4 model)
+    private void SubmitPipeline(bool bindDescriptors, DrawMode drawMode, MeshBuffer? mesh, in Matrix4x4 mvp, in Matrix4x4 model)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         bool trace = _trace is not null;
@@ -214,14 +231,18 @@ public sealed unsafe class Renderer3D : IDisposable
             BindResource(dcb, ShaderResourceKind.ReadOnly, vbDescriptor);
         }
 
-        if (issueDraw && mesh is not null)
+        if (drawMode == DrawMode.Auto && mesh is not null)
+        {
+            dcbObj.DrawIndexAuto((uint)mesh.VertexCount);
+        }
+        else if (drawMode == DrawMode.Indexed && mesh is not null)
         {
             dcbObj.SetIndexSize(Index32Bit);
             dcbObj.SetIndexBuffer(mesh.IndexAddress);
             dcbObj.SetIndexCount((uint)mesh.IndexCount);
             dcbObj.DrawIndex((uint)mesh.IndexCount, mesh.IndexAddress);
         }
-        if (trace) _trace?.Invoke("AGC_STAGE_COMMAND_OK cx=" + cx + " sh=" + sh + " descriptors=" + bindDescriptors + " draw=" + issueDraw);
+        if (trace) _trace?.Invoke("AGC_STAGE_COMMAND_OK cx=" + cx + " sh=" + sh + " descriptors=" + bindDescriptors + " draw=" + drawMode);
 
         // Record the flip on the graphics timeline
         SceAgc.sceAgcDcbSetFlip(dcb, (uint)_display.OutputHandle, _display.CurrentBufferIndex, VideoOutFlipModeVSync, (long)_display.FrameIndex);
