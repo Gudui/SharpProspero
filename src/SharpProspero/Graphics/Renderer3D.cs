@@ -95,11 +95,13 @@ public sealed unsafe class Renderer3D : IDisposable
         _psBinary = BuiltInShaders.MeshPixel();
         _vs = _vsBinary.Prepare();
         _ps = _psBinary.Prepare();
+        _interpolants = CxInterpolantMapping.Create(_vs.Shader, _ps.Shader, _trace);
 
-        // The combined register state: the target, the viewport, the write mask, the primitive type, and
-        // each shader's own registers. Sized for the block registers plus both shaders' registers.
+        // The combined register state: the target, the viewport, the write mask, the primitive type,
+        // each shader's own registers, and the interpolant mapping registers.
         _maxContext = CxRenderTarget.RegisterCount + AgcViewport.RegisterCount + 4
-                      + _vs.Shader.ContextRegisters.Length + _ps.Shader.ContextRegisters.Length;
+                      + _vs.Shader.ContextRegisters.Length + _ps.Shader.ContextRegisters.Length
+                      + _interpolants.Registers.Length;
         _maxShader = _vs.Shader.ShaderRegisters.Length + _ps.Shader.ShaderRegisters.Length;
 
         // One set per frame in flight, matching the display's framebuffer count, so recording a frame
@@ -117,6 +119,8 @@ public sealed unsafe class Renderer3D : IDisposable
             _constants[i] = DirectMemoryRegion.Allocate((nuint)sizeof(Constants));
         }
     }
+
+    private readonly CxInterpolantMapping _interpolants;
 
     private enum DrawMode
     {
@@ -204,6 +208,7 @@ public sealed unsafe class Renderer3D : IDisposable
         context[cx++] = new CxRegister((ushort)GsOutPrimTypeOffset, GsOutTriangles);
         _vs.Shader.ContextRegisters.CopyTo(context[cx..]); cx += _vs.Shader.ContextRegisters.Length;
         _ps.Shader.ContextRegisters.CopyTo(context[cx..]); cx += _ps.Shader.ContextRegisters.Length;
+        _interpolants.Registers.CopyTo(context[cx..]); cx += _interpolants.Registers.Length;
 
         int sh = 0;
         var shader = new Span<CxRegister>(shaderRegion.Pointer, _maxShader);
