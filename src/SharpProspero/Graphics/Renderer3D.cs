@@ -96,14 +96,13 @@ public sealed unsafe class Renderer3D : IDisposable
         _vs = _vsBinary.Prepare();
         _ps = _psBinary.Prepare();
         _interpolants = CxInterpolantMapping.Create(_vs.Shader, _ps.Shader, _trace);
-        _primState = CxPrimState.Create(_vs.Shader, _trace);
 
         // The combined register state: the target, the viewport, the write mask, the primitive type,
-        // each shader's own registers, the interpolant mapping registers, and the primitive state registers.
+        // each shader's own registers, the interpolant mapping registers, and 8 user data descriptor registers.
         _maxContext = CxRenderTarget.RegisterCount + AgcViewport.RegisterCount + 4
                       + _vs.Shader.ContextRegisters.Length + _ps.Shader.ContextRegisters.Length
-                      + _interpolants.Registers.Length + _primState.Registers.Length;
-        _maxShader = _vs.Shader.ShaderRegisters.Length + _ps.Shader.ShaderRegisters.Length;
+                      + _interpolants.Registers.Length;
+        _maxShader = _vs.Shader.ShaderRegisters.Length + _ps.Shader.ShaderRegisters.Length + 8;
 
         // One set per frame in flight, matching the display's framebuffer count, so recording a frame
         // never touches memory an earlier frame's draw is still reading.
@@ -122,7 +121,6 @@ public sealed unsafe class Renderer3D : IDisposable
     }
 
     private readonly CxInterpolantMapping _interpolants;
-    private readonly CxPrimState _primState;
 
     private enum DrawMode
     {
@@ -211,12 +209,27 @@ public sealed unsafe class Renderer3D : IDisposable
         _vs.Shader.ContextRegisters.CopyTo(context[cx..]); cx += _vs.Shader.ContextRegisters.Length;
         _ps.Shader.ContextRegisters.CopyTo(context[cx..]); cx += _ps.Shader.ContextRegisters.Length;
         _interpolants.Registers.CopyTo(context[cx..]); cx += _interpolants.Registers.Length;
-        _primState.Registers.CopyTo(context[cx..]); cx += _primState.Registers.Length;
 
         int sh = 0;
         var shader = new Span<CxRegister>(shaderRegion.Pointer, _maxShader);
         _vs.Shader.ShaderRegisters.CopyTo(shader[sh..]); sh += _vs.Shader.ShaderRegisters.Length;
         _ps.Shader.ShaderRegisters.CopyTo(shader[sh..]); sh += _ps.Shader.ShaderRegisters.Length;
+
+        if (bindDescriptors && mesh is not null)
+        {
+            AgcBufferDescriptor cbDescriptor = AgcBufferDescriptor.Constant((ulong)constantsRegion.Pointer, (uint)sizeof(Constants));
+            AgcBufferDescriptor vbDescriptor = AgcBufferDescriptor.Structured((ulong)mesh.VertexAddress, (uint)MeshBuffer.VertexStride, (uint)mesh.VertexCount);
+
+            for (int i = 0; i < 4; i++)
+            {
+                shader[sh++] = new CxRegister((ushort)(GsUserDataBaseOffset + 0 + i), cbDescriptor.Words[i]);
+            }
+            for (int i = 0; i < 4; i++)
+            {
+                shader[sh++] = new CxRegister((ushort)(GsUserDataBaseOffset + 4 + i), vbDescriptor.Words[i]);
+            }
+        }
+
         if (_firstDraw && trace)
         {
             _trace?.Invoke("AGC_STAGE_STATE_OK cx=" + cx + " sh=" + sh);
@@ -230,14 +243,6 @@ public sealed unsafe class Renderer3D : IDisposable
         SceAgc.sceAgcDcbSetCxRegistersIndirect(dcb, contextRegion.Pointer, (uint)cx);
         SceAgc.sceAgcDcbSetShRegistersIndirect(dcb, shaderRegion.Pointer, (uint)sh);
         SceAgc.sceAgcDcbSetUcRegisterDirect(dcb, Pack(PrimitiveTypeOffset, PrimitiveTriangleList));
-
-        if (bindDescriptors && mesh is not null)
-        {
-            AgcBufferDescriptor cbDescriptor = AgcBufferDescriptor.Constant((ulong)constantsRegion.Pointer, (uint)sizeof(Constants));
-            AgcBufferDescriptor vbDescriptor = AgcBufferDescriptor.Structured((ulong)mesh.VertexAddress, (uint)MeshBuffer.VertexStride, (uint)mesh.VertexCount);
-            BindResource(dcb, ShaderResourceKind.ConstantBuffer, cbDescriptor);
-            BindResource(dcb, ShaderResourceKind.ReadOnly, vbDescriptor);
-        }
 
         if (drawMode == DrawMode.Auto && mesh is not null)
         {
@@ -289,16 +294,6 @@ public sealed unsafe class Renderer3D : IDisposable
                    " value=0x" + shader[i].Value.ToString("X8"));
         _trace("AGC_REG_DUMP_OK cx=" + context.Length + " sh=" + shader.Length +
                " target_write_mask=0x" + TargetWriteMask.ToString("X"));
-    }
-
-    // Writes a resource descriptor into the vertex program's user data at the slot the program declares.
-    private void BindResource(void* dcb, ShaderResourceKind kind, in AgcBufferDescriptor descriptor)
-    {
-        if (!_vs.Shader.TryGetResourceSlot(kind, 0, out int dwordOffset, out _))
-            return; // the program does not read a resource of this kind
-        uint* words = stackalloc uint[4];
-        descriptor.WriteTo(new Span<uint>(words, 4));
-        SceAgc.sceAgcCbSetShRegisterRangeDirect(dcb, AgcShader.GsUserDataBaseOffset + (uint)dwordOffset, words, 4);
     }
 
     private static ulong Pack(uint offset, uint value) => offset | ((ulong)value << 32);
