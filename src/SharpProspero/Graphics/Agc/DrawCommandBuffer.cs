@@ -171,8 +171,12 @@ public sealed unsafe class DrawCommandBuffer : IDisposable
     public nint WaitUntilSafeForRendering(uint videoOutHandle, int displayBufferIndex)
         => (nint)SceAgc.sceAgcDcbWaitUntilSafeForRendering(St, videoOutHandle, displayBufferIndex);
 
-    /// <summary>The queue a draw buffer records into.</summary>
-    private const uint DrawQueue = 0;
+    /// <summary>Appends a CLEAR_STATE packet resetting GPU context state.</summary>
+    public nint ClearState(uint command = 0) => (nint)SceAgc.sceAgcDcbClearState(St, command);
+
+    /// <summary>Appends an ACQUIRE_MEM packet invalidating GPU caches and synchronizing CPU/GPU memory.</summary>
+    public nint AcquireMem(byte engine = 0, uint coherCntl = 0x0FFFFFFF, uint coherSize = 0xFFFFFFFF, ulong coherSizeHi = 0, void* baseAddr = null, uint pollInterval = 10)
+        => (nint)SceAgc.sceAgcDcbAcquireMem(St, engine, coherCntl, coherSize, coherSizeHi, baseAddr, pollInterval);
 
     /// <summary>Records an end-of-pipe event of <paramref name="eventType"/>.</summary>
     public nint EventWrite(uint eventType, ulong eventControl = 0) => (nint)SceAgc.sceAgcDcbEventWrite(St, eventType, eventControl);

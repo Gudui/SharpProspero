@@ -220,15 +220,19 @@ public sealed unsafe class Renderer3D : IDisposable
             AgcBufferDescriptor cbDescriptor = AgcBufferDescriptor.Constant((ulong)constantsRegion.Pointer, (uint)sizeof(Constants));
             AgcBufferDescriptor vbDescriptor = AgcBufferDescriptor.Structured((ulong)mesh.VertexAddress, (uint)MeshBuffer.VertexStride, (uint)mesh.VertexCount);
 
-            shader[sh++] = new CxRegister((ushort)(AgcShader.GsUserDataBaseOffset + 0), cbDescriptor.Word0);
-            shader[sh++] = new CxRegister((ushort)(AgcShader.GsUserDataBaseOffset + 1), cbDescriptor.Word1);
-            shader[sh++] = new CxRegister((ushort)(AgcShader.GsUserDataBaseOffset + 2), cbDescriptor.Word2);
-            shader[sh++] = new CxRegister((ushort)(AgcShader.GsUserDataBaseOffset + 3), cbDescriptor.Word3);
+            int cbOff = 0, vbOff = 4;
+            if (_vs.Shader.TryGetResourceSlot(ShaderResourceKind.ConstantBuffer, 0, out int cOff, out _)) cbOff = cOff;
+            if (_vs.Shader.TryGetResourceSlot(ShaderResourceKind.ReadOnly, 0, out int vOff, out _)) vbOff = vOff;
 
-            shader[sh++] = new CxRegister((ushort)(AgcShader.GsUserDataBaseOffset + 4), vbDescriptor.Word0);
-            shader[sh++] = new CxRegister((ushort)(AgcShader.GsUserDataBaseOffset + 5), vbDescriptor.Word1);
-            shader[sh++] = new CxRegister((ushort)(AgcShader.GsUserDataBaseOffset + 6), vbDescriptor.Word2);
-            shader[sh++] = new CxRegister((ushort)(AgcShader.GsUserDataBaseOffset + 7), vbDescriptor.Word3);
+            shader[sh++] = new CxRegister((ushort)(AgcShader.GsUserDataBaseOffset + cbOff + 0), cbDescriptor.Word0);
+            shader[sh++] = new CxRegister((ushort)(AgcShader.GsUserDataBaseOffset + cbOff + 1), cbDescriptor.Word1);
+            shader[sh++] = new CxRegister((ushort)(AgcShader.GsUserDataBaseOffset + cbOff + 2), cbDescriptor.Word2);
+            shader[sh++] = new CxRegister((ushort)(AgcShader.GsUserDataBaseOffset + cbOff + 3), cbDescriptor.Word3);
+
+            shader[sh++] = new CxRegister((ushort)(AgcShader.GsUserDataBaseOffset + vbOff + 0), vbDescriptor.Word0);
+            shader[sh++] = new CxRegister((ushort)(AgcShader.GsUserDataBaseOffset + vbOff + 1), vbDescriptor.Word1);
+            shader[sh++] = new CxRegister((ushort)(AgcShader.GsUserDataBaseOffset + vbOff + 2), vbDescriptor.Word2);
+            shader[sh++] = new CxRegister((ushort)(AgcShader.GsUserDataBaseOffset + vbOff + 3), vbDescriptor.Word3);
         }
 
         if (_firstDraw && trace)
@@ -240,6 +244,7 @@ public sealed unsafe class Renderer3D : IDisposable
         void* dcb = dcbObj.Handle;
         dcbObj.Reset();
         dcbObj.WaitUntilSafeForDisplay(_display.OutputHandle, (uint)_display.CurrentBufferIndex);
+        dcbObj.AcquireMem(0, 0x0FFFFFFF, 0xFFFFFFFF, 0, null, 10);
 
         SceAgc.sceAgcDcbSetCxRegistersIndirect(dcb, contextRegion.Pointer, (uint)cx);
         SceAgc.sceAgcDcbSetShRegistersIndirect(dcb, shaderRegion.Pointer, (uint)sh);
