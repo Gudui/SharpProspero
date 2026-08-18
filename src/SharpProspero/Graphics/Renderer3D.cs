@@ -165,7 +165,7 @@ public sealed unsafe class Renderer3D : IDisposable
     public void DrawMesh(MeshBuffer mesh, in Matrix4x4 mvp, in Matrix4x4 model)
     {
         ArgumentNullException.ThrowIfNull(mesh);
-        SubmitPipeline(bindDescriptors: true, drawMode: DrawMode.Indexed, mesh, mvp, model);
+        SubmitPipeline(bindDescriptors: true, drawMode: DrawMode.Auto, mesh, mvp, model);
     }
 
     private void SubmitPipeline(bool bindDescriptors, DrawMode drawMode, MeshBuffer? mesh, in Matrix4x4 mvp, in Matrix4x4 model)

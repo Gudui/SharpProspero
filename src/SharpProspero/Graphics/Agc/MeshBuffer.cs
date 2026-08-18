@@ -41,18 +41,29 @@ public sealed unsafe class MeshBuffer : IDisposable
     /// <summary>The size of one vertex in bytes: the buffer stride.</summary>
     public static int VertexStride => Vertex.SizeInBytes;
 
-    /// <summary>Uploads a mesh's vertices and indices to graphics-readable memory.</summary>
+    /// <summary>Uploads a mesh's vertices to graphics-readable memory.</summary>
     public static MeshBuffer Upload(MeshData mesh)
     {
         ArgumentNullException.ThrowIfNull(mesh);
-        int vertexBytes = mesh.Vertices.Length * Vertex.SizeInBytes;
-        int indexBytes = mesh.Indices.Length * sizeof(uint);
+        Vertex[] vertices;
+        if (mesh.Indices is { Length: > 0 })
+        {
+            vertices = new Vertex[mesh.Indices.Length];
+            for (int i = 0; i < mesh.Indices.Length; i++)
+            {
+                uint idx = mesh.Indices[i];
+                vertices[i] = idx < (uint)mesh.Vertices.Length ? mesh.Vertices[idx] : default;
+            }
+        }
+        else
+        {
+            vertices = mesh.Vertices;
+        }
 
-        var vertices = DirectMemoryRegion.Allocate((nuint)vertexBytes);
-        var indices = DirectMemoryRegion.Allocate((nuint)indexBytes);
-        MemoryMarshal.AsBytes(mesh.Vertices.AsSpan()).CopyTo(new Span<byte>(vertices.Pointer, vertexBytes));
-        MemoryMarshal.AsBytes(mesh.Indices.AsSpan()).CopyTo(new Span<byte>(indices.Pointer, indexBytes));
-        return new MeshBuffer(vertices, indices, mesh.Vertices.Length, mesh.Indices.Length);
+        int vertexBytes = vertices.Length * Vertex.SizeInBytes;
+        var vertRegion = DirectMemoryRegion.Allocate((nuint)vertexBytes);
+        MemoryMarshal.AsBytes(vertices.AsSpan()).CopyTo(new Span<byte>(vertRegion.Pointer, vertexBytes));
+        return new MeshBuffer(vertRegion, null, vertices.Length, mesh.Indices.Length);
     }
 
     /// <summary>Releases both buffers.</summary>
