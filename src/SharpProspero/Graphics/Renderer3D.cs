@@ -209,6 +209,7 @@ public sealed unsafe class Renderer3D : IDisposable
         _vs.Shader.ContextRegisters.CopyTo(context[cx..]); cx += _vs.Shader.ContextRegisters.Length;
         _ps.Shader.ContextRegisters.CopyTo(context[cx..]); cx += _ps.Shader.ContextRegisters.Length;
         _interpolants.Registers.CopyTo(context[cx..]); cx += _interpolants.Registers.Length;
+        context[cx++] = new CxRegister(0x01C2, 0); // PA_SU_SC_MODE_CNTL: Disable face culling so geometry is visible from all angles
 
         int sh = 0;
         var shader = new Span<CxRegister>(shaderRegion.Pointer, _maxShader);
