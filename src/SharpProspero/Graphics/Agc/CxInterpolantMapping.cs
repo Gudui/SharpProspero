@@ -53,33 +53,21 @@ public sealed unsafe class CxInterpolantMapping
             trace?.Invoke("AGC_INTERP_RAW dw[" + i + "]=0x" + dwords[i].ToString("X8"));
         }
 
-        // Layout A: Count at [0], CxRegister array at [8] or [4]
-        uint headerCount = dwords[0];
-        if (headerCount > 0 && headerCount <= MaxRegisters)
+        // Direct array of CxRegister
+        CxRegister* regs = (CxRegister*)buffer;
+        int valid = 0;
+        // The built-in mesh pixel shader consumes 2 interpolants (TEXCOORD0 normal, TEXCOORD1 color).
+        // Only emit active interpolants so the SPI hardware interpolator does not stall waiting for unused exports.
+        int maxInterp = 2;
+        for (int i = 0; i < maxInterp; i++)
         {
-            CxRegister* regs = (CxRegister*)(buffer + 8);
-            for (int i = 0; i < (int)headerCount; i++)
+            if (regs[i].Offset != 0)
             {
-                mapping._regs[i] = regs[i];
+                mapping._regs[valid++] = regs[i];
                 trace?.Invoke("AGC_INTERP_REG index=" + i + " offset=0x" + regs[i].Offset.ToString("X4") + " value=0x" + regs[i].Value.ToString("X8"));
             }
-            mapping._count = (int)headerCount;
         }
-        else
-        {
-            // Layout B: Direct array of CxRegister
-            CxRegister* regs = (CxRegister*)buffer;
-            int valid = 0;
-            for (int i = 0; i < MaxRegisters; i++)
-            {
-                if (regs[i].Offset != 0)
-                {
-                    mapping._regs[valid++] = regs[i];
-                    trace?.Invoke("AGC_INTERP_REG index=" + i + " offset=0x" + regs[i].Offset.ToString("X4") + " value=0x" + regs[i].Value.ToString("X8"));
-                }
-            }
-            mapping._count = valid;
-        }
+        mapping._count = valid;
 
         trace?.Invoke("AGC_INTERP_TOTAL count=" + mapping._count);
         return mapping;
