@@ -243,7 +243,6 @@ public sealed unsafe class Renderer3D : IDisposable
 
         void* dcb = dcbObj.Handle;
         dcbObj.Reset();
-        dcbObj.WaitUntilSafeForDisplay(_display.OutputHandle, (uint)_display.CurrentBufferIndex);
 
         SceAgc.sceAgcDcbSetCxRegistersIndirect(dcb, contextRegion.Pointer, (uint)cx);
         SceAgc.sceAgcDcbSetShRegistersIndirect(dcb, shaderRegion.Pointer, (uint)sh);
@@ -259,23 +258,23 @@ public sealed unsafe class Renderer3D : IDisposable
             dcbObj.SetIndexBuffer(mesh.IndexAddress);
             dcbObj.DrawIndexOffset(0, (uint)mesh.IndexCount);
         }
-        if (trace) _trace?.Invoke("AGC_STAGE_COMMAND_OK cx=" + cx + " sh=" + sh + " descriptors=" + bindDescriptors + " draw=" + drawMode);
+        if (_firstDraw && trace) _trace?.Invoke("AGC_STAGE_COMMAND_OK cx=" + cx + " sh=" + sh + " descriptors=" + bindDescriptors + " draw=" + drawMode);
 
         // Record the flip on the graphics timeline
         SceAgc.sceAgcDcbSetFlip(dcb, (uint)_display.OutputHandle, _display.CurrentBufferIndex, VideoOutFlipModeVSync, (long)_display.FrameIndex);
-        if (trace) _trace?.Invoke("AGC_STAGE_SUBMIT_BEGIN");
+        if (_firstDraw && trace) _trace?.Invoke("AGC_STAGE_SUBMIT_BEGIN");
         AgcDevice.Submit(dcbObj);
-        if (trace) _trace?.Invoke("AGC_STAGE_SUBMIT_OK");
+        if (_firstDraw && trace) _trace?.Invoke("AGC_STAGE_SUBMIT_OK");
 
-        if (trace) _trace?.Invoke("AGC_STAGE_SUSPEND_BEGIN");
+        if (_firstDraw && trace) _trace?.Invoke("AGC_STAGE_SUSPEND_BEGIN");
         int suspendResult = AgcDevice.SuspendPoint();
-        if (trace) _trace?.Invoke("AGC_STAGE_SUSPEND_RETURN result=0x" + suspendResult.ToString("X8"));
+        if (_firstDraw && trace) _trace?.Invoke("AGC_STAGE_SUSPEND_RETURN result=0x" + suspendResult.ToString("X8"));
         SceResult.ThrowIfFailed(suspendResult, nameof(AgcDevice.SuspendPoint));
-        if (trace) _trace?.Invoke("AGC_STAGE_SUSPEND_OK");
+        if (_firstDraw && trace) _trace?.Invoke("AGC_STAGE_SUSPEND_OK");
 
-        if (trace) _trace?.Invoke("AGC_STAGE_FLIP_BEGIN frame=" + _display.FrameIndex);
+        if (_firstDraw && trace) _trace?.Invoke("AGC_STAGE_FLIP_BEGIN frame=" + _display.FrameIndex);
         _display.AdvanceFrame();
-        if (trace) _trace?.Invoke("AGC_STAGE_FLIP_OK");
+        if (_firstDraw && trace) _trace?.Invoke("AGC_STAGE_FLIP_OK");
         _firstDraw = false;
         _slot = (_slot + 1) % _framesInFlight;
     }
