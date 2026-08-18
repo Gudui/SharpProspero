@@ -274,7 +274,7 @@ public sealed unsafe class DisplayDevice : IDisposable
     /// </summary>
     public long AdvanceFrame()
     {
-        WaitUntilOnScreen(_frame);
+        SceResult.ThrowIfFailed(VideoOut.sceVideoOutWaitVblank(_handle), nameof(VideoOut.sceVideoOutWaitVblank));
         long presented = _frame;
         _index = (_index + 1) % _regions.Length;
         _frame++;
