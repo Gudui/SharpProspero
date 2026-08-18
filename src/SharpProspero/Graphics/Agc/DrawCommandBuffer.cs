@@ -178,6 +178,9 @@ public sealed unsafe class DrawCommandBuffer : IDisposable
     public nint AcquireMem(byte engine = 0, uint coherCntl = 0x0FFFFFFF, uint coherSize = 0xFFFFFFFF, ulong coherSizeHi = 0, void* baseAddr = null, uint pollInterval = 10)
         => (nint)SceAgc.sceAgcDcbAcquireMem(St, engine, coherCntl, coherSize, coherSizeHi, baseAddr, pollInterval);
 
+    /// <summary>The queue a draw buffer records into.</summary>
+    private const uint DrawQueue = 0;
+
     /// <summary>Records an end-of-pipe event of <paramref name="eventType"/>.</summary>
     public nint EventWrite(uint eventType, ulong eventControl = 0) => (nint)SceAgc.sceAgcDcbEventWrite(St, eventType, eventControl);
 
