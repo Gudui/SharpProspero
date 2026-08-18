@@ -104,9 +104,8 @@ public sealed unsafe class Renderer3D : IDisposable
                       + _interpolants.Registers.Length;
         _maxShader = _vs.Shader.ShaderRegisters.Length + _ps.Shader.ShaderRegisters.Length + 8;
 
-        // One set per frame in flight, matching the display's framebuffer count, so recording a frame
-        // never touches memory an earlier frame's draw is still reading.
-        _framesInFlight = Math.Max(2, _display.BufferCount);
+        // Ring buffer of frames in flight so recording a frame never touches memory an earlier in-flight frame is still reading.
+        _framesInFlight = 8;
         _dcb = new DrawCommandBuffer[_framesInFlight];
         _contextState = new DirectMemoryRegion[_framesInFlight];
         _shaderState = new DirectMemoryRegion[_framesInFlight];
