@@ -223,6 +223,7 @@ public sealed unsafe class Renderer3D : IDisposable
             int cbOff = 0, vbOff = 4;
             if (_vs.Shader.TryGetResourceSlot(ShaderResourceKind.ConstantBuffer, 0, out int cOff, out _)) cbOff = cOff;
             if (_vs.Shader.TryGetResourceSlot(ShaderResourceKind.ReadOnly, 0, out int vOff, out _)) vbOff = vOff;
+            if (_firstDraw && trace) _trace?.Invoke("AGC_SLOTS cbOff=" + cbOff + " vbOff=" + vbOff);
 
             shader[sh++] = new CxRegister((ushort)(AgcShader.GsUserDataBaseOffset + cbOff + 0), cbDescriptor.Word0);
             shader[sh++] = new CxRegister((ushort)(AgcShader.GsUserDataBaseOffset + cbOff + 1), cbDescriptor.Word1);
@@ -244,7 +245,6 @@ public sealed unsafe class Renderer3D : IDisposable
         void* dcb = dcbObj.Handle;
         dcbObj.Reset();
         dcbObj.WaitUntilSafeForDisplay(_display.OutputHandle, (uint)_display.CurrentBufferIndex);
-        dcbObj.AcquireMem(0, 0x0FFFFFFF, 0xFFFFFFFF, 0, null, 10);
 
         SceAgc.sceAgcDcbSetCxRegistersIndirect(dcb, contextRegion.Pointer, (uint)cx);
         SceAgc.sceAgcDcbSetShRegistersIndirect(dcb, shaderRegion.Pointer, (uint)sh);
