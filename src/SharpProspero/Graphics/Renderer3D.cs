@@ -258,8 +258,7 @@ public sealed unsafe class Renderer3D : IDisposable
         {
             dcbObj.SetIndexSize(Index32Bit);
             dcbObj.SetIndexBuffer(mesh.IndexAddress);
-            dcbObj.SetIndexCount((uint)mesh.IndexCount);
-            dcbObj.DrawIndex((uint)mesh.IndexCount, mesh.IndexAddress);
+            dcbObj.DrawIndexOffset(0, (uint)mesh.IndexCount);
         }
         if (trace) _trace?.Invoke("AGC_STAGE_COMMAND_OK cx=" + cx + " sh=" + sh + " descriptors=" + bindDescriptors + " draw=" + drawMode);
 
