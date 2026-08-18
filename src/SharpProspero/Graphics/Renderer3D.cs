@@ -205,6 +205,7 @@ public sealed unsafe class Renderer3D : IDisposable
         cx += viewport.WriteTo(context[cx..]);
         context[cx++] = new CxRegister((ushort)TargetMaskOffset, TargetWriteMask);
         context[cx++] = new CxRegister((ushort)GsOutPrimTypeOffset, GsOutTriangles);
+        context[cx++] = new CxRegister((ushort)PrimitiveTypeOffset, PrimitiveTriangleList);
         _vs.Shader.ContextRegisters.CopyTo(context[cx..]); cx += _vs.Shader.ContextRegisters.Length;
         _ps.Shader.ContextRegisters.CopyTo(context[cx..]); cx += _ps.Shader.ContextRegisters.Length;
         _interpolants.Registers.CopyTo(context[cx..]); cx += _interpolants.Registers.Length;
@@ -246,7 +247,6 @@ public sealed unsafe class Renderer3D : IDisposable
 
         SceAgc.sceAgcDcbSetCxRegistersIndirect(dcb, contextRegion.Pointer, (uint)cx);
         SceAgc.sceAgcDcbSetShRegistersIndirect(dcb, shaderRegion.Pointer, (uint)sh);
-        SceAgc.sceAgcDcbSetUcRegisterDirect(dcb, Pack(PrimitiveTypeOffset, PrimitiveTriangleList));
 
         if (drawMode == DrawMode.Auto && mesh is not null)
         {
