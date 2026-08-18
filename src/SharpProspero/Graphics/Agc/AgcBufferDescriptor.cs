@@ -47,7 +47,7 @@ public readonly struct AgcBufferDescriptor
         if (strideInBytes >= 1u << 14) throw new ArgumentOutOfRangeException(nameof(strideInBytes), "The stride must be less than 16384 bytes.");
         uint word0 = (uint)(address & 0xFFFFFFFF);
         uint word1 = (uint)((address >> 32) & 0xFFFF) | ((strideInBytes & 0x3FFF) << 16);
-        uint word3 = SwizzleX001 | (NumFormatUnorm << 12) | (DataFormat8 << 15);
+        uint word3 = SwizzleXYZW | (NumFormatUnorm << 12) | (DataFormat8 << 15);
         return new AgcBufferDescriptor(word0, word1, elementCount, word3);
     }
 
