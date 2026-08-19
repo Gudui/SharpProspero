@@ -26,11 +26,13 @@ public struct AgcViewport
     private const ushort RegXScale = 0x10F, RegXOffset = 0x110, RegYScale = 0x111, RegYOffset = 0x112, RegZScale = 0x113, RegZOffset = 0x114;
     private const ushort RegZMin = 0x0B4, RegZMax = 0x0B5;
     private const ushort RegGbVertClip = 0x2FA, RegGbVertDisc = 0x2FB, RegGbHorzClip = 0x2FC, RegGbHorzDisc = 0x2FD;
+    private const ushort RegScreenScissorTL = 0x081, RegScreenScissorBR = 0x082;
+    private const ushort RegWindowScissorTL = 0x084, RegWindowScissorBR = 0x085;
     private const ushort RegScissorTL = 0x090, RegScissorBR = 0x091;
     private const uint WindowOffsetDisable = 0x80000000u;
 
     /// <summary>The number of context registers the block writes.</summary>
-    public const int RegisterCount = 14;
+    public const int RegisterCount = 18;
 
     private float _x, _y, _width, _height, _minDepth, _maxDepth;
     private float _gbVertClip, _gbVertDisc, _gbHorzClip, _gbHorzDisc;
@@ -81,6 +83,9 @@ public struct AgcViewport
         float zScale = _maxDepth - _minDepth;
         float zOffset = _minDepth;
 
+        uint tl = Corner(_scissorLeft, _scissorTop) | WindowOffsetDisable;
+        uint br = Corner(_scissorRight, _scissorBottom);
+
         int i = 0;
         destination[i++] = Float(RegXScale, xScale);
         destination[i++] = Float(RegXOffset, xOffset);
@@ -94,8 +99,12 @@ public struct AgcViewport
         destination[i++] = Float(RegGbVertDisc, _gbVertDisc);
         destination[i++] = Float(RegGbHorzClip, _gbHorzClip);
         destination[i++] = Float(RegGbHorzDisc, _gbHorzDisc);
-        destination[i++] = new CxRegister(RegScissorTL, Corner(_scissorLeft, _scissorTop) | WindowOffsetDisable);
-        destination[i++] = new CxRegister(RegScissorBR, Corner(_scissorRight, _scissorBottom));
+        destination[i++] = new CxRegister(RegScreenScissorTL, tl);
+        destination[i++] = new CxRegister(RegScreenScissorBR, br);
+        destination[i++] = new CxRegister(RegWindowScissorTL, tl);
+        destination[i++] = new CxRegister(RegWindowScissorBR, br);
+        destination[i++] = new CxRegister(RegScissorTL, tl);
+        destination[i++] = new CxRegister(RegScissorBR, br);
         return i;
     }
 
