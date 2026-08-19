@@ -461,12 +461,24 @@ public sealed class CxRenderTarget
     public uint GetDepth() => (_regs[15].Value & 0x00001fffu) + 1;
 
     /// <summary>Sets the TileMode field.</summary>
-    public CxRenderTarget SetTileMode(TileMode value) { _regs[15].Value = (_regs[15].Value & ~(uint)TileMode.kBitMask) | (uint)value; return this; }
+    public CxRenderTarget SetTileMode(TileMode value)
+    {
+        _regs[15].Value = (_regs[15].Value & ~(uint)TileMode.kBitMask) | (uint)value;
+        uint swMode = ((uint)value >> 14) & 0x1Fu;
+        _regs[3].Value = (_regs[3].Value & ~0x1Fu) | swMode;
+        return this;
+    }
     /// <summary>Gets the TileMode field.</summary>
     public TileMode GetTileMode() => (TileMode)(_regs[15].Value & (uint)TileMode.kBitMask);
 
     /// <summary>Sets the Dimension field.</summary>
-    public CxRenderTarget SetDimension(Dimension value) { _regs[15].Value = (_regs[15].Value & ~(uint)Dimension.kBitMask) | (uint)value; return this; }
+    public CxRenderTarget SetDimension(Dimension value)
+    {
+        _regs[15].Value = (_regs[15].Value & ~(uint)Dimension.kBitMask) | (uint)value;
+        uint resType = (((uint)value >> 24) & 0x7u) << 7;
+        _regs[3].Value = (_regs[3].Value & ~(0x7u << 7)) | resType;
+        return this;
+    }
     /// <summary>Gets the Dimension field.</summary>
     public Dimension GetDimension() => (Dimension)(_regs[15].Value & (uint)Dimension.kBitMask);
 
