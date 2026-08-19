@@ -242,8 +242,14 @@ public sealed unsafe class Renderer3D : IDisposable
         void* dcb = dcbObj.Handle;
         dcbObj.Reset();
 
-        SceAgc.sceAgcDcbSetCxRegistersIndirect(dcb, contextRegion.Pointer, (uint)cx);
-        SceAgc.sceAgcDcbSetShRegistersIndirect(dcb, shaderRegion.Pointer, (uint)sh);
+        for (int i = 0; i < cx; i++)
+        {
+            dcbObj.SetContextRegister(context[i].Offset, context[i].Value);
+        }
+        for (int i = 0; i < sh; i++)
+        {
+            dcbObj.SetShaderRegister(shader[i].Offset, shader[i].Value);
+        }
 
         if (drawMode == DrawMode.Auto && mesh is not null)
         {
