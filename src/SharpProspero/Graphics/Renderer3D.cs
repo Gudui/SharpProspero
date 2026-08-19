@@ -97,12 +97,8 @@ public sealed unsafe class Renderer3D : IDisposable
         _ps = _psBinary.Prepare();
         _interpolants = CxInterpolantMapping.Create(_vs.Shader, _ps.Shader, _trace);
 
-        // The combined register state: the target, the viewport, the write mask, the primitive type,
-        // each shader's own registers, the interpolant mapping registers, and 8 user data descriptor registers.
-        _maxContext = CxRenderTarget.RegisterCount + AgcViewport.RegisterCount + 4
-                      + _vs.Shader.ContextRegisters.Length + _ps.Shader.ContextRegisters.Length
-                      + _interpolants.Registers.Length;
-        _maxShader = _vs.Shader.ShaderRegisters.Length + _ps.Shader.ShaderRegisters.Length + 8;
+        _maxContext = 256;
+        _maxShader = 256;
 
         // Ring buffer of frames in flight so recording a frame never touches memory an earlier in-flight frame is still reading.
         _framesInFlight = 8;
@@ -246,6 +242,8 @@ public sealed unsafe class Renderer3D : IDisposable
         void* dcb = dcbObj.Handle;
         dcbObj.Reset();
 
+        dcbObj.AcquireMem();
+
         SceAgc.sceAgcDcbSetCxRegistersIndirect(dcb, contextRegion.Pointer, (uint)cx);
         SceAgc.sceAgcDcbSetShRegistersIndirect(dcb, shaderRegion.Pointer, (uint)sh);
 
@@ -260,6 +258,8 @@ public sealed unsafe class Renderer3D : IDisposable
             dcbObj.DrawIndexOffset(0, (uint)mesh.IndexCount);
         }
         if (_firstDraw && trace) _trace?.Invoke("AGC_STAGE_COMMAND_OK cx=" + cx + " sh=" + sh + " descriptors=" + bindDescriptors + " draw=" + drawMode);
+
+        dcbObj.AcquireMem();
 
         // Record the flip on the graphics timeline
         SceAgc.sceAgcDcbSetFlip(dcb, (uint)_display.OutputHandle, _display.CurrentBufferIndex, VideoOutFlipModeVSync, (long)_display.FrameIndex);
