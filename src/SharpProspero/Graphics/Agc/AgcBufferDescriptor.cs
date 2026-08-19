@@ -36,6 +36,7 @@ public readonly struct AgcBufferDescriptor
     private const uint NumFormatUnorm = 0;
     private const uint NumFormatFloat = 7;
     private const uint DataFormat8 = 1;               // 8-bit unsigned element (BUF_DATA_FORMAT_8)
+    private const uint DataFormat32 = 4;              // 32-bit element (BUF_DATA_FORMAT_32, 4 bytes)
     private const uint DataFormat32_32_32_32 = 14;    // four 32-bit floats (BUF_DATA_FORMAT_32_32_32_32, 16 bytes)
 
     /// <summary>
@@ -47,7 +48,7 @@ public readonly struct AgcBufferDescriptor
         if (strideInBytes >= 1u << 14) throw new ArgumentOutOfRangeException(nameof(strideInBytes), "The stride must be less than 16384 bytes.");
         uint word0 = (uint)(address & 0xFFFFFFFF);
         uint word1 = (uint)((address >> 32) & 0xFFFF) | ((strideInBytes & 0x3FFF) << 16);
-        uint word3 = SwizzleXYZW | (NumFormatFloat << 12) | (DataFormat32_32_32_32 << 15);
+        uint word3 = SwizzleXYZW | (NumFormatFloat << 12) | (DataFormat32 << 15);
         return new AgcBufferDescriptor(word0, word1, elementCount * strideInBytes, word3);
     }
 
@@ -59,7 +60,7 @@ public readonly struct AgcBufferDescriptor
     {
         uint word0 = (uint)(address & 0xFFFFFFFF);
         uint word1 = (uint)((address >> 32) & 0xFFFF);
-        uint word3 = SwizzleXYZW | (NumFormatFloat << 12) | (DataFormat32_32_32_32 << 15);
+        uint word3 = SwizzleXYZW | (NumFormatFloat << 12) | (DataFormat32 << 15);
         return new AgcBufferDescriptor(word0, word1, sizeInBytes, word3);
     }
 }
