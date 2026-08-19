@@ -57,11 +57,9 @@ public readonly struct AgcBufferDescriptor
     /// </summary>
     public static AgcBufferDescriptor Constant(ulong address, uint sizeInBytes)
     {
-        const uint recordSize = 16; // constant buffers are addressed in 16-byte records
-        uint records = (sizeInBytes + recordSize - 1) / recordSize;
         uint word0 = (uint)(address & 0xFFFFFFFF);
-        uint word1 = (uint)((address >> 32) & 0xFFFF) | (recordSize << 16);
+        uint word1 = (uint)((address >> 32) & 0xFFFF);
         uint word3 = SwizzleXYZW | (NumFormatFloat << 12) | (DataFormat32_32_32_32 << 15);
-        return new AgcBufferDescriptor(word0, word1, records, word3);
+        return new AgcBufferDescriptor(word0, word1, sizeInBytes, word3);
     }
 }

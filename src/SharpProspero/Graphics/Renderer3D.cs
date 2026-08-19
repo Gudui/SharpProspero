@@ -242,8 +242,6 @@ public sealed unsafe class Renderer3D : IDisposable
         void* dcb = dcbObj.Handle;
         dcbObj.Reset();
 
-        dcbObj.AcquireMem();
-
         SceAgc.sceAgcDcbSetCxRegistersIndirect(dcb, contextRegion.Pointer, (uint)cx);
         SceAgc.sceAgcDcbSetShRegistersIndirect(dcb, shaderRegion.Pointer, (uint)sh);
 
@@ -258,8 +256,6 @@ public sealed unsafe class Renderer3D : IDisposable
             dcbObj.DrawIndexOffset(0, (uint)mesh.IndexCount);
         }
         if (_firstDraw && trace) _trace?.Invoke("AGC_STAGE_COMMAND_OK cx=" + cx + " sh=" + sh + " descriptors=" + bindDescriptors + " draw=" + drawMode);
-
-        dcbObj.AcquireMem();
 
         // Record the flip on the graphics timeline
         SceAgc.sceAgcDcbSetFlip(dcb, (uint)_display.OutputHandle, _display.CurrentBufferIndex, VideoOutFlipModeVSync, (long)_display.FrameIndex);
