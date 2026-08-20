@@ -202,6 +202,12 @@ public sealed unsafe class Renderer3D : IDisposable
         context[cx++] = new CxRegister((ushort)TargetMaskOffset, TargetWriteMask);
         context[cx++] = new CxRegister((ushort)GsOutPrimTypeOffset, GsOutTriangles);
         context[cx++] = new CxRegister((ushort)PrimitiveTypeOffset, PrimitiveTriangleList);
+        context[cx++] = new CxRegister(0x0206, 0x0000043F); // PA_CL_VTE_CNTL: Enable X/Y/Z viewport scale/offset and W format
+        context[cx++] = new CxRegister(0x02A6, 0x0000043F); // PA_CL_VTE_CNTL (GFX10 alias)
+        context[cx++] = new CxRegister(0x0205, 0x00000240); // PA_CL_CLIP_CNTL: Standard clip space
+        context[cx++] = new CxRegister(0x02A5, 0x00000240); // PA_CL_CLIP_CNTL (GFX10 alias)
+        context[cx++] = new CxRegister(0x020C, 0x00000021); // PA_SU_VTX_CNTL: Half-pixel center
+        context[cx++] = new CxRegister(0x02AC, 0x00000021); // PA_SU_VTX_CNTL (GFX10 alias)
         _vs.Shader.ContextRegisters.CopyTo(context[cx..]); cx += _vs.Shader.ContextRegisters.Length;
         _ps.Shader.ContextRegisters.CopyTo(context[cx..]); cx += _ps.Shader.ContextRegisters.Length;
         _interpolants.Registers.CopyTo(context[cx..]); cx += _interpolants.Registers.Length;
