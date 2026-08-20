@@ -242,6 +242,8 @@ public sealed unsafe class Renderer3D : IDisposable
         void* dcb = dcbObj.Handle;
         dcbObj.Reset();
 
+        dcbObj.WaitUntilSafeForDisplay(_display.OutputHandle, (uint)_display.CurrentBufferIndex);
+
         for (int i = 0; i < cx; i++)
         {
             dcbObj.SetContextRegister(context[i].Offset, context[i].Value);
