@@ -163,6 +163,16 @@ public sealed unsafe class Renderer3D : IDisposable
         SubmitPipeline(bindDescriptors: true, drawMode: DrawMode.Auto, mesh, mvp, model);
     }
 
+    /// <summary>
+    /// Draws a mesh this frame, transformed by model, view, and projection matrices, and presents the frame.
+    /// </summary>
+    public void DrawMesh(MeshBuffer mesh, in Matrix4x4 model, in Matrix4x4 view, in Matrix4x4 projection)
+    {
+        ArgumentNullException.ThrowIfNull(mesh);
+        Matrix4x4 mvp = model * view * projection;
+        SubmitPipeline(bindDescriptors: true, drawMode: DrawMode.Auto, mesh, in mvp, in model);
+    }
+
     private void SubmitPipeline(bool bindDescriptors, DrawMode drawMode, MeshBuffer? mesh, in Matrix4x4 mvp, in Matrix4x4 model)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
