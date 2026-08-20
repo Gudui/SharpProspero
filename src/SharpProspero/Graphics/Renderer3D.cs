@@ -251,6 +251,7 @@ public sealed unsafe class Renderer3D : IDisposable
             dcbObj.SetShaderRegister(shader[i].Offset, shader[i].Value);
         }
 
+        dcbObj.SetNumInstances(1);
         if (drawMode == DrawMode.Auto && mesh is not null)
         {
             dcbObj.DrawIndexAuto((uint)mesh.VertexCount);
