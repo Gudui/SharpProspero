@@ -285,8 +285,9 @@ public sealed unsafe class Renderer3D : IDisposable
         if (_firstDraw && trace) _trace?.Invoke("AGC_STAGE_SUSPEND_OK");
 
         if (_firstDraw && trace) _trace?.Invoke("AGC_STAGE_FLIP_BEGIN frame=" + _display.FrameIndex);
+        int flipRc = VideoOut.sceVideoOutSubmitFlip(_display.OutputHandle, _display.CurrentBufferIndex, VideoOutFlipModeVSync, _display.FrameIndex);
         _display.AdvanceFrame();
-        if (_firstDraw && trace) _trace?.Invoke("AGC_STAGE_FLIP_OK");
+        if (_firstDraw && trace) _trace?.Invoke("AGC_STAGE_FLIP_OK rc=0x" + flipRc.ToString("X8"));
         _firstDraw = false;
         _slot = (_slot + 1) % _framesInFlight;
     }
