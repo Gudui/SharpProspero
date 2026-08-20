@@ -180,6 +180,9 @@ public sealed unsafe class Renderer3D : IDisposable
         constants->Mvp = mvp;
         constants->Model = model;
 
+        // Clear the backbuffer direct memory so animated geometry renders cleanly without smearing across frames
+        new Span<uint>(_display.BackBufferAddress, _display.Width * _display.Height).Fill(0xFF101622);
+
         // The colour target points at the framebuffer being drawn.
         var target = new CxRenderTarget().Init(RegisterDefaults.RenderTargetBlock(_firstDraw && trace ? _trace : null));
         var spec = new RenderTargetSpec(
