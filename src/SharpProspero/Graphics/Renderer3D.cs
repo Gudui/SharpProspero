@@ -72,6 +72,12 @@ public sealed unsafe class Renderer3D : IDisposable
     public uint TargetWriteMask { get; set; } = 0xF;
 
     /// <summary>
+    /// Whether to clear the direct memory backbuffer via CPU at the start of each frame.
+    /// Default is false to avoid masking GPU render-target behavior.
+    /// </summary>
+    public bool CpuClearBackBuffer { get; set; }
+
+    /// <summary>
     /// Builds a renderer for a display, using the built-in mesh shaders. The display's framebuffers are
     /// the render targets.
     /// </summary>
@@ -121,7 +127,8 @@ public sealed unsafe class Renderer3D : IDisposable
     {
         None,
         Auto,
-        Indexed
+        Indexed,
+        HardcodedTriangle
     }
 
     /// <summary>
@@ -141,6 +148,15 @@ public sealed unsafe class Renderer3D : IDisposable
     {
         ArgumentNullException.ThrowIfNull(mesh);
         SubmitPipeline(bindDescriptors: true, drawMode: DrawMode.None, mesh, mvp, model);
+    }
+
+    /// <summary>
+    /// Draws a 3-vertex primitive using DrawIndexAuto without binding vertex or constant buffer descriptors,
+    /// and presents the frame. Used to isolate shader launch/rasterization from memory resource fetch.
+    /// </summary>
+    public void DrawHardcodedTriangle()
+    {
+        SubmitPipeline(bindDescriptors: false, drawMode: DrawMode.HardcodedTriangle, null, Matrix4x4.Identity, Matrix4x4.Identity);
     }
 
     /// <summary>
@@ -190,8 +206,10 @@ public sealed unsafe class Renderer3D : IDisposable
         constants->Mvp = mvp;
         constants->Model = model;
 
-        // Clear the backbuffer direct memory so animated geometry renders cleanly without smearing across frames
-        new Span<uint>(_display.BackBufferAddress, _display.Width * _display.Height).Fill(0xFF101622);
+        if (CpuClearBackBuffer)
+        {
+            new Span<uint>(_display.BackBufferAddress, _display.Width * _display.Height).Fill(0xFF101622);
+        }
 
         // The colour target points at the framebuffer being drawn.
         var target = new CxRenderTarget().Init(RegisterDefaults.RenderTargetBlock(_firstDraw && trace ? _trace : null));
@@ -273,7 +291,11 @@ public sealed unsafe class Renderer3D : IDisposable
         }
 
         dcbObj.SetNumInstances(1);
-        if (drawMode == DrawMode.Auto && mesh is not null)
+        if (drawMode == DrawMode.HardcodedTriangle)
+        {
+            dcbObj.DrawIndexAuto(3);
+        }
+        else if (drawMode == DrawMode.Auto && mesh is not null)
         {
             dcbObj.DrawIndexAuto((uint)mesh.VertexCount);
         }
