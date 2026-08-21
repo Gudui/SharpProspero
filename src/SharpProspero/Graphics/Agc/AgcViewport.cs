@@ -83,8 +83,16 @@ public struct AgcViewport
         float zScale = _maxDepth - _minDepth;
         float zOffset = _minDepth;
 
-        uint tl = Corner(_scissorLeft, _scissorTop) | WindowOffsetDisable;
-        uint br = Corner(_scissorRight, _scissorBottom);
+        uint tlScreen = Corner(_scissorLeft, _scissorTop);
+        uint brScreen = Corner(_scissorRight, _scissorBottom);
+
+        // GFX10 PA_SC_VPORT_SCISSOR_0_TL (0x090) packing:
+        // [13:0] TL_X
+        // [14] WINDOW_OFFSET_DISABLE
+        // [15] reserved
+        // [29:16] TL_Y
+        uint tlVport = (uint)Math.Clamp(_scissorLeft, 0, 0x3FFF) | (1u << 14) | (((uint)Math.Clamp(_scissorTop, 0, 0x3FFF)) << 16);
+        uint brVport = (uint)Math.Clamp(_scissorRight, 0, 0x3FFF) | (((uint)Math.Clamp(_scissorBottom, 0, 0x3FFF)) << 16);
 
         int i = 0;
         destination[i++] = Float(RegXScale, xScale);
@@ -99,12 +107,12 @@ public struct AgcViewport
         destination[i++] = Float(RegGbVertDisc, _gbVertDisc);
         destination[i++] = Float(RegGbHorzClip, _gbHorzClip);
         destination[i++] = Float(RegGbHorzDisc, _gbHorzDisc);
-        destination[i++] = new CxRegister(RegScreenScissorTL, tl);
-        destination[i++] = new CxRegister(RegScreenScissorBR, br);
-        destination[i++] = new CxRegister(RegWindowScissorTL, tl);
-        destination[i++] = new CxRegister(RegWindowScissorBR, br);
-        destination[i++] = new CxRegister(RegScissorTL, tl);
-        destination[i++] = new CxRegister(RegScissorBR, br);
+        destination[i++] = new CxRegister(RegScreenScissorTL, tlScreen);
+        destination[i++] = new CxRegister(RegScreenScissorBR, brScreen);
+        destination[i++] = new CxRegister(RegWindowScissorTL, tlScreen);
+        destination[i++] = new CxRegister(RegWindowScissorBR, brScreen);
+        destination[i++] = new CxRegister(RegScissorTL, tlVport);
+        destination[i++] = new CxRegister(RegScissorBR, brVport);
         return i;
     }
 
@@ -116,9 +124,9 @@ public struct AgcViewport
         return registers;
     }
 
-    // A scissor corner packs an unsigned 15-bit x in the low half and a 15-bit y in the high half.
+    // A scissor corner packs an unsigned 14-bit x in the low half and a 14-bit y in the high half.
     private static uint Corner(int x, int y)
-        => ((uint)Math.Clamp(x, 0, 0x7FFF)) | (((uint)Math.Clamp(y, 0, 0x7FFF)) << 16);
+        => ((uint)Math.Clamp(x, 0, 0x3FFF)) | (((uint)Math.Clamp(y, 0, 0x3FFF)) << 16);
 
     private static CxRegister Float(ushort offset, float value) => new(offset, BitConverter.SingleToUInt32Bits(value));
 }

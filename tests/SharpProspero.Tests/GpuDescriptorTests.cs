@@ -86,11 +86,11 @@ public sealed class GpuDescriptorTests
         Assert.Equal((ushort)0x111, registers[2].Offset);
         Assert.Equal(BitConverter.SingleToUInt32Bits(-540f), registers[2].Value);
 
-        // The scissor top-left carries the window-offset-disable bit; the bottom-right packs the corner.
-        Assert.Equal((ushort)0x090, registers[12].Offset);
-        Assert.Equal(0x80000000u, registers[12].Value);
-        Assert.Equal((ushort)0x091, registers[13].Offset);
-        Assert.Equal(1920u | (1080u << 16), registers[13].Value);
+        // The scissor top-left carries the window-offset-disable bit at bit 14; the bottom-right packs the corner.
+        Assert.Equal((ushort)0x090, registers[16].Offset);
+        Assert.Equal(1u << 14, registers[16].Value); // tlVport where left=0, top=0
+        Assert.Equal((ushort)0x091, registers[17].Offset);
+        Assert.Equal(1920u | (1080u << 16), registers[17].Value); // brVport
     }
 
     [Fact]
