@@ -261,9 +261,9 @@ public static unsafe partial class SceAgc
     [LibraryImport(Lib)]
     public static partial int sceAgcCreateInterpolantMapping(void* outMapping, void* vsShader, void* psShader);
 
-    /// <summary>Creates a primitive/pipeline state object from shader programs, GPU addresses and flags.</summary>
+    /// <summary>Creates a primitive/pipeline state object from shader programs and topology type.</summary>
     [LibraryImport(Lib)]
-    public static partial int sceAgcCreatePrimState(void* outPrimState, void* shader, void* gpuAddr1, void* gpuAddr2, uint flags);
+    public static partial int sceAgcCreatePrimState(void* outCxPrimState, void* outUcPrimState, void* gsShader, void* vsShader, uint primType);
 
     /// <summary>Creates a shader object from a shader binary/header and its GPU address; writes the handle to outShader and returns a status.</summary>
     [LibraryImport(Lib)]
@@ -780,7 +780,7 @@ public static unsafe partial class SceAgc
 
     /// <summary>Updates a primitive state object with a new primitive/topology type.</summary>
     [LibraryImport(Lib)]
-    public static partial int sceAgcUpdatePrimState(void* primState, void* shader, uint primType);
+    public static partial int sceAgcUpdatePrimState(void* cxPrimState, void* ucPrimState, uint primType);
 
     /// <summary>Patches the polled register/memory address of a wait-reg-mem GPU-sync packet.</summary>
     [LibraryImport(Lib)]

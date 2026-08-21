@@ -102,6 +102,8 @@ public sealed unsafe class Renderer3D : IDisposable
         _vs = _vsBinary.Prepare();
         _ps = _psBinary.Prepare();
         _interpolants = CxInterpolantMapping.Create(_vs.Shader, _ps.Shader, _trace);
+        _cxPrimState = CxPrimState.Create(_vs.Shader, 4, null, _trace);
+        _ucPrimState = UcPrimState.Create(_vs.Shader, 4, null, _trace);
 
         _maxContext = 256;
         _maxShader = 256;
@@ -122,6 +124,8 @@ public sealed unsafe class Renderer3D : IDisposable
     }
 
     private readonly CxInterpolantMapping _interpolants;
+    private readonly CxPrimState _cxPrimState;
+    private readonly UcPrimState _ucPrimState;
 
     private enum DrawMode
     {
@@ -231,8 +235,7 @@ public sealed unsafe class Renderer3D : IDisposable
         target.Registers.CopyTo(context[cx..]); cx += CxRenderTarget.RegisterCount;
         cx += viewport.WriteTo(context[cx..]);
         context[cx++] = new CxRegister((ushort)TargetMaskOffset, TargetWriteMask);
-        context[cx++] = new CxRegister((ushort)GsOutPrimTypeOffset, GsOutTriangles);
-        context[cx++] = new CxRegister((ushort)PrimitiveTypeOffset, PrimitiveTriangleList);
+        _cxPrimState.Registers.CopyTo(context[cx..]); cx += _cxPrimState.Registers.Length;
         context[cx++] = new CxRegister(0x0206, 0x0000043F); // PA_CL_VTE_CNTL: Enable X/Y/Z viewport scale/offset and W format
         context[cx++] = new CxRegister(0x02A6, 0x0000043F); // PA_CL_VTE_CNTL (GFX10 alias)
         context[cx++] = new CxRegister(0x0205, 0x00000240); // PA_CL_CLIP_CNTL: Standard clip space
@@ -288,6 +291,10 @@ public sealed unsafe class Renderer3D : IDisposable
         for (int i = 0; i < sh; i++)
         {
             dcbObj.SetShaderRegister(shader[i].Offset, shader[i].Value);
+        }
+        for (int i = 0; i < _ucPrimState.Registers.Length; i++)
+        {
+            dcbObj.SetUserConfigRegister(_ucPrimState.Registers[i].Offset, _ucPrimState.Registers[i].Value);
         }
 
         dcbObj.SetNumInstances(1);
