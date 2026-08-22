@@ -56,10 +56,7 @@ public sealed unsafe class CxInterpolantMapping
         // Direct array of CxRegister
         CxRegister* regs = (CxRegister*)buffer;
         int valid = 0;
-        // The built-in mesh pixel shader consumes 2 interpolants (TEXCOORD0 normal, TEXCOORD1 color).
-        // Only emit active interpolants so the SPI hardware interpolator does not stall waiting for unused exports.
-        int maxInterp = 2;
-        for (int i = 0; i < maxInterp; i++)
+        for (int i = 0; i < MaxRegisters; i++)
         {
             if (regs[i].Offset != 0)
             {
