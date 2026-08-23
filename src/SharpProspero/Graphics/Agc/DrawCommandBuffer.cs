@@ -174,6 +174,9 @@ public sealed unsafe class DrawCommandBuffer : IDisposable
     /// <summary>Appends a CLEAR_STATE packet resetting GPU context state.</summary>
     public nint ClearState(uint command = 0) => (nint)SceAgc.sceAgcDcbClearState(St, command);
 
+    /// <summary>Appends a CONTEXT_STATE_OP packet (e.g. 0 to load default hardware context state).</summary>
+    public nint ContextStateOp(uint op = 0) => (nint)SceAgc.sceAgcDcbContextStateOp(St, op);
+
     /// <summary>Appends an ACQUIRE_MEM packet invalidating GPU caches and synchronizing CPU/GPU memory.</summary>
     public nint AcquireMem(byte engine = 0, uint coherCntl = 0x0FFFFFFF, uint coherSize = 0xFFFFFFFF, ulong coherSizeHi = 0, void* baseAddr = null, uint pollInterval = 10)
         => (nint)SceAgc.sceAgcDcbAcquireMem(St, engine, coherCntl, coherSize, coherSizeHi, baseAddr, pollInterval);

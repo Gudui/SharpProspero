@@ -106,5 +106,36 @@ public static unsafe class RegisterDefaults
         return block;
     }
 
+    /// <summary>
+    /// Returns all valid default context registers defined by the graphics driver.
+    /// </summary>
+    public static CxRegister[] AllContextDefaults(Action<string>? trace = null)
+    {
+        Locate(out CxRegister** table, out uint count);
+        var list = new System.Collections.Generic.List<CxRegister>((int)count);
+        uint nulls = 0;
+        for (uint i = 0; i < count; i++)
+        {
+            CxRegister* record = table[i];
+            if (record is not null)
+            {
+                list.Add(new CxRegister(record->Offset, record->Value));
+            }
+            else
+            {
+                nulls++;
+            }
+        }
+
+        if (trace is not null && !_tracedAll)
+        {
+            _tracedAll = true;
+            trace($"AGC_DEFAULTS_ALL total={count} valid={list.Count} null_records={nulls}");
+        }
+
+        return list.ToArray();
+    }
+
     private static bool _traced;
+    private static bool _tracedAll;
 }
