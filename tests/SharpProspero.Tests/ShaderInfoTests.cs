@@ -43,6 +43,20 @@ public class ShaderInfoTests
     }
 
     [Fact]
+    public void Read_ResolvesSelfRelativeRegisterPointers()
+    {
+        ShaderInfo info = ShaderInfo.Read(LoadShaderResource("SharpProspero.Shaders.mesh_vs.sb"));
+
+        Assert.Contains(
+            info.ContextRegisters,
+            register => register.Offset == 0x01FF && register.Value == 0x00000040);
+        Assert.Contains(
+            info.ContextRegisters,
+            register => register.Offset == 0x0291 && register.Value == 0x10020040);
+        Assert.DoesNotContain(info.ContextRegisters, register => register.Offset == 0x0000);
+    }
+
+    [Fact]
     public void Read_RejectsANonShaderFile()
     {
         Assert.Throws<PrxFormatException>(() => ShaderInfo.Read([1, 2, 3, 4]));

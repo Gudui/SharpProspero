@@ -85,7 +85,9 @@ public readonly record struct ShaderInfo(
         if (header.Length < 96)
             throw new PrxFormatException("Shader-binary header block is too short.");
 
-        // The program header: pointer fields stored as offsets, then sizes and counts.
+        // The program header: pointer fields are stored as self-relative offsets, then sizes and counts.
+        // sceAgcCreateShader relocates each one by adding the address of the pointer field itself, not the
+        // start of the header block.
         uint magic = BinaryPrimitives.ReadUInt32LittleEndian(header);
         uint version = BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(4));
         ulong cxOff = BinaryPrimitives.ReadUInt64LittleEndian(header.AsSpan(24));
@@ -98,16 +100,18 @@ public readonly record struct ShaderInfo(
 
         return new ShaderInfo(
             magic, version, kind, headerSize, shaderSize, codeSize,
-            ReadRegisters(header, cxOff, numCx),
-            ReadRegisters(header, shOff, numSh));
+            ReadRegisters(header, 24, cxOff, numCx),
+            ReadRegisters(header, 32, shOff, numSh));
     }
 
     // A register array stored in the header: each entry is a two-byte offset then a four-byte value, at a
-    // four-byte boundary (eight bytes total). The array's start is a byte offset from the header block.
-    private static List<ShaderRegisterWrite> ReadRegisters(byte[] header, ulong arrayOffset, int count)
+    // four-byte boundary (eight bytes total). The stored pointer value is a byte offset from its own field.
+    private static List<ShaderRegisterWrite> ReadRegisters(
+        byte[] header, int pointerFieldOffset, ulong relativeOffset, int count)
     {
-        if (count <= 0 || arrayOffset == 0)
+        if (count <= 0 || relativeOffset == 0)
             return [];
+        long arrayOffset = pointerFieldOffset + checked((long)relativeOffset);
         var writes = new List<ShaderRegisterWrite>(count);
         for (int i = 0; i < count; i++)
         {
