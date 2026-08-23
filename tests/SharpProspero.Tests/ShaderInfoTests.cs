@@ -53,6 +53,9 @@ public class ShaderInfoTests
         Assert.Contains(
             info.ContextRegisters,
             register => register.Offset == 0x0291 && register.Value == 0x10020040);
+        Assert.Contains(
+            info.ContextRegisters,
+            register => register.Offset == 0x02E4 && register.Value == 0x00000000);
         Assert.DoesNotContain(info.ContextRegisters, register => register.Offset == 0x0000);
     }
 
