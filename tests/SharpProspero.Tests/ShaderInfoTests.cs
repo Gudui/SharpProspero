@@ -1,6 +1,9 @@
 using SharpProspero.Graphics.Agc;
 using SharpProspero.Prx;
+using System;
+using System.Buffers.Binary;
 using System.IO;
+using System.Security.Cryptography;
 using Xunit;
 
 namespace SharpProspero.Tests;
@@ -14,6 +17,32 @@ public class ShaderInfoTests
         byte[] bytes = new byte[stream.Length];
         stream.ReadExactly(bytes);
         return bytes;
+    }
+
+    private static byte[] LoadShaderSection(byte[] container, string wantedName)
+    {
+        ulong sectionTableOffset = BinaryPrimitives.ReadUInt64LittleEndian(container.AsSpan(0x28));
+        ushort sectionEntrySize = BinaryPrimitives.ReadUInt16LittleEndian(container.AsSpan(0x3A));
+        ushort sectionCount = BinaryPrimitives.ReadUInt16LittleEndian(container.AsSpan(0x3C));
+        ushort stringTableIndex = BinaryPrimitives.ReadUInt16LittleEndian(container.AsSpan(0x3E));
+        int stringRecord = checked((int)sectionTableOffset + stringTableIndex * sectionEntrySize);
+        int stringTableOffset = checked((int)BinaryPrimitives.ReadUInt64LittleEndian(container.AsSpan(stringRecord + 24)));
+
+        for (int index = 0; index < sectionCount; index++)
+        {
+            int record = checked((int)sectionTableOffset + index * sectionEntrySize);
+            int nameOffset = checked(stringTableOffset + (int)BinaryPrimitives.ReadUInt32LittleEndian(container.AsSpan(record)));
+            int nameEnd = Array.IndexOf(container, (byte)0, nameOffset);
+            string name = System.Text.Encoding.ASCII.GetString(container, nameOffset, nameEnd - nameOffset);
+            if (name != wantedName)
+                continue;
+
+            int offset = checked((int)BinaryPrimitives.ReadUInt64LittleEndian(container.AsSpan(record + 24)));
+            int size = checked((int)BinaryPrimitives.ReadUInt64LittleEndian(container.AsSpan(record + 32)));
+            return container[offset..(offset + size)];
+        }
+
+        throw new IOException($"Missing shader section {wantedName}.");
     }
 
     [Theory]
@@ -40,6 +69,22 @@ public class ShaderInfoTests
     {
         ShaderInfo info = ShaderInfo.Read(LoadShaderResource("SharpProspero.Shaders.mesh_ps.sb"));
         Assert.Equal("pixel", info.KindName);
+    }
+
+    [Fact]
+    public void Read_MeshPixelShaderAdvertisesOnlyItsUncompressedMrt0Export()
+    {
+        byte[] container = LoadShaderResource("SharpProspero.Shaders.mesh_ps.sb");
+        ShaderInfo info = ShaderInfo.Read(container);
+
+        Assert.Equal(9, info.ContextRegisters.Count);
+        Assert.Equal(5, info.ShaderRegisters.Count);
+        Assert.Contains(info.ContextRegisters, register => register.Offset == 0x01C4 && register.Value == 0);
+        Assert.Contains(info.ContextRegisters, register => register.Offset == 0x01C5 && register.Value == 9);
+        Assert.Contains(info.ContextRegisters, register => register.Offset == 0x01B8 && register.Value == 9);
+        Assert.Equal(
+            "f62be2093642e923be5ba72cf2c61fa1ae0555584c69e289d3bd7416922659b6",
+            Convert.ToHexString(SHA256.HashData(LoadShaderSection(container, ".shader_text"))).ToLowerInvariant());
     }
 
     [Fact]
