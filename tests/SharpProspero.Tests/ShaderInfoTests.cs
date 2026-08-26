@@ -81,7 +81,9 @@ public class ShaderInfoTests
         Assert.Equal(5, info.ShaderRegisters.Count);
         Assert.Contains(info.ContextRegisters, register => register.Offset == 0x01C4 && register.Value == 0);
         Assert.Contains(info.ContextRegisters, register => register.Offset == 0x01C5 && register.Value == 9);
-        Assert.Contains(info.ContextRegisters, register => register.Offset == 0x01B8 && register.Value == 9);
+        Assert.Contains(
+            info.ContextRegisters,
+            register => register.Offset == 0x01B8 && register.Value == 0x01000000);
         Assert.Equal(
             "f62be2093642e923be5ba72cf2c61fa1ae0555584c69e289d3bd7416922659b6",
             Convert.ToHexString(SHA256.HashData(LoadShaderSection(container, ".shader_text"))).ToLowerInvariant());
