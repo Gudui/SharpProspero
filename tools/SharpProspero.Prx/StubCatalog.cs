@@ -1215,6 +1215,7 @@ public static class StubCatalog
         "sceAgcFuseShaderHalves",
         "sceAgcGetDataPacketPayloadAddress",
         "sceAgcGetFusedShaderSize",
+        "sceAgcGetGsOversubscription",
         "sceAgcGetPacketSize",
         "sceAgcGetRegisterDefaults",
         "sceAgcGetRegisterDefaults2",
