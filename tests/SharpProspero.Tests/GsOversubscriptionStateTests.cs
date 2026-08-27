@@ -1,4 +1,5 @@
 using SharpProspero.Graphics.Agc;
+using Xunit;
 
 namespace SharpProspero.Tests;
 
