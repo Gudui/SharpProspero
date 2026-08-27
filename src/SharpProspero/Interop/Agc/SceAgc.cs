@@ -269,6 +269,10 @@ public static unsafe partial class SceAgc
     [LibraryImport(Lib)]
     public static partial int sceAgcCreateShader(void* outShader, void* shaderHeader, void* gpuAddress);
 
+    /// <summary>Computes the coupled GE PC-allocation and GS late-allocation register records for a prepared geometry/NGG shader.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceAgcGetGsOversubscription(void* outRegisters, void* gsShader, uint budget, float factor);
+
     /// <summary>Appends an ACQUIRE_MEM GPU cache/sync packet to the draw command buffer, returning the advanced write cursor.</summary>
     [LibraryImport(Lib)]
     public static partial uint* sceAgcDcbAcquireMem(void* commandBuffer, byte engine, uint coherCntl, uint coherSize, ulong coherSizeHi, void* baseAddr, uint pollInterval);
