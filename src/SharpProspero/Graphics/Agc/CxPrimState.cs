@@ -16,7 +16,7 @@ public sealed unsafe class CxPrimState
     public const int DriverMaxRegisters = 2;
 
     /// <summary>Maximum number of primitive and required NGG context registers.</summary>
-    public const int MaxRegisters = DriverMaxRegisters + 1;
+    public const int MaxRegisters = DriverMaxRegisters + 2;
 
     /// <summary>PA_SC_NGG_MODE_CNTL context-register offset.</summary>
     public const ushort NggModeControlOffset = 0x0314;
@@ -26,6 +26,15 @@ public sealed unsafe class CxPrimState
     /// deadlocking while it waits for parameter-cache space; MAX_FPOVS_IN_WAVE remains zero.
     /// </summary>
     public const uint NggModeControlValue = 0x00000200;
+
+    /// <summary>PA_CL_NGG_CNTL context-register offset.</summary>
+    public const ushort NggClipControlOffset = 0x020E;
+
+    /// <summary>
+    /// GFX10 NGG edge-flag enable and vertex-reuse depth. This matches the complete non-tessellated,
+    /// no-logical-GS pipeline value emitted by the reference GFX10.3 driver.
+    /// </summary>
+    public const uint NggClipControlValue = 0x0000007A;
 
     private readonly CxRegister[] _regs = new CxRegister[MaxRegisters];
     private int _count;
@@ -71,6 +80,12 @@ public sealed unsafe class CxPrimState
             "AGC_PRIMSTATE_CX_REG index=" + DriverMaxRegisters +
             " offset=0x" + NggModeControlOffset.ToString("X4") +
             " value=0x" + NggModeControlValue.ToString("X8") +
+            " owner=sharp_prospero_ngg_state");
+        state._regs[valid++] = new CxRegister(NggClipControlOffset, NggClipControlValue);
+        trace?.Invoke(
+            "AGC_PRIMSTATE_CX_REG index=" + (DriverMaxRegisters + 1) +
+            " offset=0x" + NggClipControlOffset.ToString("X4") +
+            " value=0x" + NggClipControlValue.ToString("X8") +
             " owner=sharp_prospero_ngg_state");
         state._count = valid;
         trace?.Invoke("AGC_PRIMSTATE_CX_TOTAL count=" + state._count);
