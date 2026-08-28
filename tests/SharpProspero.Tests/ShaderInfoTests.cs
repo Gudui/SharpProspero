@@ -90,6 +90,18 @@ public class ShaderInfoTests
     }
 
     [Fact]
+    public void Read_MeshVertexShaderMatchesTheValidatedNggExportProgram()
+    {
+        byte[] container = LoadShaderResource("SharpProspero.Shaders.mesh_vs.sb");
+
+        // The validated gfx1030 program completes its primitive and position exports. Parameter
+        // exports do not own the position-stage completion bit.
+        Assert.Equal(
+            "18bf29a20ee7a3ef478d23d76ed4189938568650a006e0e26f4e8e115cc8a531",
+            Convert.ToHexString(SHA256.HashData(LoadShaderSection(container, ".shader_text"))).ToLowerInvariant());
+    }
+
+    [Fact]
     public void Read_ResolvesSelfRelativeRegisterPointers()
     {
         ShaderInfo info = ShaderInfo.Read(LoadShaderResource("SharpProspero.Shaders.mesh_vs.sb"));
