@@ -1,6 +1,7 @@
 ---
 title: Modules and libraries
-nav_order: 16
+parent: Application Modules
+nav_order: 11
 ---
 
 # Modules and libraries

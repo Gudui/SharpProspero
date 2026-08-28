@@ -13,7 +13,7 @@
 // turned away while its program headers are scanned, so it is part of the required shape rather than
 // a convenience.
 //
-// Structure is validated against the reference module format. Loading on the device is the final step.
+// Structure follows the required dynamic section format. Loading on the device is the final step.
 
 using SharpProspero.Prx;
 using System;

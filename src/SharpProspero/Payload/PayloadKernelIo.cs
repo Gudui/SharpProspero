@@ -1,39 +1,30 @@
 // SharpProspero - a C# SDK for on-device application modules.
 // Copyright (C) 2026 SvenGDK
 
-using SharpProspero.Interop.Posix;
+using System.Runtime.InteropServices;
 
 namespace SharpProspero.Payload;
 
 /// <summary>
-/// Reads and writes kernel memory through the pipe primitive the loader set up before launching the
-/// payload. Two corrupted sockets redirect the pipe's internal buffer pointer to an arbitrary kernel
-/// data address; a subsequent <c>read</c> or <c>write</c> on the pipe moves bytes at that address.
+/// Reads and writes kernel memory through the CRT's pipe-based read/write primitives. The CRT
+/// latches the pipe address and socket descriptors during <c>__sp_kernel_init</c>, so every
+/// operation routes through the same proven mechanism that the CRT's own process-walk and
+/// credential-patch code uses.
 /// </summary>
 /// <remarks>
 /// <para>
-/// Each operation makes four <c>setsockopt</c> calls (two per phase) using <c>IPV6_PKTINFO</c> and a
-/// twenty-byte <c>in6_pktinfo</c> buffer. Phase one resets the pipe's control fields through the
-/// first socket and configures the second socket's target. Phase two shifts the second socket's
-/// target to the pipe's buffer-pointer field and writes the desired kernel address through it.
+/// Each read dispatches through <c>__sp_kernel_copyout</c> (kernel to user) and each write
+/// through <c>__sp_kernel_copyin</c> (user to kernel). Both functions set up the corrupted pipe
+/// via <c>kernel_write</c> and then issue a raw <c>SYS_read</c> or <c>SYS_write</c> through the
+/// CRT's syscall gadget.
 /// </para>
 /// <para>
 /// Only kernel data and heap addresses are reachable. Kernel text addresses cause the pipe's
 /// page-fault path to wedge the calling thread; the caller must not pass them.
 /// </para>
 /// </remarks>
-public readonly unsafe struct PayloadKernelIo
+public readonly unsafe partial struct PayloadKernelIo
 {
-    private const int IpprotoIpv6 = 41;
-    private const int Ipv6Pktinfo = 46;
-    private const uint PktinfoLen = 20;
-
-    /// <summary>Phase-one value for a read: sets pipe cnt to a large value so <c>read</c> succeeds.</summary>
-    private const ulong ReadPhase1Addr = 0x40000000_40000000;
-
-    /// <summary>Phase-one padding whose byte 15 (0x40) lands in the pipe's <c>size</c> field as 0x40000000.</summary>
-    private const ulong Phase1Pad = 0x40000000_00000000;
-
     private readonly int _masterSock;
     private readonly int _victimSock;
     private readonly int _pipeRead;
@@ -50,77 +41,121 @@ public readonly unsafe struct PayloadKernelIo
         _overlapBase = args->KernelPipeAddress;
     }
 
-    /// <summary>Reads an eight-byte value from a kernel data address.</summary>
+    /// <summary>Reads an eight-byte value from a kernel data address. Returns zero when the
+    /// underlying copyout fails; prefer <see cref="TryReadU64"/> for callers that need to
+    /// distinguish a genuine zero from a primitive failure.</summary>
     public ulong ReadU64(ulong kaddr)
     {
-        ulong value;
-        Redirect(kaddr, ReadPhase1Addr);
-        PosixIo.read(_pipeRead, &value, 8);
+        ulong value = 0;
+        CrtCopyout(kaddr, &value, 8);
         return value;
     }
 
-    /// <summary>Reads a four-byte value from a kernel data address.</summary>
+    /// <summary>Reads a four-byte value from a kernel data address. Returns zero when the
+    /// underlying copyout fails; prefer <see cref="TryReadU32"/> for callers that need to
+    /// distinguish a genuine zero from a primitive failure.</summary>
     public uint ReadU32(ulong kaddr)
     {
-        uint value;
-        Redirect(kaddr, ReadPhase1Addr);
-        PosixIo.read(_pipeRead, &value, 4);
+        uint value = 0;
+        CrtCopyout(kaddr, &value, 4);
         return value;
     }
 
-    /// <summary>Writes an eight-byte value to a kernel data address.</summary>
+    /// <summary>Writes an eight-byte value to a kernel data address. The underlying copyin
+    /// return value is discarded; prefer <see cref="TryWriteU64"/> when the caller needs to
+    /// detect write failures.</summary>
     public void WriteU64(ulong kaddr, ulong value)
     {
-        Redirect(kaddr, 0);
-        PosixIo.write(_pipeWrite, &value, 8);
+        CrtCopyin(&value, kaddr, 8);
     }
 
-    /// <summary>Writes a four-byte value to a kernel data address.</summary>
+    /// <summary>Writes a four-byte value to a kernel data address. The underlying copyin
+    /// return value is discarded; prefer <see cref="TryWriteU32"/> when the caller needs to
+    /// detect write failures.</summary>
     public void WriteU32(ulong kaddr, uint value)
     {
-        Redirect(kaddr, 0);
-        PosixIo.write(_pipeWrite, &value, 4);
+        CrtCopyin(&value, kaddr, 4);
     }
 
-    /// <summary>Reads <paramref name="length"/> bytes from a kernel data address into a user buffer.</summary>
+    /// <summary>Reads <paramref name="length"/> bytes from a kernel data address into a user
+    /// buffer. The underlying copyout return value is discarded; prefer <see cref="TryRead"/>
+    /// when the caller needs to detect read failures.</summary>
     public void Read(ulong kaddr, byte* buffer, int length)
     {
-        Redirect(kaddr, ReadPhase1Addr);
-        PosixIo.read(_pipeRead, buffer, (ulong)length);
+        CrtCopyout(kaddr, buffer, (ulong)length);
     }
 
-    /// <summary>Writes <paramref name="length"/> bytes from a user buffer to a kernel data address.</summary>
+    /// <summary>Writes <paramref name="length"/> bytes from a user buffer to a kernel data
+    /// address. The underlying copyin return value is discarded; prefer <see cref="TryWrite"/>
+    /// when the caller needs to detect write failures.</summary>
     public void Write(ulong kaddr, byte* buffer, int length)
     {
-        Redirect(kaddr, 0);
-        PosixIo.write(_pipeWrite, buffer, (ulong)length);
+        CrtCopyin(buffer, kaddr, (ulong)length);
     }
 
-    /// <summary>
-    /// Redirects the pipe's buffer pointer to <paramref name="kaddr"/> through the two-phase
-    /// setsockopt sequence.
-    /// </summary>
-    private void Redirect(ulong kaddr, ulong phase1Addr)
+    // ---- Checked (Try) variants ----
+    //
+    // Each method returns true when the pipe primitive's return code is zero (success) and
+    // false otherwise. These should be preferred over the unchecked variants above for any
+    // code path where a silent zero could mask a primitive failure.
+
+    /// <summary>Attempts to read an eight-byte value from a kernel data address.</summary>
+    /// <returns><see langword="true"/> when the copyout succeeded and <paramref name="value"/>
+    /// holds the kernel data; <see langword="false"/> on primitive failure.</returns>
+    public bool TryReadU64(ulong kaddr, out ulong value)
     {
-        byte* m = stackalloc byte[20];
-        byte* v = stackalloc byte[20];
-
-        *(ulong*)m = _overlapBase;
-        *(ulong*)(m + 8) = 0;
-        *(uint*)(m + 16) = 0;
-
-        *(ulong*)v = phase1Addr;
-        *(ulong*)(v + 8) = Phase1Pad;
-        *(uint*)(v + 16) = 0;
-
-        PosixSocket.setsockopt(_masterSock, IpprotoIpv6, Ipv6Pktinfo, m, PktinfoLen);
-        PosixSocket.setsockopt(_victimSock, IpprotoIpv6, Ipv6Pktinfo, v, PktinfoLen);
-
-        *(ulong*)m = _overlapBase + 0x10;
-        PosixSocket.setsockopt(_masterSock, IpprotoIpv6, Ipv6Pktinfo, m, PktinfoLen);
-
-        *(ulong*)v = kaddr;
-        *(ulong*)(v + 8) = 0;
-        PosixSocket.setsockopt(_victimSock, IpprotoIpv6, Ipv6Pktinfo, v, PktinfoLen);
+        ulong tmp = 0;
+        int rc = CrtCopyout(kaddr, &tmp, 8);
+        value = tmp;
+        return rc == 0;
     }
+
+    /// <summary>Attempts to read a four-byte value from a kernel data address.</summary>
+    /// <returns><see langword="true"/> when the copyout succeeded and <paramref name="value"/>
+    /// holds the kernel data; <see langword="false"/> on primitive failure.</returns>
+    public bool TryReadU32(ulong kaddr, out uint value)
+    {
+        uint tmp = 0;
+        int rc = CrtCopyout(kaddr, &tmp, 4);
+        value = tmp;
+        return rc == 0;
+    }
+
+    /// <summary>Attempts to write an eight-byte value to a kernel data address.</summary>
+    /// <returns><see langword="true"/> when the copyin succeeded.</returns>
+    public bool TryWriteU64(ulong kaddr, ulong value)
+    {
+        return CrtCopyin(&value, kaddr, 8) == 0;
+    }
+
+    /// <summary>Attempts to write a four-byte value to a kernel data address.</summary>
+    /// <returns><see langword="true"/> when the copyin succeeded.</returns>
+    public bool TryWriteU32(ulong kaddr, uint value)
+    {
+        return CrtCopyin(&value, kaddr, 4) == 0;
+    }
+
+    /// <summary>Attempts to read <paramref name="length"/> bytes from a kernel data
+    /// address into a user buffer.</summary>
+    /// <returns><see langword="true"/> when the copyout succeeded.</returns>
+    public bool TryRead(ulong kaddr, byte* buffer, int length)
+    {
+        return CrtCopyout(kaddr, buffer, (ulong)length) == 0;
+    }
+
+    /// <summary>Attempts to write <paramref name="length"/> bytes from a user buffer to a
+    /// kernel data address.</summary>
+    /// <returns><see langword="true"/> when the copyin succeeded.</returns>
+    public bool TryWrite(ulong kaddr, byte* buffer, int length)
+    {
+        return CrtCopyin(buffer, kaddr, (ulong)length) == 0;
+    }
+
+    [SuppressGCTransition]
+    [LibraryImport("libScePosix", EntryPoint = "__sp_kernel_copyout")]
+    private static partial int CrtCopyout(ulong kaddr, void* uaddr, ulong len);
+
+    [SuppressGCTransition]
+    [LibraryImport("libScePosix", EntryPoint = "__sp_kernel_copyin")]
+    private static partial int CrtCopyin(void* uaddr, ulong kaddr, ulong len);
 }

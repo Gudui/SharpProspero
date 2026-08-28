@@ -37,6 +37,9 @@ public static class KernelOffsets1001
     /// <summary><c>p_pid</c>: the process identifier (four bytes).</summary>
     public const int ProcPid = 0xBC;
 
+    /// <summary>The title identifier for the running application, a ten-byte inline string.</summary>
+    public const int ProcTitleId = 0x470;
+
     /// <summary><c>p_comm</c>: the process name, an inline seventeen-byte array.</summary>
     public const int ProcComm = 0x5DC;
 
@@ -55,6 +58,9 @@ public static class KernelOffsets1001
     /// <summary><c>cr_svuid</c>: the saved user identifier (four bytes).</summary>
     public const int UcredSvuid = 0x0C;
 
+    /// <summary><c>cr_ngroups</c>: the supplementary group count (four bytes).</summary>
+    public const int UcredNgroups = 0x10;
+
     /// <summary><c>cr_rgid</c>: the real group identifier (four bytes).</summary>
     public const int UcredRgid = 0x14;
 
@@ -69,4 +75,13 @@ public static class KernelOffsets1001
 
     /// <summary><c>cr_sceCaps</c>: the first eight bytes of the capability set.</summary>
     public const int UcredSceCaps = 0x60;
+
+    /// <summary><c>cr_sceAttrs</c>: the base of the 32-byte attribute block.</summary>
+    public const int UcredSceAttrs = 0x80;
+
+    /// <summary>The privilege attribute byte within the attribute block (one byte).</summary>
+    public const int UcredSceAttr0 = 0x83;
+
+    /// <summary><c>pr_ref</c>: the prison reference count (four bytes).</summary>
+    public const int PrisonRef = 0x14;
 }

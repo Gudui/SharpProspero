@@ -1,7 +1,8 @@
 ---
 title: Firmware compatibility
-nav_order: 7
 parent: System services
+grand_parent: Application Modules
+nav_order: 7
 ---
 
 # Firmware compatibility

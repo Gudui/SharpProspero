@@ -12,6 +12,10 @@ public static unsafe partial class PosixIo
 {
     private const string Lib = "libScePosix";
 
+    /// <summary>Opens a path, returning the file descriptor or a negative error.</summary>
+    [LibraryImport(Lib)]
+    public static partial int open(byte* path, int flags);
+
     /// <summary>Reads up to <paramref name="nbytes"/> from <paramref name="fd"/> into <paramref name="buf"/>.</summary>
     [LibraryImport(Lib)]
     public static partial long read(int fd, void* buf, ulong nbytes);
@@ -19,4 +23,8 @@ public static unsafe partial class PosixIo
     /// <summary>Writes up to <paramref name="nbytes"/> from <paramref name="buf"/> to <paramref name="fd"/>.</summary>
     [LibraryImport(Lib)]
     public static partial long write(int fd, void* buf, ulong nbytes);
+
+    /// <summary>Returns the process identifier of the calling process.</summary>
+    [LibraryImport(Lib)]
+    public static partial int getpid();
 }

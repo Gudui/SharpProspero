@@ -55,10 +55,15 @@ internal static class Program
             Console.WriteLine($"Package: {result.OutputPath}");
             Console.WriteLine($"Module:  {result.ModulePath}");
             // The result names the module; the copy to inspect is the one gathered in the input folder.
-            PrintReadiness(result.LaunchReadiness,
-                Path.IsPathRooted(result.ModulePath)
-                    ? result.ModulePath
-                    : Path.Combine(input, result.ModulePath));
+            // The module to inspect is the one gathered in the input folder. The packer answers with a
+            // path that may be relative and may be only a file name, and the name is whatever --module
+            // asked for, so the two are joined rather than assuming the default name sits at the root.
+            string gathered = Path.IsPathRooted(result.ModulePath)
+                ? result.ModulePath
+                : Path.Combine(input, result.ModulePath);
+            if (!File.Exists(gathered))
+                gathered = Path.Combine(input, Path.GetFileName(result.ModulePath));
+            PrintReadiness(result.LaunchReadiness, gathered);
             PrintWarnings(result.Warnings);
             return 0;
         }
@@ -71,6 +76,19 @@ internal static class Program
         {
             Console.Error.WriteLine($"File error: {ex.Message}");
             return 3;
+        }
+        catch (Exception ex)
+        {
+            // The packing library builds its tables from the compressed shape of the whole staged tree,
+            // and a shape it does not handle surfaces here as whatever it threw. Reported raw that is a
+            // managed stack trace and nothing an author can act on, so it is named and turned into an
+            // exit code of its own; the folder output is unaffected and remains the way to get a module
+            // onto a console meanwhile.
+            Console.Error.WriteLine($"The package could not be built: {ex.GetType().Name}: {ex.Message}");
+            Console.Error.WriteLine("  This is a limit of the packing step, not of the module. The module");
+            Console.Error.WriteLine("  folder itself is complete and can be copied to a console as it is.");
+            Console.Error.WriteLine("  Building through build-app.ps1 with -Output Folder skips this step.");
+            return 4;
         }
     }
 

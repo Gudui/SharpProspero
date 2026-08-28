@@ -1,6 +1,7 @@
 ---
 title: System information
 parent: System services
+grand_parent: Application Modules
 nav_order: 1
 ---
 

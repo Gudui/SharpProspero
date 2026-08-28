@@ -1,6 +1,7 @@
 ---
 title: Input
-nav_order: 7
+parent: Application Modules
+nav_order: 3
 ---
 
 # Input
@@ -50,7 +51,7 @@ protected override void OnFrame(FrameContext context)
 }
 ```
 
-See [Application](application.md) for the frame context and [Guides](guides.md) for worked examples.
+See [Application](application.md) for the frame context and [Tips for application modules](extras-app-module-tips.md) for worked examples.
 
 ### Buttons, sticks and triggers
 

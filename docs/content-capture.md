@@ -1,6 +1,7 @@
 ---
 title: Content and capture
 parent: System services
+grand_parent: Application Modules
 nav_order: 5
 ---
 

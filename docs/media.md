@@ -1,6 +1,7 @@
 ---
 title: Media
-nav_order: 9
+parent: Application Modules
+nav_order: 5
 ---
 
 # Media
@@ -80,7 +81,7 @@ while (player.IsActive)
 `ChannelCount`. `AudioOutDevice.Output` plays exactly `SamplesPerBlock` interleaved stereo samples at the
 rate the output was opened with - 48000 or 192000 - and raises `ArgumentException` for a shorter span.
 Buffer each frame, spread a mono track across both channels, and step through the samples at the ratio
-between the file's rate and the output's, then push whole blocks. The media template shows the loop.
+between the file's rate and the output's, then push whole blocks. The `prospero-media` sample shows the loop.
 
 `TryGetAudioFrame` and `TryGetVideoFrame` return `false` when nothing has been decoded yet. That is
 normal while the player is still filling, so keep calling. The player reads the file itself and decodes

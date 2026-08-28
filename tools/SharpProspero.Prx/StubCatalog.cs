@@ -94,6 +94,8 @@ public static class StubCatalog
         // This library publishes module version 2.1.
         new Entry("libSceSsl", Ssl, ModuleVersion: 0x0201),
         new Entry("libSceHttp", Http),
+        new Entry("libSceHttp2", Http2),
+        new Entry("libkernel_sys", KernelSys, ModuleName: "libkernel", Soname: "libkernel.prx"),
         new Entry("libSceContentDelete", ContentDelete),
         new Entry("libSceContentExport", ContentExport),
         // This library publishes module version 1.0, like the media player and play-go.
@@ -191,6 +193,7 @@ public static class StubCatalog
         "sceKernelMunmap", "sceKernelOpen", "sceKernelRead", "sceKernelReleaseDirectMemory",
         "sceKernelReleaseFlexibleMemory", "sceKernelRename", "sceKernelRmdir", "sceKernelSendNotificationRequest",
         "sceKernelStopUnloadModule", "sceKernelTruncate", "sceKernelUnlink", "sceKernelUsleep",
+        "sceKernelGetAppInfo",
         "sceKernelVirtualQuery", "sceKernelWrite",
         "scePthreadGetthreadid",
         "scePthreadCondattrInit", "scePthreadCondattrDestroy",
@@ -252,6 +255,11 @@ public static class StubCatalog
         "sceKernelCheckedReleaseDirectMemory", "sceKernelMemoryPoolGetBlockStats",
         // What the process is and what it was started with.
         "getargc", "getargv", "sceKernelUuidCreate",
+        // The event queue's direct entries. An application that manages its own event sources
+        // through the queue's descriptor rather than the higher-level wrappers above reaches for
+        // these. The wrappers do not expose the process filter, so an application that needs it
+        // has to ask by name.
+        "kqueue", "kevent",
     ];
 
     // The portable operating-system interface the platform layer forwards to. These are published
@@ -260,8 +268,8 @@ public static class StubCatalog
     private static readonly string[] Posix =
     [
         "chmod", "clock_gettime", "close", "fchmod",
-        // The platform's own socket calls under their plain names, which a payload reaches by name at run
-        // time and an application may link directly.
+        // The socket calls under their plain names, which the interop bindings declare and an application
+        // module links against directly.
         "socket", "bind", "listen", "accept", "connect", "send", "recv", "setsockopt", "shutdown",
         "fcntl", "flock", "fstat", "fsync",
         "ftruncate", "getdents", "getpid", "getsockopt", "gettimeofday",
@@ -274,7 +282,8 @@ public static class StubCatalog
         "pthread_cond_signal", "pthread_cond_timedwait", "pthread_cond_wait", "pthread_condattr_destroy",
         // The older pair of timestamp routines, which the finer pair the runtime asks for stands on.
         "utimes", "futimes",
-        "pthread_condattr_init", "pthread_condattr_setclock", "pthread_create", "pthread_key_create",
+        "pthread_condattr_init", "pthread_condattr_setclock", "pthread_create", "pthread_getspecific",
+        "pthread_key_create",
         "pthread_mutex_destroy", "pthread_mutex_init", "pthread_mutex_lock", "pthread_mutex_unlock",
         "pthread_mutexattr_destroy", "pthread_mutexattr_init", "pthread_mutexattr_settype", "pthread_rwlock_rdlock",
         "pthread_rwlock_unlock", "pthread_rwlock_wrlock", "pthread_self", "pthread_setcancelstate",
@@ -290,6 +299,7 @@ public static class StubCatalog
         // Naming a thread. The compat object forwards to this one rather than to the kernel library's
         // own, because this one answers a plain error number and the other wraps it into a code.
         "pthread_rename_np",
+        "sysctl", "getmntinfo", "ptrace", "wait4", "waitpid", "getuid", "geteuid",
     ];
 
     // C runtime: the allocation, memory, string, control, formatting, and unwind functions the
@@ -339,7 +349,7 @@ public static class StubCatalog
         "strtok_r", "strtol", "strtoll", "strtoul",
         "strtoull", "tan", "tanf", "time",
         "trunc", "truncf", "vsnprintf",
-        "_Stderr", "_Stdout",
+        "__stderrp", "__stdoutp", "__stdinp",
         "_init_env",
     ];
 
@@ -413,6 +423,7 @@ public static class StubCatalog
         "sceSystemServiceSetGpuLoadEmulationMode",
         "sceSystemServiceGetGpuLoadEmulationMode",
         "sceSystemServiceReportAbnormalTermination",
+        "sceSystemServiceLaunchWebBrowser",
     ];
 
     private static readonly string[] AudioOut =
@@ -1021,6 +1032,7 @@ public static class StubCatalog
         "sceNetResolverCreate",
         "sceNetResolverStartNtoa",
         "sceNetResolverDestroy",
+        "sceNetInit",
     ];
 
     // The TLS context the HTTP service uses.
@@ -1093,6 +1105,23 @@ public static class StubCatalog
         "sceHttpsLoadCert",
         "sceHttpsSetSslVersion",
         "sceHttpsUnloadCert",
+    ];
+
+    // HTTP/2 client. Used by the http2_get template for HTTP/2 requests.
+    private static readonly string[] Http2 =
+    [
+        "sceHttp2Init", "sceHttp2Term",
+        "sceHttp2CreateTemplate", "sceHttp2DeleteTemplate",
+        "sceHttp2CreateRequestWithURL", "sceHttp2DeleteRequest",
+        "sceHttp2SendRequest", "sceHttp2GetStatusCode", "sceHttp2ReadData",
+    ];
+
+    // Hardware information from the kernel system-level interface.
+    private static readonly string[] KernelSys =
+    [
+        "sceKernelGetHwModelName", "sceKernelGetHwSerialNumber",
+        "sceKernelGetCpuFrequency", "sceKernelGetCpuTemperature",
+        "sceKernelGetSocSensorTemperature",
     ];
 
     // Asynchronous zlib decompression.
@@ -1240,6 +1269,7 @@ public static class StubCatalog
         "sceAppInstUtilAppGetSize",
         "sceAppInstUtilAppUnInstall",
         "sceAppInstUtilAppUnInstall2",
+        "sceAppInstUtilAppInstallTitleDir",
     ];
 
     // USB mass storage, resolved by name at run time (Platform.UsbStorage). Kept in step with the

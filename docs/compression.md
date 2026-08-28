@@ -1,6 +1,7 @@
 ---
 title: Compression and archives
 parent: Data and utilities
+grand_parent: Application Modules
 nav_order: 7
 ---
 

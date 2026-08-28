@@ -1,6 +1,7 @@
 ---
 title: 2D scenes
 parent: Graphics
+grand_parent: Application Modules
 nav_order: 1
 ---
 

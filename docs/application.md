@@ -1,10 +1,11 @@
 ---
-title: Application
-nav_order: 12
+title: Application host
+parent: Application Modules
+nav_order: 1
 has_children: true
 ---
 
-# Application
+# Application host
 
 `SharpProspero.Application` is the layer that turns a module into a running program: a base class that owns the display, controller and frame loop, and a few plain-logic helpers for structuring the code that runs inside it. Everything on this page lives in `SharpProspero.Application`.
 

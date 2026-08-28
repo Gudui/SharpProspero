@@ -1,7 +1,7 @@
 ---
 title: Bindings
-nav_order: 4
-parent: Toolchain
+parent: References
+nav_order: 1
 ---
 
 # Bindings

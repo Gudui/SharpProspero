@@ -1,6 +1,7 @@
 ---
 title: Buffers and encodings
 parent: Data and utilities
+grand_parent: Application Modules
 nav_order: 3
 ---
 

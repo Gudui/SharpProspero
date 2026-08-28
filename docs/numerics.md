@@ -1,6 +1,7 @@
 ---
 title: Numerics and vectors
 parent: Data and utilities
+grand_parent: Application Modules
 nav_order: 2
 ---
 

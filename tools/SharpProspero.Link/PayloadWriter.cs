@@ -2,11 +2,10 @@
 // Copyright (C) 2026 SvenGDK
 //
 // Writes a position-independent payload: a plain ET_DYN executable an ELF loader maps at a fresh base
-// and runs in an existing process. Unlike an application module, a payload has no dynamic linker to bind
-// its references: the loader applies only base-relative fix-ups, so every reference to an outside symbol
-// is resolved at run time through a resolver the loader hands the entry point. The writer emits the
-// relative relocations in a relocation section (the loader reads section headers to find them), routes
-// each outside reference through a slot the start code fills, and records the names to resolve.
+// and runs in an existing process. The loader applies base-relative fix-ups from a relocation section it
+// reads by section header. The CRT embedded in the payload then reads the dynamic
+// section (PT_DYNAMIC) to discover needed libraries, walks the dynamic symbol table for undefined
+// references, and resolves each one against the host process's loaded modules.
 
 using System;
 using System.Buffers.Binary;
@@ -21,30 +20,81 @@ public static class PayloadWriter
 {
     private const ulong SegAlign = 0x4000;
     private const uint PfX = 1, PfW = 2, PfR = 4;
-    private const uint PtLoad = 1;
+    private const uint PtLoad = 1, PtDynamic = 2;
     private const uint RRelative = 8;            // R_X86_64_RELATIVE
-    private const int ShtProgBits = 1, ShtStrTab = 3, ShtRela = 4, ShtNoBits = 8;
+    private const uint RGlobDat = 6;             // R_X86_64_GLOB_DAT
+    private const uint RJumpSlot = 7;            // R_X86_64_JUMP_SLOT
+    private const int ShtProgBits = 1, ShtSymTab = 2, ShtStrTab = 3, ShtRela = 4, ShtNoBits = 8;
+    private const int ShtDynSym = 11, ShtGnuHash = 0x6FFFFFF6, ShtDynamic = 6;
     private const ulong ShfAlloc = 0x2, ShfWrite = 0x1, ShfExec = 0x4;
+    private const ulong ShfMerge = 0x10, ShfStrings = 0x20, ShfInfo = 0x40;
     private const ushort ShnAbs = 0xFFF1, ShnCommon = 0xFFF2;
 
-    // The start object marks where the writer records the run-time resolution table, so the start code
-    // can walk it. The writer fills the two pointers and relocates them.
-    private const string ImportTableSymbol = "__prospero_payload_imports";
+    private const long DtNull = 0, DtNeeded = 1, DtGnuHash = 0x6FFFFEF5;
+    private const long DtPltGot = 3, DtStrTab = 5, DtSymTab = 6;
+    private const long DtRela = 7, DtRelaSz = 8, DtRelaEnt = 9, DtStrSz = 10, DtSymEnt = 11;
+    private const long DtPltRel = 20, DtDebug = 0x15, DtJmpRel = 23;
+    private const long DtInit_Array = 25, DtFini_Array = 26;
+    private const long DtInit_ArraySz = 27, DtFini_ArraySz = 28;
+    private const long DtPreInit_Array = 32, DtPreInit_ArraySz = 33;
+    private const long DtFlags1 = 0x6FFFFFFB;
+    private const long DtRelaCount = 0x6FFFFFF9;
+    private const long DtPltRelSz = 2;
+
+    private static readonly Dictionary<string, string> PayloadSonameMap = new(StringComparer.Ordinal)
+    {
+        // The payload host process (hijacked SceSpZeroConfMain) loads libkernel_sys.sprx, not
+        // libkernel_web.sprx. Route the generic "libkernel" alias to the sys variant so DT_NEEDED
+        // matches the actual runtime module and sceKernelLoadStartModule succeeds against a
+        // module already present in the process image.
+        ["libkernel.sprx"] = "libkernel_sys.sprx",
+    };
+
+    // A writable section the loader is meant to seal once its fix-ups run - the constructor and
+    // destructor arrays, and a compiler-marked read-only-after-init region - is placed alongside the
+    // read-only content in the middle segment, not out with the runtime data. Known working payloads
+    // group these together with the dynamic linking tables so a single load segment carries every
+    // region the loader binds; the run-time .data and .bss live in a segment of their own behind
+    // them, where mem-size exceeds file-size to cover the uninitialized tail.
+    private static readonly HashSet<string> RelroLikeSectionNames = new(StringComparer.Ordinal)
+    {
+        ".init_array", ".fini_array", ".preinit_array",
+        ".data.rel.ro", ".ctors", ".dtors",
+    };
+
+    private static bool IsRelroLike(string name)
+        => RelroLikeSectionNames.Contains(DynamicWriter.OutputSectionName(name));
 
     private readonly record struct Relative(ulong Offset, ulong Addend);
 
     private sealed class Extern
     {
+        /// <summary>The name the graph writes into a relocation - the key relocation binding uses.</summary>
         public required string Name { get; init; }
-        public ulong GotAddress { get; set; }     // the slot the start code fills through the resolver
+
+        /// <summary>
+        /// The name the resolver looks up at run time. Differs from <see cref="Name"/> when the graph
+        /// carries an alias for a published name (a compat routine standing in front of one keeps a name
+        /// of its own so its references reach the platform's), and when a reference the linker did not
+        /// find any stub for still starts with the alias prefix, in which case the prefix is dropped so
+        /// the platform's name is what the resolver sees.
+        /// </summary>
+        public required string LookupName { get; init; }
+
+        public ulong GotAddress { get; set; }     // the slot the rtld fills through GLOB_DAT
         public ulong PltAddress { get; set; }     // a stub that jumps through the slot
     }
 
     /// <summary>
     /// Writes the payload for <paramref name="resolution"/>, with <paramref name="entrySymbol"/> as the
-    /// entry the loader jumps to. Outside references become resolver slots the start code fills.
+    /// entry the loader jumps to. Outside references become dynamic symbol entries the runtime resolves.
     /// </summary>
-    public static byte[] Write(LinkResolution resolution, string? entrySymbol)
+    /// <param name="resolution">The resolved symbol graph from the linker.</param>
+    /// <param name="entrySymbol">The symbol the loader jumps to (typically <c>_start</c>).</param>
+    /// <param name="neededSprx">When non-null, the DT_NEEDED SPRX list to emit. Built by
+    /// <see cref="PayloadProfile.BuildNeededSprx"/>. When null, DT_NEEDED is derived from the
+    /// resolution's imports plus the three hardcoded defaults (backward-compatible path).</param>
+    public static byte[] Write(LinkResolution resolution, string? entrySymbol, string[]? neededSprx = null)
     {
         ArgumentNullException.ThrowIfNull(resolution);
 
@@ -53,25 +103,23 @@ public static class PayloadWriter
         // no dynamic linker, so an unresolved reference is not an error - it is a name for the resolver.
         var externByName = new Dictionary<string, Extern>(StringComparer.Ordinal);
         var externs = new List<Extern>();
-        void AddExtern(string name)
+        void AddExtern(string name, string? lookupName = null)
         {
-            // A name the linker itself settles is not an outside reference. The four self-description
-            // names and the constructor-array bounds are given real addresses in linkerDefined below.
-            // Left to become resolver slots they would resolve to a stub address at link time and never
-            // be filled at run time, so the module's own description of where its code and its exception
-            // index lie would read as garbage - and the first exception unwound through it would end the
-            // process instead of reaching its handler.
             if (name.Length == 0 || externByName.ContainsKey(name) || Linker.LinkerProvided.Contains(name)) return;
-            var e = new Extern { Name = name };
+            var e = new Extern { Name = name, LookupName = lookupName ?? name };
             externByName[name] = e;
             externs.Add(e);
         }
         foreach (ImportSymbol imp in resolution.Imports)
-            AddExtern(imp.Name);
+            AddExtern(imp.Name, imp.PublishedName);
         foreach (string name in resolution.Unresolved)
-            AddExtern(name);
+        {
+            string? lookup = name.StartsWith(Linker.DeviceAliasPrefix, StringComparison.Ordinal)
+                ? name[Linker.DeviceAliasPrefix.Length..]
+                : null;
+            AddExtern(name, lookup);
+        }
 
-        // A section-boundary name the writer itself provides is not an outside reference; hold those out.
         var sectionNames = new HashSet<string>(StringComparer.Ordinal);
         foreach (ElfObject o in resolution.Included)
             foreach (ElfSection s in o.Sections)
@@ -85,42 +133,49 @@ public static class PayloadWriter
                     {
                         ElfSymbol s = o.Symbols[(int)r.SymbolIndex];
                         if (s.IsUndefined && s.Name.Length > 0 && !resolution.Defined.ContainsKey(s.Name)
-                            && s.Name != ImportTableSymbol
                             && !Linker.IsEncapsulationSymbol(s.Name, sectionNames, out _, out _))
                             AddExtern(s.Name);
                     }
 
-        // Lay out the allocatable sections into three groups: executable, read-only, writable. The
-        // init/fini arrays lead the writable group so their run can be named by a contiguous range.
+        // Lay out the allocatable sections into three groups matching the corpus segment shape:
+        // (1) executable text and PLT stubs, mapped RWX so the loader can rewrite text after mapping;
+        // (2) a middle group carrying read-only object content, the writable-but-sealed relro-like
+        //     content (init/fini arrays, .data.rel.ro), and the synthesised dynamic tables and GOT;
+        // (3) a data group carrying only the run-time .data and .bss so p_memsz > p_filesz there.
         var offsetInGroup = new Dictionary<(ElfObject, int), ulong>();
         ulong textLen = 0, roLen = 0, dataMem = 0, dataFile = 0;
         ulong initStart = 0, initEnd = 0, finiStart = 0, finiEnd = 0;
         bool haveInit = false, haveFini = false;
         void PlaceArray(string name, ref ulong start, ref ulong end, ref bool have)
         {
-            // A constructor array given a priority carries that priority in its name, so it belongs to
-            // this array and has to be placed inside its run - matching the bare name skips it, and the
-            // run then covers only part of what should be walked. Within the run the order is the one
-            // the priorities ask for, lowest first, with the plain name last.
+            // A constructor/destructor array is a run of aligned eight-byte pointers. The membership
+            // predicate rejects anything that cannot possibly be one so a mis-declared or zero-filled
+            // section can never enlarge the run past the pointer entries it holds. Every accepted
+            // section carries file bytes, a positive size, an eight-byte-multiple size, and an
+            // alignment no larger than eight. Placement goes into the middle (relro-like) group so
+            // the corpus segment layout is preserved: init/fini arrays sit alongside .dynamic in
+            // the second LOAD, not out with the runtime data in the third.
             var members = new List<(ElfObject Obj, int Index)>();
             foreach (ElfObject obj in resolution.Included)
                 for (int i = 0; i < obj.Sections.Count; i++)
                 {
                     ElfSection sec = obj.Sections[i];
-                    if (sec is not { IsAlloc: true, IsTls: false, IsWritable: true }
+                    if (sec is not { IsAlloc: true, IsTls: false, IsWritable: true, IsNoBits: false }
+                        || sec.Size == 0 || (sec.Size % 8) != 0 || sec.AddrAlign > 8
                         || DynamicWriter.OutputSectionName(sec.Name) != name) continue;
                     members.Add((obj, i));
                 }
             foreach ((ElfObject obj, int i) in members.OrderBy(m => DynamicWriter.ArrayPriority(m.Obj.Sections[m.Index].Name)))
             {
                 ElfSection sec = obj.Sections[i];
-                ulong o = Align(dataMem, sec.AddrAlign);
+                ulong o = Align(roLen, sec.AddrAlign);
                 offsetInGroup[(obj, i)] = o;
-                dataMem = o + sec.Size;
-                if (!sec.IsNoBits) dataFile = dataMem;
+                roLen = o + sec.Size;
                 if (!have) { start = o; have = true; }
-                end = dataMem;
+                end = roLen;
             }
+            if (have && ((end - start) & 7) != 0)
+                throw new InvalidOperationException($"{name} did not end on an eight-byte boundary (start={start}, end={end})");
         }
         PlaceArray(".init_array", ref initStart, ref initEnd, ref haveInit);
         PlaceArray(".fini_array", ref finiStart, ref finiEnd, ref haveFini);
@@ -131,19 +186,30 @@ public static class PayloadWriter
                 ElfSection sec = obj.Sections[i];
                 if (!sec.IsAlloc || sec.IsTls || offsetInGroup.ContainsKey((obj, i))) continue;
                 if (sec.IsExecutable) { offsetInGroup[(obj, i)] = textLen = Align(textLen, sec.AddrAlign); textLen += sec.Size; }
+                else if (sec.IsWritable && IsRelroLike(sec.Name) && !sec.IsNoBits)
+                {
+                    // Writable-but-sealed content whose bytes come from the file: goes to the
+                    // middle group. A NOBITS relro-like section is nonsensical (a sealed range
+                    // needs its data delivered) so falls through to the data group as bss below.
+                    ulong o = Align(roLen, sec.AddrAlign);
+                    offsetInGroup[(obj, i)] = o; roLen = o + sec.Size;
+                }
                 else if (sec.IsWritable)
                 {
+                    // Runtime data (including any NOBITS section): standalone data group.
                     ulong o = Align(dataMem, sec.AddrAlign);
                     offsetInGroup[(obj, i)] = o; dataMem = o + sec.Size;
                     if (!sec.IsNoBits) dataFile = dataMem;
                 }
-                else { offsetInGroup[(obj, i)] = roLen = Align(roLen, sec.AddrAlign); roLen += sec.Size; }
+                else
+                {
+                    // Read-only object content: middle group alongside the relro-like content.
+                    ulong o = Align(roLen, sec.AddrAlign);
+                    offsetInGroup[(obj, i)] = o; roLen = o + sec.Size;
+                }
             }
 
-        // The thread-local template: the initialized sections first (so the file image is contiguous),
-        // then the zero-filled sections. A payload has no dynamic linker, so the start code copies this
-        // template into a fresh block and points the thread pointer at it; a thread-local reference is
-        // baked to a fixed offset from that pointer at link time.
+        // Thread-local template.
         var tlsOffset = new Dictionary<(ElfObject, int), ulong>();
         ulong tlsMemLen = 0, tlsFileLen = 0, tlsAlign = 1;
         for (int pass = 0; pass < 2; pass++)
@@ -152,7 +218,7 @@ public static class PayloadWriter
                 {
                     ElfSection sec = obj.Sections[i];
                     if (!sec.IsAlloc || !sec.IsTls) continue;
-                    if ((pass == 0) == sec.IsNoBits) continue;          // initialized sections in pass 0
+                    if ((pass == 0) == sec.IsNoBits) continue;
                     ulong o = Align(tlsMemLen, sec.AddrAlign);
                     tlsOffset[(obj, i)] = o; tlsMemLen = o + sec.Size;
                     if (!sec.IsNoBits) tlsFileLen = tlsMemLen;
@@ -161,8 +227,6 @@ public static class PayloadWriter
         bool hasTls = tlsMemLen > 0;
         ulong tlsAlignedMem = Align(tlsMemLen, tlsAlign);
 
-        // The template's initialized bytes ride in the writable segment. The thread-pointer offset of a
-        // symbol is its template offset minus the aligned size, since the block sits below the pointer.
         ulong tlsTemplateOffsetInData = 0;
         if (hasTls)
         {
@@ -171,10 +235,7 @@ public static class PayloadWriter
             if (tlsFileLen > 0) dataFile = tlsTemplateOffsetInData + tlsFileLen;
         }
 
-        // The exception-frame index is built from the object frame sections when the compiler emitted
-        // them in a form the index covers; otherwise it is omitted and the frames still resolve by a
-        // linear scan. Sized here so the read-only group can hold it; the bytes are built after
-        // relocation, once the frames carry runtime addresses.
+        // Exception-frame index.
         var ehFrames = new List<(ElfObject Obj, int Index)>();
         foreach (ElfObject obj in resolution.Included)
             for (int i = 0; i < obj.Sections.Count; i++)
@@ -191,48 +252,150 @@ public static class PayloadWriter
         }
         int ehFrameHdrSize = ehFrameOk && ehFrameCount > 0 ? 12 + ehFrameCount * 8 : 0;
 
-        // The stub table follows the object text; each outside reference gets a sixteen-byte stub. A
-        // single return instruction follows the stubs: _init and _fini are named by the run time but the
-        // start code runs the constructors itself, so these point at a routine that does nothing rather
-        // than at a resolver slot that would fail and fault if anything called it.
+        // PLT stubs.
         ulong pltBase = Align(textLen, 16);
         ulong retStubOffset = pltBase + (ulong)externs.Count * 16;
         ulong textSize = retStubOffset + 1;
 
-        // Read-only group: the object read-only sections, then the exception-frame index, then the
-        // resolver name strings. The index is placed here (aligned to eight) even before its bytes are
-        // built, so its address is fixed and the self-description names below can point at it.
-        ulong ehFrameHdrOffset = Align(roLen, 8);
-        var nameOffset = new Dictionary<string, ulong>(StringComparer.Ordinal);
-        var nameBytes = new List<byte>();
-        ulong namesBase = Align(ehFrameHdrOffset + (ulong)ehFrameHdrSize, 1);
-        foreach (Extern e in externs)
+        // --- Dynamic linking tables (placed in the read-only group) ---
+        // Collect unique sonames for DT_NEEDED. When the caller provides a profile-built list,
+        // use it directly; otherwise derive from the resolution's imports plus the three
+        // hardcoded defaults (backward-compatible path for callers that do not pass a profile).
+        var sonames = new List<string>();
+        var sonameSet = new HashSet<string>(StringComparer.Ordinal);
+        if (neededSprx is not null)
         {
-            nameOffset[e.Name] = namesBase + (ulong)nameBytes.Count;
-            nameBytes.AddRange(Encoding.ASCII.GetBytes(e.Name));
-            nameBytes.Add(0);
+            foreach (string s in neededSprx)
+                if (sonameSet.Add(s))
+                    sonames.Add(s);
         }
-        ulong roSize = namesBase + (ulong)nameBytes.Count;
+        else
+        {
+            // Legacy path: derive from imports, mapping known application SDK sonames to the
+            // payload host process's actual module names.
+            foreach (ImportSymbol imp in resolution.Imports)
+            {
+                string mapped = PayloadSonameMap.TryGetValue(imp.Soname, out string? replacement) ? replacement : imp.Soname;
+                if (sonameSet.Add(mapped))
+                    sonames.Add(mapped);
+            }
+            if (sonameSet.Add("libkernel_sys.sprx")) sonames.Insert(0, "libkernel_sys.sprx");
+            if (sonameSet.Add("libSceLibcInternal.sprx")) sonames.Add("libSceLibcInternal.sprx");
+            if (sonameSet.Add("libSceNet.sprx")) sonames.Add("libSceNet.sprx");
+        }
 
-        // Writable group: the object data, then the global-offset table, then the resolver table (two
-        // pointers per outside reference: the name and the slot to fill). The offset table holds one slot
-        // per outside reference plus one for each internal reference the relocation pass routes through it
-        // (a data load of a defined address, or a thread-local offset); reserve for both so the resolver
-        // table that follows is not overrun.
+        // .dynstr: string table for symbol names and sonames.
+        var dynstrBuild = new List<byte> { 0 }; // index 0 is always the empty string
+        var dynstrOff = new Dictionary<string, int>(StringComparer.Ordinal);
+        int DynStrAdd(string s)
+        {
+            if (dynstrOff.TryGetValue(s, out int existing)) return existing;
+            int off = dynstrBuild.Count;
+            dynstrBuild.AddRange(Encoding.ASCII.GetBytes(s));
+            dynstrBuild.Add(0);
+            dynstrOff[s] = off;
+            return off;
+        }
+        int[] sonameStrOff = sonames.Select(DynStrAdd).ToArray();
+        int[] externStrOff = new int[externs.Count];
+        for (int i = 0; i < externs.Count; i++)
+            externStrOff[i] = DynStrAdd(externs[i].LookupName);
+        byte[] dynstrBytes = [.. dynstrBuild];
+
+        // .dynsym: NULL + one UND entry per extern.
+        int dynsymCount = 1 + externs.Count;
+        byte[] dynsymBytes = new byte[dynsymCount * 24];
+        for (int i = 0; i < externs.Count; i++)
+        {
+            int b = (i + 1) * 24;
+            BinaryPrimitives.WriteUInt32LittleEndian(dynsymBytes.AsSpan(b), (uint)externStrOff[i]);
+            dynsymBytes[b + 4] = (1 << 4) | 2; // STB_GLOBAL | STT_FUNC
+        }
+
+        // .gnu.hash: minimal GNU hash table (single bucket, all symbols in one chain).
+        int gnuChainCount = externs.Count;
+        int hashSize = 28 + gnuChainCount * 4;
+        byte[] hashBytes = new byte[hashSize];
+        BinaryPrimitives.WriteUInt32LittleEndian(hashBytes.AsSpan(0), 1);   // nbuckets
+        BinaryPrimitives.WriteUInt32LittleEndian(hashBytes.AsSpan(4), 1);   // symndx
+        BinaryPrimitives.WriteUInt32LittleEndian(hashBytes.AsSpan(8), 1);   // maskwords
+        BinaryPrimitives.WriteUInt32LittleEndian(hashBytes.AsSpan(12), 6);  // shift2
+        ulong bloomVal = 0;
+        uint[] gnuHashes = new uint[externs.Count];
+        for (int i = 0; i < externs.Count; i++)
+        {
+            // The GNU hash indexes .dynstr entries; those entries are the plain C names the
+            // known working payloads publish"puts", "signal",
+            // "pthread_self", ...). The shim's __sp_dlsym_init probe caches args->sys_dynlib_dlsym
+            // as a callable that takes plain names; the on-device dynamic linker matches names
+            // through its own module-side NID encoder, so what the payload publishes here must be
+            // the source-level C names, not the eleven-character NID form.
+            gnuHashes[i] = GnuHash(externs[i].LookupName);
+            bloomVal |= 1UL << (int)(gnuHashes[i] % 64);
+            bloomVal |= 1UL << (int)((gnuHashes[i] >> 6) % 64);
+        }
+        BinaryPrimitives.WriteUInt64LittleEndian(hashBytes.AsSpan(16), bloomVal);
+        BinaryPrimitives.WriteUInt32LittleEndian(hashBytes.AsSpan(24), externs.Count > 0 ? 1u : 0u);
+        for (int i = 0; i < externs.Count; i++)
+        {
+            bool last = i + 1 >= externs.Count;
+            BinaryPrimitives.WriteUInt32LittleEndian(hashBytes.AsSpan(28 + i * 4), (gnuHashes[i] & ~1u) | (last ? 1u : 0u));
+        }
+
+        // Middle group (mapped RW): the object read-only content and the writable relro-like
+        // content already placed above, then the exception-frame index, the dynamic linking tables
+        // (.dynsym, .dynstr, .hash), the global-offset table, the dynamic section itself, and
+        // .rela.dyn. Known working payloads keep every binding surface together in this segment so
+        // PT_DYNAMIC points inside it; the runtime .data / .bss lives in its own segment behind.
         int internalGotSlots = CountInternalGotSlots(resolution, externByName);
-        ulong gotBase = Align(dataMem, 8);
-        ulong importTableBase = gotBase + (ulong)(externs.Count + internalGotSlots) * 8;
-        ulong dataMemEnd = importTableBase + (ulong)externs.Count * 16;
-        ulong dataFileEnd = dataMemEnd; // the slots and table are written, not zero-filled
+        int totalGotSlots = externs.Count + internalGotSlots;
+        // Dynamic table: NEEDED(n) + FLAGS_1 + DEBUG + RELA group(4) + SYMTAB + SYMENT
+        //   + STRTAB + STRSZ + GNU_HASH + PREINIT_ARRAY(2) + INIT_ARRAY(2) + FINI_ARRAY(2)
+        //   + NULL = n + 18 base. When the output contains JUMP_SLOT relocations, the
+        //   JMPREL group (JMPREL, PLTRELSZ, PLTGOT, PLTREL) adds 4 more entries.
+        //   All extern references resolve through GLOB_DAT, so the JMPREL group is
+        //   omitted, matching the corpus payloads that also lack JUMP_SLOT entries.
+        bool emitJmprelGroup = false;
+        int dtEntryCount = sonames.Count + 18 + (emitJmprelGroup ? 4 : 0);
+        ulong dynamicSize = (ulong)dtEntryCount * 16;
+        int maxR64 = 0;
+        foreach (ElfObject obj in resolution.Included)
+            foreach (IReadOnlyList<ElfRelocation> rl in obj.Relocations.Values)
+                foreach (ElfRelocation r in rl)
+                    if (r.Type == RelType.R64) maxR64++;
+        int maxRelaEntries = maxR64 + internalGotSlots + externs.Count + 8;
+        ulong relaReserve = Align((ulong)maxRelaEntries * 24, 8);
 
-        // Segment addresses on the load grid.
-        ulong textAddr = SegAlign;
+        ulong ehFrameHdrOffset = Align(roLen, 8);
+        ulong dynsymOffset = Align(ehFrameHdrOffset + (ulong)ehFrameHdrSize, 8);
+        ulong dynstrOffset = dynsymOffset + (ulong)dynsymBytes.Length;
+        ulong hashOffset = Align(dynstrOffset + (ulong)dynstrBytes.Length, 4);
+        ulong gotOffset = Align(hashOffset + (ulong)hashBytes.Length, 8);
+        ulong dynamicOffset = Align(gotOffset + (ulong)totalGotSlots * 8, 8);
+        ulong relaOffset = Align(dynamicOffset + dynamicSize, 8);
+        // roSize includes the .rela.dyn reserve so the middle segment's map covers the actual
+        // relocation entries plus a small overshoot budget. The actual .rela.dyn write is smaller
+        // (or equal) and any trailing bytes in the map are zero-filled from initial allocation.
+        ulong roSize = relaOffset + relaReserve;
+
+        // Data group (mapped RW): only the runtime .data and .bss (plus the TLS template if any).
+        // File size is dataFile; mem size is dataMem, so p_memsz can exceed p_filesz for .bss.
+        ulong dataFileEnd = dataFile;
+        ulong dataMemEnd = dataMem;
+
+        // Segment addresses. The text base VA is 0: the first LOAD segment maps the text from
+        // file offset SegAlign to VA 0, matching the standard linker output.
+        ulong textAddr = 0;
         ulong roAddr = Align(textAddr + textSize, SegAlign);
         ulong dataAddr = Align(roAddr + roSize, SegAlign);
-        ulong namesAddr = roAddr + namesBase;
-        ulong gotAddr = dataAddr + gotBase;
-        ulong importTableAddr = dataAddr + importTableBase;
+        ulong gotAddr = roAddr + gotOffset;
+        ulong dynamicAddr = roAddr + dynamicOffset;
+        ulong relaAddr = roAddr + relaOffset;
         ulong tlsTemplateAddr = hasTls ? dataAddr + tlsTemplateOffsetInData : 0;
+
+        ulong dynsymAddr = roAddr + dynsymOffset;
+        ulong dynstrAddr = roAddr + dynstrOffset;
+        ulong hashAddr = roAddr + hashOffset;
 
         for (int i = 0; i < externs.Count; i++)
         {
@@ -240,13 +403,24 @@ public static class PayloadWriter
             externs[i].PltAddress = textAddr + pltBase + (ulong)i * 16;
         }
 
-        // The names the linker settles rather than the run time. The image start and the code end let
-        // the module say where its code lies; the exception-index bounds let it say where its unwind
-        // table lies, or name the image start twice when it carries none, which the reader takes as
-        // absent. The two constructor entry points name a routine that returns at once, since the start
-        // code walks the constructor array itself.
         ulong retStubAddr = textAddr + retStubOffset;
         ulong ehFrameHdrAddr = ehFrameHdrSize > 0 ? roAddr + ehFrameHdrOffset : textAddr;
+        ulong imageEndAddr = dataAddr + dataMemEnd;
+        // BSS starts after the initialised data in the data segment, aligned to 16.
+        // Known working payloads place
+        // __bss_start at the first uninitialised byte, not at the image end. When there
+        // is no BSS (dataFileEnd == dataMemEnd), the aligned boundary could overshoot
+        // imageEndAddr; clamp so __bss_start never exceeds the image boundary.
+        ulong bssAddr = Math.Min(Align(dataAddr + dataFileEnd, 16), imageEndAddr);
+        // init/fini arrays live in the middle group (RO segment). Empty arrays still
+        // get addresses within the RO segment so the .init_array / .fini_array section
+        // headers and DT_ tags point into the correct segment, matching the corpus layout.
+        ulong initArrayStartAddr, initArrayEndAddr;
+        if (haveInit) { initArrayStartAddr = roAddr + initStart; initArrayEndAddr = roAddr + initEnd; }
+        else { initArrayStartAddr = initArrayEndAddr = roAddr; }
+        ulong finiArrayStartAddr, finiArrayEndAddr;
+        if (haveFini) { finiArrayStartAddr = roAddr + finiStart; finiArrayEndAddr = roAddr + finiEnd; }
+        else { finiArrayStartAddr = finiArrayEndAddr = initArrayEndAddr; }
         var linkerDefined = new Dictionary<string, ulong>(StringComparer.Ordinal)
         {
             [CompatEmitter.ModuleBaseSymbol] = textAddr,
@@ -255,6 +429,23 @@ public static class PayloadWriter
             [CompatEmitter.FrameIndexEndSymbol] = ehFrameHdrSize > 0 ? ehFrameHdrAddr + (ulong)ehFrameHdrSize : textAddr,
             ["_init"] = retStubAddr,
             ["_fini"] = retStubAddr,
+            ["__image_start"] = 0,
+            ["__image_end"] = imageEndAddr,
+            ["__bss_start"] = bssAddr,
+            ["__bss_end"] = imageEndAddr,
+            ["__init_array_start"] = initArrayStartAddr,
+            ["__init_array_end"] = initArrayEndAddr,
+            ["__fini_array_start"] = finiArrayStartAddr,
+            ["__fini_array_end"] = finiArrayEndAddr,
+            ["__preinit_array_start"] = imageEndAddr,
+            ["__preinit_array_end"] = imageEndAddr,
+            ["_DYNAMIC"] = dynamicAddr,
+            ["edata"] = dataAddr + dataFileEnd,
+            ["end"] = imageEndAddr,
+            ["etext"] = textAddr + textSize,
+            ["_edata"] = dataAddr + dataFileEnd,
+            ["_end"] = imageEndAddr,
+            ["_etext"] = textAddr + textSize,
         };
 
         ulong SectionAddr(ElfObject o, int i)
@@ -264,24 +455,25 @@ public static class PayloadWriter
             if ((uint)i >= (uint)o.Sections.Count)
                 throw new ElfLinkException($"{o.Origin}: a symbol refers to section index {i}, which the object does not define.");
             ElfSection s = o.Sections[i];
-            if (s.IsTls) return tlsTemplateAddr + tlsOffset[(o, i)]; // in the template, riding the data segment
-            ulong bas = s.IsExecutable ? textAddr : s.IsWritable ? dataAddr : roAddr;
+            if (s.IsTls) return tlsTemplateAddr + tlsOffset[(o, i)];
+            ulong bas;
+            if (s.IsExecutable) bas = textAddr;
+            else if (s.IsWritable && IsRelroLike(s.Name) && !s.IsNoBits) bas = roAddr;
+            else if (s.IsWritable) bas = dataAddr;
+            else bas = roAddr;
             return bas + offsetInGroup[(o, i)];
         }
 
-        // Resolve and fix up the object sections. Outside references route through the stub (a call) or
-        // the resolver slot (a data load); every absolute pointer collects a base-relative relocation.
+        // Resolve and fix up.
         var relatives = new List<Relative>();
-        var internalGot = new Dictionary<string, ulong>(StringComparer.Ordinal); // name -> got slot address for defined targets
+        var internalGot = new Dictionary<string, ulong>(StringComparer.Ordinal);
         var extraGotSlots = new List<(ulong Slot, ulong Value)>();
-        var tlsGotSlots = new List<(ulong Slot, ulong Value)>(); // initial-exec slots hold a thread-pointer offset, not an address
+        var tlsGotSlots = new List<(ulong Slot, ulong Value)>();
         Dictionary<(ElfObject, int), byte[]> sectionData = Relocate(
             resolution, externByName, SectionAddr, relatives, internalGot, extraGotSlots, tlsGotSlots,
-            gotAddr, externs.Count, importTableAddr, tlsOffset, tlsAlignedMem, linkerDefined);
+            gotAddr, externs.Count, dynamicAddr, tlsOffset, tlsAlignedMem, linkerDefined);
 
-        // The resolver slots for the outside references start empty; the start code fills them. The
-        // internal global-offset slots hold a defined address and take a base-relative relocation. A
-        // thread-local slot holds a fixed thread-pointer offset, so it is written but not relocated.
+        // GOT data.
         int totalGot = externs.Count + internalGot.Count;
         byte[] gotData = new byte[totalGot * 8];
         foreach ((ulong slot, ulong value) in extraGotSlots)
@@ -292,20 +484,7 @@ public static class PayloadWriter
         foreach ((ulong slot, ulong value) in tlsGotSlots)
             BinaryPrimitives.WriteUInt64LittleEndian(gotData.AsSpan((int)(slot - gotAddr)), value);
 
-        // The resolver table: for each outside reference, the name pointer and the slot pointer, both
-        // base-relative.
-        byte[] importTable = new byte[externs.Count * 16];
-        for (int i = 0; i < externs.Count; i++)
-        {
-            ulong namePtr = namesAddr + (nameOffset[externs[i].Name] - namesBase);
-            ulong slotPtr = externs[i].GotAddress;
-            BinaryPrimitives.WriteUInt64LittleEndian(importTable.AsSpan(i * 16), namePtr);
-            BinaryPrimitives.WriteUInt64LittleEndian(importTable.AsSpan(i * 16 + 8), slotPtr);
-            relatives.Add(new Relative(importTableAddr + (ulong)i * 16, namePtr));
-            relatives.Add(new Relative(importTableAddr + (ulong)i * 16 + 8, slotPtr));
-        }
-
-        // The stubs: jmp *slot(rip).
+        // PLT stubs.
         byte[] pltData = new byte[externs.Count * 16];
         for (int i = 0; i < externs.Count; i++)
         {
@@ -315,44 +494,80 @@ public static class PayloadWriter
             BinaryPrimitives.WriteInt32LittleEndian(pltData.AsSpan(p + 2), unchecked((int)disp));
         }
 
-        // Fill the start object's header: the resolver-table bounds, then the global-constructor bounds.
-        // Each pointer is base-relative. When there are no constructors the two array pointers stay zero,
-        // so the start code's loop over an empty range runs nothing.
-        if (TryFindSymbol(resolution, ImportTableSymbol, out ElfObject? hdrObj, out ElfSymbol? hdrSym))
+        // Build the .rela.dyn data: RELATIVE entries first (sorted), then GLOB_DAT entries.
+        relatives.Sort((a, b) => a.Offset.CompareTo(b.Offset));
+        int relativeCount = relatives.Count;
+        int totalRelaEntries = relativeCount + externs.Count;
+        byte[] relaBytes = new byte[totalRelaEntries * 24];
+        for (int i = 0; i < relativeCount; i++)
         {
-            ulong hdrAddr = SectionAddr(hdrObj!, hdrSym!.SectionIndex) + hdrSym.Value;
-            if (sectionData.TryGetValue((hdrObj!, hdrSym.SectionIndex), out byte[]? hbytes))
-            {
-                int at = (int)(hdrAddr - SectionAddr(hdrObj!, hdrSym.SectionIndex));
-                ulong importsEnd = importTableAddr + (ulong)externs.Count * 16;
-                BinaryPrimitives.WriteUInt64LittleEndian(hbytes.AsSpan(at), importTableAddr);
-                BinaryPrimitives.WriteUInt64LittleEndian(hbytes.AsSpan(at + 8), importsEnd);
-                relatives.Add(new Relative(hdrAddr, importTableAddr));
-                relatives.Add(new Relative(hdrAddr + 8, importsEnd));
-                if (haveInit)
-                {
-                    ulong initA = dataAddr + initStart, initB = dataAddr + initEnd;
-                    BinaryPrimitives.WriteUInt64LittleEndian(hbytes.AsSpan(at + 16), initA);
-                    BinaryPrimitives.WriteUInt64LittleEndian(hbytes.AsSpan(at + 24), initB);
-                    relatives.Add(new Relative(hdrAddr + 16, initA));
-                    relatives.Add(new Relative(hdrAddr + 24, initB));
-                }
-                if (hasTls)
-                {
-                    // The thread-local template: where the initialized bytes live, how many to copy, and
-                    // the block size below the thread pointer. Only the address is base-relative; the two
-                    // sizes are plain values the start code reads to build and install the block.
-                    BinaryPrimitives.WriteUInt64LittleEndian(hbytes.AsSpan(at + 32), tlsTemplateAddr);
-                    BinaryPrimitives.WriteUInt64LittleEndian(hbytes.AsSpan(at + 40), tlsFileLen);
-                    BinaryPrimitives.WriteUInt64LittleEndian(hbytes.AsSpan(at + 48), tlsAlignedMem);
-                    relatives.Add(new Relative(hdrAddr + 32, tlsTemplateAddr));
-                }
-            }
+            int b = i * 24;
+            BinaryPrimitives.WriteUInt64LittleEndian(relaBytes.AsSpan(b), relatives[i].Offset);
+            BinaryPrimitives.WriteUInt64LittleEndian(relaBytes.AsSpan(b + 8), RRelative);
+            BinaryPrimitives.WriteUInt64LittleEndian(relaBytes.AsSpan(b + 16), relatives[i].Addend);
+        }
+        for (int i = 0; i < externs.Count; i++)
+        {
+            int b = (relativeCount + i) * 24;
+            BinaryPrimitives.WriteUInt64LittleEndian(relaBytes.AsSpan(b), externs[i].GotAddress);
+            ulong info = ((ulong)(uint)(i + 1) << 32) | RGlobDat;
+            BinaryPrimitives.WriteUInt64LittleEndian(relaBytes.AsSpan(b + 8), info);
+            // addend = 0 for GLOB_DAT
         }
 
-        // Build the exception-frame index from the relocated frame bytes, whose function pointers now
-        // carry runtime addresses. The reader walks it PC-relative, so it is built for the address the
-        // layout fixed above.
+        // .rela.dyn lives in the middle group (its offset was reserved up front as relaOffset,
+        // and roSize includes the relocation reserve). The address was fixed above at
+        // relaAddr = roAddr + relaOffset. If the actual entry count exceeds the reserve, the
+        // reserve was under-sized: refuse rather than overrun the RO segment.
+        ulong relaSize = (ulong)relaBytes.Length;
+        if (relaSize > relaReserve)
+            throw new ElfLinkException(
+                $"The relocation reserve ({relaReserve} bytes) is smaller than the actual .rela.dyn " +
+                $"data ({relaSize} bytes). Grow the maxRelaEntries slack in PayloadWriter.");
+
+        // Build the .dynamic section now that all VAs are known.
+        // Tag order follows the standard layout: NEEDED, FLAGS_1, DEBUG, RELA group,
+        // JMPREL group, SYMTAB/SYMENT, STRTAB/STRSZ, GNU_HASH, PREINIT_ARRAY,
+        // INIT_ARRAY, FINI_ARRAY, NULL.
+        byte[] dynamicData = new byte[(int)dynamicSize];
+        int di = 0;
+        void WriteDt(long tag, ulong val)
+        {
+            BinaryPrimitives.WriteInt64LittleEndian(dynamicData.AsSpan(di), tag);
+            BinaryPrimitives.WriteUInt64LittleEndian(dynamicData.AsSpan(di + 8), val);
+            di += 16;
+        }
+        foreach (int off in sonameStrOff) WriteDt(DtNeeded, (ulong)off);
+        WriteDt(DtFlags1, 0x08000000); // DF_1_PIE
+        WriteDt(DtDebug, 0);
+        WriteDt(DtRela, relaAddr);
+        WriteDt(DtRelaSz, relaSize);
+        WriteDt(DtRelaEnt, 24);
+        WriteDt(DtRelaCount, (ulong)relativeCount);
+        // JMPREL group: present only when JUMP_SLOT relocations exist. Corpus payloads
+        // without JUMP_SLOT relocs omit these four tags entirely.
+        if (emitJmprelGroup)
+        {
+            WriteDt(DtJmpRel, relaAddr + relaSize);
+            WriteDt(DtPltRelSz, 0);
+            WriteDt(DtPltGot, gotAddr);
+            WriteDt(DtPltRel, 7);
+        }
+        WriteDt(DtSymTab, dynsymAddr);
+        WriteDt(DtSymEnt, 24);
+        WriteDt(DtStrTab, dynstrAddr);
+        WriteDt(DtStrSz, (ulong)dynstrBytes.Length);
+        WriteDt(DtGnuHash, hashAddr);
+        WriteDt(DtPreInit_Array, 0);
+        WriteDt(DtPreInit_ArraySz, 0);
+        // INIT_ARRAY and FINI_ARRAY are ALWAYS present (per the standard layout), even when size=0.
+        WriteDt(DtInit_Array, initArrayStartAddr);
+        WriteDt(DtInit_ArraySz, haveInit ? initArrayEndAddr - initArrayStartAddr : 0);
+        WriteDt(DtFini_Array, finiArrayStartAddr);
+        WriteDt(DtFini_ArraySz, haveFini ? finiArrayEndAddr - finiArrayStartAddr : 0);
+        WriteDt(DtNull, 0);
+
+        // Exception-frame index.
         byte[] ehFrameHdr = [];
         if (ehFrameHdrSize > 0)
         {
@@ -371,9 +586,90 @@ public static class PayloadWriter
         if (!string.IsNullOrEmpty(entrySymbol) && TryFindSymbol(resolution, entrySymbol, out ElfObject? eo, out ElfSymbol? es))
             entry = SectionAddr(eo!, es!.SectionIndex) + es.Value;
 
+        // Build .symtab and .strtab for the output ELF. Known working payloads carry a
+        // populated .symtab with LOCAL HIDDEN linker symbols and GLOBAL function symbols.
+        // Section indices for each symbol are mapped from their VA address.
+        var outStrtab = new List<byte> { 0 }; // index 0 is the empty string
+        var outSymtab = new List<byte>(new byte[24]); // NULL entry
+        int OutStrtabAdd(string s)
+        {
+            int off = outStrtab.Count;
+            outStrtab.AddRange(Encoding.ASCII.GetBytes(s));
+            outStrtab.Add(0);
+            return off;
+        }
+        void OutSymtabAdd(string name, ulong value, ulong size, byte info, byte other, ushort shndx)
+        {
+            byte[] sym = new byte[24];
+            BinaryPrimitives.WriteUInt32LittleEndian(sym, (uint)OutStrtabAdd(name));
+            sym[4] = info;
+            sym[5] = other;
+            BinaryPrimitives.WriteUInt16LittleEndian(sym.AsSpan(6), shndx);
+            BinaryPrimitives.WriteUInt64LittleEndian(sym.AsSpan(8), value);
+            BinaryPrimitives.WriteUInt64LittleEndian(sym.AsSpan(16), size);
+            outSymtab.AddRange(sym);
+        }
+
+        // Section index constants matching the section header table.
+        const ushort siText = 1, siInitArray = 14, siFiniArray = 15;
+        const ushort siDynamic = 16, siData = 17, siBss = 18;
+
+        // Map a virtual address to its output section index.
+        ushort VaToShIdx(ulong va)
+        {
+            if (va >= textAddr && va < textAddr + textSize) return siText;
+            if (va == dynamicAddr) return siDynamic;
+            if (haveInit && va >= initArrayStartAddr && va <= initArrayEndAddr) return siInitArray;
+            if (haveFini && va >= finiArrayStartAddr && va <= finiArrayEndAddr) return siFiniArray;
+            if (!haveInit && !haveFini && va == initArrayStartAddr) return siInitArray;
+            if (va >= bssAddr) return siBss;
+            if (va >= dataAddr) return siData;
+            return siText;
+        }
+
+        // 9 hidden linker symbols (LOCAL HIDDEN NOTYPE), matching known working payloads.
+        // STB_LOCAL=0, STT_NOTYPE=0 -> info=0. STV_HIDDEN=2 -> other=2.
+        OutSymtabAdd("__bss_start", bssAddr, 0, 0, 2, siBss);
+        OutSymtabAdd("__bss_end", imageEndAddr, 0, 0, 2, siBss);
+        OutSymtabAdd("__image_start", 0, 0, 0, 2, siText);
+        OutSymtabAdd("__image_end", imageEndAddr, 0, 0, 2, siBss);
+        OutSymtabAdd("_DYNAMIC", dynamicAddr, 0, 0, 2, siDynamic);
+        OutSymtabAdd("__init_array_end", initArrayEndAddr, 0, 0, 2, siInitArray);
+        OutSymtabAdd("__init_array_start", initArrayStartAddr, 0, 0, 2, siInitArray);
+        OutSymtabAdd("__fini_array_end", finiArrayEndAddr, 0, 0, 2, siFiniArray);
+        OutSymtabAdd("__fini_array_start", finiArrayStartAddr, 0, 0, 2, siFiniArray);
+        int localSymCount = outSymtab.Count / 24; // NULL + 9 hidden = 10
+
+        // GLOBAL symbols from all defined objects.
+        var emittedGlobals = new HashSet<string>(StringComparer.Ordinal);
+        foreach (ElfObject obj in resolution.Included)
+            foreach (ElfSymbol sym in obj.Symbols)
+            {
+                if (sym.IsUndefined || sym.Name.Length == 0) continue;
+                byte bind = (byte)(sym.Info >> 4);
+                if (bind == 0) continue; // LOCAL symbols already covered above
+                if (!emittedGlobals.Add(sym.Name)) continue; // deduplicate
+                if (sym.SectionIndex == ShnAbs)
+                {
+                    OutSymtabAdd(sym.Name, sym.Value, sym.Size, sym.Info, sym.Other, 0xFFF1);
+                    continue;
+                }
+                ulong va = SectionAddr(obj, sym.SectionIndex) + sym.Value;
+                OutSymtabAdd(sym.Name, va, sym.Size, sym.Info, sym.Other, VaToShIdx(va));
+            }
+
+        byte[] symtabData = [.. outSymtab];
+        byte[] strtabData = [.. outStrtab];
+
         return WriteFile(resolution, entry, sectionData, SectionAddr,
-            textAddr, textSize, pltBase, pltData, retStubOffset, roAddr, roSize, namesBase, [.. nameBytes],
-            ehFrameHdrOffset, ehFrameHdr, dataAddr, dataFileEnd, dataMemEnd, gotBase, gotData, importTableBase, importTable, relatives);
+            textAddr, textSize, pltBase, pltData, retStubOffset, roAddr, roSize,
+            dynsymOffset, dynsymBytes, dynstrOffset, dynstrBytes, hashOffset, hashBytes,
+            ehFrameHdrOffset, ehFrameHdr, gotOffset, gotData,
+            dynamicOffset, dynamicData, relaOffset, relaBytes,
+            dataAddr, dataFileEnd, dataMemEnd, dynamicAddr,
+            initArrayStartAddr, haveInit ? initArrayEndAddr - initArrayStartAddr : 0,
+            finiArrayStartAddr, haveFini ? finiArrayEndAddr - finiArrayStartAddr : 0,
+            symtabData, strtabData, localSymCount);
     }
 
     private static Dictionary<(ElfObject, int), byte[]> Relocate(
@@ -396,9 +692,6 @@ public static class PayloadWriter
                 byte[] bytes = sec.IsNoBits ? new byte[sec.Size] : (byte[])sec.Data.Clone();
                 ulong secAddr = sectionAddr(obj, idx);
 
-                // A dynamic thread-local sequence is a lea and a call __tls_get_addr; relaxing the lea
-                // folds the call away. The call sits eight bytes past a general-dynamic lea's relocation
-                // and five past a local-dynamic one.
                 HashSet<ulong>? foldedTlsCall = null;
                 foreach (ElfRelocation probe in kv.Value)
                 {
@@ -414,31 +707,27 @@ public static class PayloadWriter
                     int at = (int)r.Offset;
 
                     if (foldedTlsCall is not null && foldedTlsCall.Contains(r.Offset))
-                        continue; // the __tls_get_addr call, folded into the local-exec load below
+                        continue;
 
                     if (r.Type == RelType.TlsGd)
                     {
-                        // The payload is self-contained, so a general-dynamic load relaxes to local-exec:
-                        // read the thread pointer and add the symbol's fixed offset, leaving it in rax.
                         if (at - 4 < 0 || at + 12 > bytes.Length)
                             throw new ElfLinkException($"{obj.Origin}: a thread-local sequence on '{sym.Name}' runs past the section.");
                         if (!TryTlsTemplateOffset(resolution, tlsOffset, obj, sym, out ulong gdTemplateOff))
                             throw new ElfLinkException($"Thread-local symbol '{sym.Name}' has no template section in the payload.");
                         long le = (long)gdTemplateOff - (long)tlsAlignedMem;
                         ReadOnlySpan<byte> localExec = [0x64, 0x48, 0x8B, 0x04, 0x25, 0x00, 0x00, 0x00, 0x00, 0x48, 0x8D, 0x80];
-                        localExec.CopyTo(bytes.AsSpan(at - 4)); // mov %fs:0,%rax ; lea ...(%rax),%rax
+                        localExec.CopyTo(bytes.AsSpan(at - 4));
                         BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(at + 8), checked((int)le));
                         continue;
                     }
 
                     if (r.Type == RelType.TlsLd)
                     {
-                        // The module base becomes the thread pointer; the members (its DTPOFF relocations)
-                        // become local-exec offsets. The nop prefixes keep the replacement the same size.
                         if (at - 3 < 0 || at + 9 > bytes.Length)
                             throw new ElfLinkException($"{obj.Origin}: a thread-local base sequence on '{sym.Name}' runs past the section.");
                         ReadOnlySpan<byte> threadPointer = [0x66, 0x66, 0x66, 0x64, 0x48, 0x8B, 0x04, 0x25, 0x00, 0x00, 0x00, 0x00];
-                        threadPointer.CopyTo(bytes.AsSpan(at - 3)); // (nop) mov %fs:0,%rax
+                        threadPointer.CopyTo(bytes.AsSpan(at - 3));
                         continue;
                     }
 
@@ -447,17 +736,12 @@ public static class PayloadWriter
 
                     if (r.Type == RelType.GotTpOff)
                     {
-                        // Initial-exec through the global-offset table: the slot holds the fixed
-                        // thread-pointer offset; the reference loads it PC-relative and adds the pointer.
                         ulong tslot = TlsGotSlotFor(resolution, sectionAddr, obj, sym, internalGot, tlsGotSlots, NextInternalGot, tlsOffset, tlsAlignedMem);
                         BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(at), (uint)(long)(tslot + (ulong)r.Addend - place));
                         continue;
                     }
                     if (r.Type is RelType.TpOff32 or RelType.TpOff64 or RelType.DtpOff32 or RelType.DtpOff64)
                     {
-                        // Local-exec: the value is the symbol's template offset minus the aligned template
-                        // size, since the block sits below the thread pointer on this target. A module-block
-                        // offset (DTPOFF, once its base is relaxed to the thread pointer) is the same value.
                         if (!TryTlsTemplateOffset(resolution, tlsOffset, obj, sym, out ulong templateOff))
                             throw new ElfLinkException($"Thread-local symbol '{sym.Name}' has no template section in the payload.");
                         long tp = (long)templateOff - (long)tlsAlignedMem + r.Addend;
@@ -480,7 +764,6 @@ public static class PayloadWriter
                             break;
                         case RelType.R64:
                             BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(at), s + (ulong)r.Addend);
-                            // Any absolute pointer needs a base-relative fix-up unless it resolves to zero.
                             if (s + (ulong)r.Addend != 0 && !(sym.IsWeak && sym.IsUndefined && !externByName.ContainsKey(sym.Name) && !resolution.Defined.ContainsKey(sym.Name)))
                                 relatives.Add(new Relative(place, s + (ulong)r.Addend));
                             break;
@@ -507,10 +790,6 @@ public static class PayloadWriter
         return result;
     }
 
-    // How many internal global-offset slots the relocation pass will create, so the writable layout can
-    // reserve for them before the resolver table. Keyed exactly as the relocation pass keys them: a
-    // data load of a defined address routes through one slot per target, a thread-local offset through
-    // one slot per thread-local symbol; an outside reference reuses its resolver slot and adds none.
     private static int CountInternalGotSlots(LinkResolution resolution, Dictionary<string, Extern> externByName)
     {
         var keys = new HashSet<string>(StringComparer.Ordinal);
@@ -530,8 +809,6 @@ public static class PayloadWriter
         return keys.Count;
     }
 
-    // The GOT slot a reference reads: the resolver slot for an outside reference, or an internal slot
-    // holding a defined address (with a base-relative fix-up recorded through extraGotSlots).
     private static ulong GotSlotFor(
         LinkResolution resolution, Dictionary<string, Extern> externByName, Func<ElfObject, int, ulong> sectionAddr,
         ElfObject obj, ElfSymbol sym, ulong gotAddr, int externCount, Dictionary<string, ulong> internalGot,
@@ -549,9 +826,6 @@ public static class PayloadWriter
         return slot;
     }
 
-    // The GOT slot an initial-exec thread-local reference reads: it holds the symbol's fixed offset from
-    // the thread pointer (its template offset minus the aligned template size), written at link time and
-    // never relocated - it is a constant offset, not an address.
     private static ulong TlsGotSlotFor(
         LinkResolution resolution, Func<ElfObject, int, ulong> sectionAddr, ElfObject obj, ElfSymbol sym,
         Dictionary<string, ulong> internalGot, List<(ulong, ulong)> tlsGotSlots, Func<ulong> nextInternalGot,
@@ -567,8 +841,6 @@ public static class PayloadWriter
         return slot;
     }
 
-    // The offset of a thread-local symbol within the template: its section's template offset plus the
-    // symbol's value, resolving an undefined reference against the defining object.
     private static bool TryTlsTemplateOffset(
         LinkResolution resolution, Dictionary<(ElfObject, int), ulong> tlsOffset, ElfObject obj, ElfSymbol sym, out ulong result)
     {
@@ -596,8 +868,6 @@ public static class PayloadWriter
         if (sym.SectionIndex == ShnAbs) return sym.Value;
         if (sym.Type == SymType.Section) return sectionAddr(obj, sym.SectionIndex);
         if (!sym.IsUndefined) return sectionAddr(obj, sym.SectionIndex) + sym.Value;
-        // A name the linker settles takes its fixed address before any resolver slot is considered, so a
-        // reference to the image start, the code end or the exception index reads the real address.
         if (linkerDefined.TryGetValue(sym.Name, out ulong provided)) return provided;
         if (resolution.Defined.TryGetValue(sym.Name, out ElfObject? defObj))
             foreach (ElfSymbol d in defObj.Symbols)
@@ -609,9 +879,6 @@ public static class PayloadWriter
         throw new ElfLinkException($"Unresolved symbol '{sym.Name}'.");
     }
 
-    // The address an internal global-offset slot holds. A symbol defined in the referencing object
-    // resolves through that object; an undefined reference resolves through its defining object; a name
-    // the linker settles takes its fixed address.
     private static ulong SymbolValueDefined(LinkResolution resolution, Func<ElfObject, int, ulong> sectionAddr, ElfObject obj, ElfSymbol sym, Dictionary<string, ulong> linkerDefined)
     {
         if (sym.SectionIndex == ShnAbs) return sym.Value;
@@ -622,6 +889,7 @@ public static class PayloadWriter
             foreach (ElfSymbol d in defObj.Symbols)
                 if (!d.IsUndefined && d.Name == sym.Name)
                     return d.SectionIndex == ShnAbs ? d.Value : sectionAddr(defObj, d.SectionIndex) + d.Value;
+        if (TryEncapsulationAddress(resolution, sectionAddr, sym.Name, out ulong enc)) return enc;
         return 0;
     }
 
@@ -663,44 +931,50 @@ public static class PayloadWriter
     private static byte[] WriteFile(
         LinkResolution resolution, ulong entry, Dictionary<(ElfObject, int), byte[]> sectionData, Func<ElfObject, int, ulong> sectionAddr,
         ulong textAddr, ulong textSize, ulong pltBase, byte[] pltData, ulong retStubOffset,
-        ulong roAddr, ulong roSize, ulong namesBase, byte[] nameBytes,
+        ulong roAddr, ulong roSize,
+        ulong dynsymOffset, byte[] dynsymBytes, ulong dynstrOffset, byte[] dynstrBytes, ulong hashOffset, byte[] hashBytes,
         ulong ehFrameHdrOffset, byte[] ehFrameHdr,
-        ulong dataAddr, ulong dataFileEnd, ulong dataMemEnd, ulong gotBase, byte[] gotData,
-        ulong importTableBase, byte[] importTable, List<Relative> relatives)
+        ulong gotOffset, byte[] gotData,
+        ulong dynamicOffset, byte[] dynamicData, ulong relaOffset, byte[] relaBytes,
+        ulong dataAddr, ulong dataFileEnd, ulong dataMemEnd, ulong dynamicAddr,
+        ulong initArrayAddr, ulong initArraySize, ulong finiArrayAddr, ulong finiArraySize,
+        byte[] symtabData, byte[] strtabData, int localSymCount)
     {
-        // Three load segments plus a relocation section the loader reads by section header. The header
-        // and program headers occupy the first segment's start.
-        const int phCount = 3;
+        const int phCount = 4; // 3 PT_LOAD + 1 PT_DYNAMIC
         ulong textFileOff = SegAlign;
         ulong roFileOff = textFileOff + Align(textSize, SegAlign);
         ulong dataFileOff = roFileOff + Align(roSize, SegAlign);
         ulong afterData = dataFileOff + dataFileEnd;
 
-        // Relocation section, then the section-header string table, then the section headers.
-        byte[] relaBytes = new byte[relatives.Count * 24];
-        relatives.Sort((a, b) => a.Offset.CompareTo(b.Offset));
-        for (int i = 0; i < relatives.Count; i++)
-        {
-            int b = i * 24;
-            BinaryPrimitives.WriteUInt64LittleEndian(relaBytes.AsSpan(b), relatives[i].Offset);
-            BinaryPrimitives.WriteUInt64LittleEndian(relaBytes.AsSpan(b + 8), RRelative);
-            BinaryPrimitives.WriteUInt64LittleEndian(relaBytes.AsSpan(b + 16), relatives[i].Addend);
-        }
-        ulong relaFileOff = Align(afterData, 8);
-
+        // Section-header string table: 23 section names matching the standard payload layout.
         var shstr = new List<byte> { 0 };
         int AddShName(string s) { int o = shstr.Count; shstr.AddRange(Encoding.ASCII.GetBytes(s)); shstr.Add(0); return o; }
-        int nText = AddShName(".text"), nRodata = AddShName(".rodata"), nData = AddShName(".data");
-        int nRela = AddShName(".rela.dyn"), nShStr = AddShName(".shstrtab");
-        ulong shstrFileOff = relaFileOff + (ulong)relaBytes.Length;
-        ulong shdrFileOff = Align(shstrFileOff + (ulong)shstr.Count, 8);
+        int nText = AddShName(".text"), nPlt = AddShName(".plt");
+        int nEhFrameHdr = AddShName(".eh_frame_hdr"), nEhFrame = AddShName(".eh_frame");
+        int nDynsym = AddShName(".dynsym"), nHash = AddShName(".gnu.hash"), nDynstr = AddShName(".dynstr");
+        int nRela = AddShName(".rela.dyn"), nRelaPlt = AddShName(".rela.plt");
+        int nDataRelRo = AddShName(".data.rel.ro");
+        int nGot = AddShName(".got"), nGotPlt = AddShName(".got.plt");
+        int nRodata = AddShName(".rodata");
+        int nInitArray = AddShName(".init_array"), nFiniArray = AddShName(".fini_array");
+        int nDynamic = AddShName(".dynamic");
+        int nData = AddShName(".data"), nBss = AddShName(".bss");
+        int nComment = AddShName(".comment");
+        int nSymtab = AddShName(".symtab");
+        int nShStr = AddShName(".shstrtab");
+        int nStrtab = AddShName(".strtab");
+        ulong shstrFileOff = Align(afterData, 8);
+        ulong strtabFileOff = Align(shstrFileOff + (ulong)shstr.Count, 8);
+        ulong symtabFileOff = Align(strtabFileOff + (ulong)strtabData.Length, 8);
+        ulong shdrFileOff = Align(symtabFileOff + (ulong)symtabData.Length, 8);
 
-        ulong fileEnd = shdrFileOff + 6 * 64;
+        const int shCount = 23;
+        ulong fileEnd = shdrFileOff + (ulong)shCount * 64;
         byte[] file = new byte[Align(fileEnd, 16)];
 
-        // ELF header: a shared-object (position-independent) executable.
+        // ELF header.
         file[0] = 0x7F; file[1] = (byte)'E'; file[2] = (byte)'L'; file[3] = (byte)'F';
-        file[4] = 2; file[5] = 1; file[6] = 1; file[7] = 9; file[8] = 2;
+        file[4] = 2; file[5] = 1; file[6] = 1; // EI_OSABI = ELFOSABI_NONE (0), ABI version 0
         BinaryPrimitives.WriteUInt16LittleEndian(file.AsSpan(0x10), 3);     // ET_DYN
         BinaryPrimitives.WriteUInt16LittleEndian(file.AsSpan(0x12), 0x3E);  // x86-64
         BinaryPrimitives.WriteUInt32LittleEndian(file.AsSpan(0x14), 1);
@@ -711,13 +985,13 @@ public static class PayloadWriter
         BinaryPrimitives.WriteUInt16LittleEndian(file.AsSpan(0x36), 0x38);              // e_phentsize
         BinaryPrimitives.WriteUInt16LittleEndian(file.AsSpan(0x38), phCount);
         BinaryPrimitives.WriteUInt16LittleEndian(file.AsSpan(0x3A), 0x40);              // e_shentsize
-        BinaryPrimitives.WriteUInt16LittleEndian(file.AsSpan(0x3C), 6);                 // e_shnum
-        BinaryPrimitives.WriteUInt16LittleEndian(file.AsSpan(0x3E), 5);                 // e_shstrndx
+        BinaryPrimitives.WriteUInt16LittleEndian(file.AsSpan(0x3C), shCount);           // e_shnum
+        BinaryPrimitives.WriteUInt16LittleEndian(file.AsSpan(0x3E), 21);               // e_shstrndx (shIdxShStr)
 
         int ph = 0x40;
-        void WritePh(uint flags, ulong off, ulong va, ulong filesz, ulong memsz)
+        void WritePh(uint type, uint flags, ulong off, ulong va, ulong filesz, ulong memsz)
         {
-            BinaryPrimitives.WriteUInt32LittleEndian(file.AsSpan(ph), PtLoad);
+            BinaryPrimitives.WriteUInt32LittleEndian(file.AsSpan(ph), type);
             BinaryPrimitives.WriteUInt32LittleEndian(file.AsSpan(ph + 4), flags);
             BinaryPrimitives.WriteUInt64LittleEndian(file.AsSpan(ph + 8), off);
             BinaryPrimitives.WriteUInt64LittleEndian(file.AsSpan(ph + 16), va);
@@ -727,9 +1001,15 @@ public static class PayloadWriter
             BinaryPrimitives.WriteUInt64LittleEndian(file.AsSpan(ph + 48), SegAlign);
             ph += 0x38;
         }
-        WritePh(PfR | PfX, textFileOff, textAddr, textSize, textSize);
-        WritePh(PfR, roFileOff, roAddr, roSize, roSize);
-        WritePh(PfR | PfW, dataFileOff, dataAddr, dataFileEnd, dataMemEnd);
+        // Program headers - corpus shape (matching the standard payload layout.:
+        //   [0] LOAD RWE - text + PLT stubs, file offset = 0x4000, VA = 0.
+        //   [1] LOAD RW  - middle segment: readonly content + relro-like writable + dyn tables.
+        //   [2] LOAD RW  - data segment: pure runtime .data + .bss; p_memsz > p_filesz for bss.
+        //   [3] DYNAMIC  - inside [1]; the runtime linker's entry to the dynamic table.
+        WritePh(PtLoad, PfR | PfW | PfX, textFileOff, 0, textSize, textSize);
+        WritePh(PtLoad, PfR | PfW, roFileOff, roAddr, roSize, roSize);
+        WritePh(PtLoad, PfR | PfW, dataFileOff, dataAddr, dataFileEnd, dataMemEnd);
+        WritePh(PtDynamic, PfR | PfW, roFileOff + dynamicOffset, dynamicAddr, (ulong)dynamicData.Length, (ulong)dynamicData.Length);
 
         void Put(ulong segFileOff, ulong segBase, ulong addr, byte[] bytes)
             => bytes.AsSpan().CopyTo(file.AsSpan((int)(segFileOff + (addr - segBase))));
@@ -740,25 +1020,42 @@ public static class PayloadWriter
                 ElfSection sec = obj.Sections[i];
                 if (!sec.IsAlloc || sec.IsNoBits || !sectionData.TryGetValue((obj, i), out byte[]? bytes)) continue;
                 ulong a = sectionAddr(obj, i);
-                (ulong segFileOff, ulong segBase) = sec.IsExecutable ? (textFileOff, textAddr)
-                    : sec.IsWritable ? (dataFileOff, dataAddr) : (roFileOff, roAddr);
+                ulong segFileOff, segBase;
+                if (sec.IsExecutable) { segFileOff = textFileOff; segBase = textAddr; }
+                else if (sec.IsWritable && IsRelroLike(sec.Name) && !sec.IsNoBits) { segFileOff = roFileOff; segBase = roAddr; }
+                else if (sec.IsWritable) { segFileOff = dataFileOff; segBase = dataAddr; }
+                else { segFileOff = roFileOff; segBase = roAddr; }
                 Put(segFileOff, segBase, a, bytes);
             }
         Put(textFileOff, textAddr, textAddr + pltBase, pltData);
-        // A single return instruction stands in for _init and _fini; the start code runs the
-        // constructors itself, so anything that calls these returns at once.
         file[(int)(textFileOff + retStubOffset)] = 0xC3;
         if (ehFrameHdr.Length > 0)
             Put(roFileOff, roAddr, roAddr + ehFrameHdrOffset, ehFrameHdr);
-        Put(roFileOff, roAddr, roAddr + namesBase, nameBytes);
-        Put(dataFileOff, dataAddr, dataAddr + gotBase, gotData);
-        Put(dataFileOff, dataAddr, dataAddr + importTableBase, importTable);
-        relaBytes.AsSpan().CopyTo(file.AsSpan((int)relaFileOff));
+        Put(roFileOff, roAddr, roAddr + dynsymOffset, dynsymBytes);
+        Put(roFileOff, roAddr, roAddr + dynstrOffset, dynstrBytes);
+        Put(roFileOff, roAddr, roAddr + hashOffset, hashBytes);
+        Put(roFileOff, roAddr, roAddr + gotOffset, gotData);
+        Put(roFileOff, roAddr, roAddr + dynamicOffset, dynamicData);
+        Put(roFileOff, roAddr, roAddr + relaOffset, relaBytes);
         shstr.ToArray().AsSpan().CopyTo(file.AsSpan((int)shstrFileOff));
+        strtabData.AsSpan().CopyTo(file.AsSpan((int)strtabFileOff));
+        symtabData.AsSpan().CopyTo(file.AsSpan((int)symtabFileOff));
 
-        // Section headers: null, .text, .rodata, .data, .rela.dyn, .shstrtab. The loader reads these to
-        // find the relocation section.
-        void WriteShdr(int index, int nameOff, uint type, ulong flags, ulong addr, ulong off, ulong size, int link, int align, int entsize)
+        // Section headers: 23 sections matching the standard payload layout.layout.
+        // [ 0] NULL  [ 1] .text  [ 2] .plt  [ 3] .eh_frame_hdr  [ 4] .eh_frame
+        // [ 5] .dynsym  [ 6] .gnu.hash  [ 7] .dynstr  [ 8] .rela.dyn  [ 9] .rela.plt
+        // [10] .data.rel.ro  [11] .got  [12] .got.plt  [13] .rodata
+        // [14] .init_array  [15] .fini_array  [16] .dynamic  [17] .data  [18] .bss
+        // [19] .comment  [20] .symtab  [21] .shstrtab  [22] .strtab
+        const int shIdxText = 1, shIdxPlt = 2, shIdxEhFrameHdr = 3, shIdxEhFrame = 4;
+        const int shIdxDynsym = 5, shIdxHash = 6, shIdxDynstr = 7;
+        const int shIdxRela = 8, shIdxRelaPlt = 9;
+        const int shIdxDataRelRo = 10, shIdxGot = 11, shIdxGotPlt = 12, shIdxRodata = 13;
+        const int shIdxInitArray = 14, shIdxFiniArray = 15, shIdxDynamic = 16;
+        const int shIdxData = 17, shIdxBss = 18;
+        const int shIdxComment = 19, shIdxSymtab = 20, shIdxShStr = 21, shIdxStrtab = 22;
+
+        void WriteShdr(int index, int nameOff, uint type, ulong flags, ulong addr, ulong off, ulong size, int link, int info, int align, int entsize)
         {
             int b = (int)shdrFileOff + index * 64;
             BinaryPrimitives.WriteUInt32LittleEndian(file.AsSpan(b), (uint)nameOff);
@@ -768,16 +1065,105 @@ public static class PayloadWriter
             BinaryPrimitives.WriteUInt64LittleEndian(file.AsSpan(b + 24), off);
             BinaryPrimitives.WriteUInt64LittleEndian(file.AsSpan(b + 32), size);
             BinaryPrimitives.WriteUInt32LittleEndian(file.AsSpan(b + 40), (uint)link);
+            BinaryPrimitives.WriteUInt32LittleEndian(file.AsSpan(b + 44), (uint)info);
             BinaryPrimitives.WriteUInt64LittleEndian(file.AsSpan(b + 48), (ulong)align);
             BinaryPrimitives.WriteUInt64LittleEndian(file.AsSpan(b + 56), (ulong)entsize);
         }
-        WriteShdr(1, nText, ShtProgBits, ShfAlloc | ShfExec, textAddr, textFileOff, textSize, 0, 16, 0);
-        WriteShdr(2, nRodata, ShtProgBits, ShfAlloc, roAddr, roFileOff, roSize, 0, 1, 0);
-        WriteShdr(3, nData, ShtProgBits, ShfAlloc | ShfWrite, dataAddr, dataFileOff, dataFileEnd, 0, 8, 0);
-        WriteShdr(4, nRela, ShtRela, 0, 0, relaFileOff, (ulong)relaBytes.Length, 0, 8, 24);
-        WriteShdr(5, nShStr, ShtStrTab, 0, 0, shstrFileOff, (ulong)shstr.Count, 0, 1, 0);
+
+        // Segment 0 sections: .text + .plt
+        ulong pltSize = (ulong)pltData.Length;
+        WriteShdr(shIdxText, nText, (uint)ShtProgBits, ShfAlloc | ShfExec,
+            textAddr, textFileOff, pltBase, 0, 0, (int)SegAlign, 0);
+        WriteShdr(shIdxPlt, nPlt, (uint)ShtProgBits, ShfAlloc | ShfExec,
+            textAddr + pltBase, textFileOff + pltBase, pltSize, 0, 0, 16, 0);
+
+        // Segment 1 sections (middle / RO + RELRO): order follows the standard layout
+        ulong ehfhAddr = roAddr + ehFrameHdrOffset;
+        ulong ehfhSize = (ulong)ehFrameHdr.Length;
+        WriteShdr(shIdxEhFrameHdr, nEhFrameHdr, (uint)ShtProgBits, ShfAlloc,
+            ehfhAddr, roFileOff + ehFrameHdrOffset, ehfhSize, 0, 0, ehfhSize > 0 ? (int)SegAlign : 1, 0);
+        // .eh_frame follows .eh_frame_hdr; its exact bounds depend on input objects.
+        // When no eh_frame data is present, the section has size 0.
+        ulong ehFrameAddr = ehfhSize > 0 ? Align(ehfhAddr + ehfhSize, 8) : ehfhAddr;
+        ulong ehFrameSize = dynsymOffset > ehFrameHdrOffset + ehfhSize
+            ? dynsymOffset - Align(ehFrameHdrOffset + ehfhSize, 8) : 0;
+        ulong ehFrameOff = roFileOff + (ehFrameAddr - roAddr);
+        WriteShdr(shIdxEhFrame, nEhFrame, (uint)ShtProgBits, ShfAlloc,
+            ehFrameAddr, ehFrameOff, ehFrameSize, 0, 0, 8, 0);
+
+        WriteShdr(shIdxDynsym, nDynsym, (uint)ShtDynSym, ShfAlloc,
+            roAddr + dynsymOffset, roFileOff + dynsymOffset, (ulong)dynsymBytes.Length,
+            shIdxDynstr, 1, 8, 24);
+        WriteShdr(shIdxHash, nHash, (uint)ShtGnuHash, ShfAlloc,
+            roAddr + hashOffset, roFileOff + hashOffset, (ulong)hashBytes.Length,
+            shIdxDynsym, 0, 8, 0);
+        WriteShdr(shIdxDynstr, nDynstr, (uint)ShtStrTab, ShfAlloc,
+            roAddr + dynstrOffset, roFileOff + dynstrOffset, (ulong)dynstrBytes.Length, 0, 0, 1, 0);
+        WriteShdr(shIdxRela, nRela, (uint)ShtRela, ShfAlloc,
+            roAddr + relaOffset, roFileOff + relaOffset, (ulong)relaBytes.Length,
+            shIdxDynsym, 0, 8, 24);
+        // .rela.plt: follows .rela.dyn; currently empty (no PLT-targeted relocations yet).
+        ulong relaPltOff = relaOffset + (ulong)relaBytes.Length;
+        WriteShdr(shIdxRelaPlt, nRelaPlt, (uint)ShtRela, ShfAlloc | ShfInfo,
+            roAddr + relaPltOff, roFileOff + relaPltOff, 0,
+            shIdxDynsym, shIdxGotPlt, 8, 24);
+        // .data.rel.ro: relro content in middle segment (between .rela.plt and .got).
+        // When no relro content is placed, the section is empty.
+        ulong dataRelRoOff = Align(relaPltOff, 16);
+        ulong dataRelRoSize = gotOffset > dataRelRoOff ? gotOffset - dataRelRoOff : 0;
+        WriteShdr(shIdxDataRelRo, nDataRelRo, (uint)ShtProgBits, ShfAlloc | ShfWrite,
+            roAddr + dataRelRoOff, roFileOff + dataRelRoOff, dataRelRoSize, 0, 0, 16, 0);
+        WriteShdr(shIdxGot, nGot, (uint)ShtProgBits, ShfAlloc | ShfWrite,
+            roAddr + gotOffset, roFileOff + gotOffset, (ulong)gotData.Length, 0, 0, 8, 0);
+        // .got.plt: not yet separated from .got; empty for now.
+        ulong gotPltOff = gotOffset + (ulong)gotData.Length;
+        WriteShdr(shIdxGotPlt, nGotPlt, (uint)ShtProgBits, ShfAlloc | ShfWrite,
+            roAddr + gotPltOff, roFileOff + gotPltOff, 0, 0, 0, 8, 0);
+        // .rodata: read-only data after .got.plt in the middle segment.
+        ulong rodataOff = Align(gotPltOff, 16);
+        ulong rodataEnd = dynamicOffset; // rodata extends up to .dynamic
+        ulong rodataSize = rodataEnd > rodataOff ? rodataEnd - rodataOff : 0;
+        WriteShdr(shIdxRodata, nRodata, (uint)ShtProgBits, ShfAlloc | ShfMerge | ShfStrings,
+            roAddr + rodataOff, roFileOff + rodataOff, rodataSize, 0, 0, 16, 0);
+        // .init_array and .fini_array: always present, even when size=0 (per the standard layout).
+        ulong initFileOff = initArrayAddr >= roAddr ? roFileOff + (initArrayAddr - roAddr) : roFileOff + dynamicOffset;
+        ulong finiFileOff = finiArrayAddr >= roAddr ? roFileOff + (finiArrayAddr - roAddr) : initFileOff;
+        WriteShdr(shIdxInitArray, nInitArray, (uint)ShtProgBits, ShfAlloc,
+            initArrayAddr, initFileOff, initArraySize, 0, 0, 1, 0);
+        WriteShdr(shIdxFiniArray, nFiniArray, (uint)ShtProgBits, ShfAlloc,
+            finiArrayAddr, finiFileOff, finiArraySize, 0, 0, 1, 0);
+        WriteShdr(shIdxDynamic, nDynamic, (uint)ShtDynamic, ShfAlloc | ShfWrite,
+            dynamicAddr, roFileOff + dynamicOffset, (ulong)dynamicData.Length,
+            shIdxDynstr, 0, (int)SegAlign, 16);
+
+        // Segment 2 sections: .data + .bss
+        WriteShdr(shIdxData, nData, (uint)ShtProgBits, ShfAlloc | ShfWrite,
+            dataAddr, dataFileOff, dataFileEnd, 0, 0, (int)SegAlign, 0);
+        // .bss: uninitialised data following .data; SHT_NOBITS.
+        ulong bssAddr = Align(dataAddr + dataFileEnd, 16);
+        ulong bssSize = dataMemEnd > (bssAddr - dataAddr) ? dataMemEnd - (bssAddr - dataAddr) : 0;
+        WriteShdr(shIdxBss, nBss, (uint)ShtNoBits, ShfAlloc | ShfWrite,
+            bssAddr, dataFileOff + dataFileEnd, bssSize, 0, 0, 16, 0);
+
+        // Non-alloc sections: .comment, .symtab, .shstrtab, .strtab
+        WriteShdr(shIdxComment, nComment, (uint)ShtProgBits, ShfMerge | ShfStrings,
+            0, shstrFileOff, 0, 0, 0, 1, 1);
+        WriteShdr(shIdxSymtab, nSymtab, (uint)ShtSymTab, 0,
+            0, symtabFileOff, (ulong)symtabData.Length, shIdxStrtab, localSymCount, 8, 24);
+        WriteShdr(shIdxShStr, nShStr, (uint)ShtStrTab, 0,
+            0, shstrFileOff, (ulong)shstr.Count, 0, 0, 1, 0);
+        WriteShdr(shIdxStrtab, nStrtab, (uint)ShtStrTab, 0,
+            0, strtabFileOff, (ulong)strtabData.Length, 0, 0, 1, 0);
         return file;
     }
 
     private static ulong Align(ulong v, ulong a) => a <= 1 ? v : (v + a - 1) / a * a;
+
+    private static uint GnuHash(string name)
+    {
+        uint h = 5381;
+        foreach (byte c in Encoding.ASCII.GetBytes(name))
+            h = (h << 5) + h + c;
+        return h;
+    }
 }

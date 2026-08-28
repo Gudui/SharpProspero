@@ -1,6 +1,7 @@
 ---
 title: Networking
-nav_order: 10
+parent: Application Modules
+nav_order: 6
 ---
 
 # Networking

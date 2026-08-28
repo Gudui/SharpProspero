@@ -1,6 +1,7 @@
 ---
 title: Memory
-nav_order: 11
+parent: Application Modules
+nav_order: 7
 ---
 
 # Memory
@@ -203,7 +204,7 @@ flowchart TD
 Direct and flexible regions live outside the managed heap and do not count against
 `ProsperoHeapHardLimitBytes`, so moving large buffers off the heap is one of the most effective ways to
 stay under the ceiling. See [Graphics](graphics.md) for how a `Surface` draws into a direct region, and
-[Guides](guides.md) for the same discipline in context.
+[Tips for application modules](extras-app-module-tips.md) for the same discipline in context.
 
 ## Reading the address space back
 

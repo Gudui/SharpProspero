@@ -1,17 +1,15 @@
 ---
 title: The sce_sys/param.json fields
-parent: Toolchain
-nav_order: 7
+parent: Extras
+nav_order: 3
 ---
 
 # The `sce_sys/param.json` fields
 
 Every package carries a `sce_sys/param.json` describing the title to the system: its identifiers, its
-version, what kind of title it is, and the name shown on the home screen. The templates ship one filled
-in from the `--title` and `--titleId` you pass - the content id is built from the title id, since the
-two have to agree - so a first build needs no editing. Pass `--contentIdOverride` when a whole
-36-character content id of your own has to be used instead. This page describes
-the fields you are most likely to change and what the rest are for.
+version, what kind of title it is, and the name shown on the home screen. The samples ship one
+filled in with placeholder identifiers; change them for your own module before the first build. This
+page describes the fields you are most likely to change and what the rest are for.
 
 ## Checking it
 
@@ -49,7 +47,7 @@ Add `--apply` to write the missing fields, `--category <kind>` to set the kind o
 | Field | What it is |
 |---|---|
 | `titleId` | The nine-character title id, four letters then five digits, e.g. `PPSA99099`. Identifies the title. |
-| `conceptId` | The numeric concept id (usually the digits of the title id). The templates take it as its own `--conceptId` option and do not derive it, so pass it alongside `--titleId`. Nothing checks it. |
+| `conceptId` | The numeric concept id (usually the digits of the title id). Nothing checks it. |
 | `contentId` | The full content id: `UP9000-<titleId>_00-<16 chars>`, 36 characters. The package is keyed by this, and it has to carry the title id. |
 | `contentVersion` | The content version string, `NN.NNN.NNN`. Raise it for an update. |
 | `masterVersion` | The master version, `NN.NN`. |
@@ -165,5 +163,5 @@ that ships updates, and is empty otherwise. `originContentVersion` and `targetCo
 content version for a title that ships an update. Both are optional, and each is checked to the same
 `NN.NNN.NNN` shape as `contentVersion` when present.
 
-The packager reads `titleId`, `contentId` and the version fields; leave the rest as the template writes
-them unless a title needs the feature a field controls.
+The packager reads `titleId`, `contentId` and the version fields; leave the rest as the sample
+ships them unless a title needs the feature a field controls.
