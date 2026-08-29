@@ -58,6 +58,22 @@ public sealed class AgcRenderTargetTests
     }
 
     [Fact]
+    public void TileModeAndDimensionBelongOnlyToAttrib3()
+    {
+        var rt = Fresh();
+        rt[3] = new CxRegister(rt[3].Offset, 0x0001_FFFF);
+
+        rt.SetTileMode(CxRenderTarget.TileMode.kRenderTarget);
+        rt.SetDimension(CxRenderTarget.Dimension.k2d);
+
+        // GFX10.3 carries COLOR_SW_MODE and RESOURCE_TYPE in CB_COLOR0_ATTRIB3 (entry 15).
+        // Entry 3 contains separate legacy color/FMask tile indices and sample fields.
+        Assert.Equal(0x0001_FFFFu, rt.Registers[3].Value);
+        Assert.Equal(CxRenderTarget.TileMode.kRenderTarget, rt.GetTileMode());
+        Assert.Equal(CxRenderTarget.Dimension.k2d, rt.GetDimension());
+    }
+
+    [Fact]
     public void WidthEncodesWithTheMinusOneBias()
     {
         var rt = Fresh();
@@ -124,6 +140,8 @@ public sealed class AgcRenderTargetTests
         Assert.Equal(CxRenderTarget.BlendBypass.kDisable, rt.GetBlendBypass());
         Assert.Equal(CxRenderTarget.BlendClamp.kEnable, rt.GetBlendClamp());
         Assert.Equal(CxRenderTarget.MetadataPipeAlignment.kEnable, rt.GetMetadataPipeAlignment());
+        Assert.Equal(0u, rt.Registers[3].Value);
+        Assert.Equal(0x4506_C000u, rt.Registers[15].Value);
     }
 
     [Fact]
