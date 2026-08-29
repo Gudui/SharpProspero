@@ -72,7 +72,7 @@ public class ShaderInfoTests
     }
 
     [Fact]
-    public void Read_MeshPixelShaderAdvertisesOnlyItsUncompressedMrt0Export()
+    public void Read_MeshPixelShaderMatchesTheConstantWhiteDiagnosticProgram()
     {
         byte[] container = LoadShaderResource("SharpProspero.Shaders.mesh_ps.sb");
         ShaderInfo info = ShaderInfo.Read(container);
@@ -84,8 +84,10 @@ public class ShaderInfoTests
         Assert.Contains(
             info.ContextRegisters,
             register => register.Offset == 0x01B8 && register.Value == 0x01000000);
+        // GPU-CD keeps the validated header and MRT0 export while replacing only the eight
+        // interpolant instructions with equal-footprint constant-one moves and NOPs.
         Assert.Equal(
-            "f62be2093642e923be5ba72cf2c61fa1ae0555584c69e289d3bd7416922659b6",
+            "0238a27c7903ee586e1d9ace87d08aea802081f12149143ec36c8ab98fdda792",
             Convert.ToHexString(SHA256.HashData(LoadShaderSection(container, ".shader_text"))).ToLowerInvariant());
     }
 
