@@ -41,7 +41,7 @@ public sealed unsafe class AgcCommandBufferTests
         Assert.Equal((byte)0, DrawCommandBuffer.DmaFillRawWait);
         Assert.Equal((byte)0, DrawCommandBuffer.DmaFillDisableWriteConfirm);
         Assert.Equal((byte)1, DrawCommandBuffer.DmaFillSync);
-        Assert.Equal(0x03FF_FFFFu, DrawCommandBuffer.DmaMaximumByteCount);
+        Assert.Equal(0x03FF_FFFFu, DrawCommandBuffer.MaximumFillByteCount);
     }
 
     [Fact]

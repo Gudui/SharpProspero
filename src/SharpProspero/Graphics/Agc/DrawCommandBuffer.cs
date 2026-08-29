@@ -192,7 +192,8 @@ public sealed unsafe class DrawCommandBuffer : IDisposable
     internal const byte DmaFillRawWait = 0;
     internal const byte DmaFillDisableWriteConfirm = 0;
     internal const byte DmaFillSync = 1;
-    internal const uint DmaMaximumByteCount = (1u << 26) - 1;
+    /// <summary>Largest byte count representable by one <c>DMA_DATA</c> packet.</summary>
+    public const uint MaximumFillByteCount = (1u << 26) - 1;
 
     /// <summary>
     /// Fills an incrementing GPU-memory range with a repeated 32-bit value using a synchronized
@@ -230,9 +231,9 @@ public sealed unsafe class DrawCommandBuffer : IDisposable
             throw new ArgumentNullException(nameof(destination));
         if (((nuint)destination & (sizeof(uint) - 1)) != 0)
             throw new ArgumentException("The DMA fill destination must be 32-bit aligned.", nameof(destination));
-        if (numBytes == 0 || numBytes > DmaMaximumByteCount || (numBytes & (sizeof(uint) - 1)) != 0)
+        if (numBytes == 0 || numBytes > MaximumFillByteCount || (numBytes & (sizeof(uint) - 1)) != 0)
             throw new ArgumentOutOfRangeException(nameof(numBytes),
-                $"The DMA fill size must be a nonzero multiple of four no greater than {DmaMaximumByteCount} bytes.");
+                $"The DMA fill size must be a nonzero multiple of four no greater than {MaximumFillByteCount} bytes.");
     }
 
     /// <summary>The queue a draw buffer records into.</summary>
