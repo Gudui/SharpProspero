@@ -25,7 +25,9 @@
 
   <!-- The built-in mesh shaders, compiled ahead of time and embedded so a 3D application renders with
        no shader tooling of its own. The .pssl sources sit beside them for reference. -->
-  <ItemGroup>
+  <!-- Applications that never use BuiltInShaders can opt out so a diagnostic or payload does not
+       carry inert shader microcode. The default stays on for compatibility and for the 3D samples. -->
+  <ItemGroup Condition="'$(EmbedBuiltInShaders)' != 'false'">
     <EmbeddedResource Include="Graphics\Agc\Shaders\mesh_vs.sb" LogicalName="SharpProspero.Shaders.mesh_vs.sb" />
     <EmbeddedResource Include="Graphics\Agc\Shaders\mesh_ps.sb" LogicalName="SharpProspero.Shaders.mesh_ps.sb" />
   </ItemGroup>
