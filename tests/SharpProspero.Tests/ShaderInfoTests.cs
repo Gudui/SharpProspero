@@ -95,9 +95,10 @@ public class ShaderInfoTests
         byte[] container = LoadShaderResource("SharpProspero.Shaders.mesh_vs.sb");
 
         // The validated gfx1030 program completes its primitive and position exports. Parameter
-        // exports do not own the position-stage completion bit.
+        // exports do not own the position-stage completion bit, and the merged NGG vertex stage
+        // selects vertex_id from v5 after the five geometry-system VGPR inputs.
         Assert.Equal(
-            "18bf29a20ee7a3ef478d23d76ed4189938568650a006e0e26f4e8e115cc8a531",
+            "d732f278f6ef845ea0e1967e8e84f97057a4e61e0455abf4cc9ad0e72642c232",
             Convert.ToHexString(SHA256.HashData(LoadShaderSection(container, ".shader_text"))).ToLowerInvariant());
     }
 
