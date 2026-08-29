@@ -181,6 +181,60 @@ public sealed unsafe class DrawCommandBuffer : IDisposable
     public nint AcquireMem(byte engine = 0, uint coherCntl = 0x0FFFFFFF, uint coherSize = 0xFFFFFFFF, ulong coherSizeHi = 0, void* baseAddr = null, uint pollInterval = 10)
         => (nint)SceAgc.sceAgcDcbAcquireMem(St, engine, coherCntl, coherSize, coherSizeHi, baseAddr, pollInterval);
 
+    // Firmware 5.50's sceAgcDcbDmaData packs selector/address-space/increment bits into each selector.
+    // These values describe the narrow, safe whole-range fill contract exposed below: ME executes a
+    // repeated immediate value into incrementing L2-backed memory, with write confirmation and CP_SYNC.
+    internal const byte DmaFillEngine = 0;
+    internal const uint DmaFillDestinationSelector = 3;
+    internal const byte DmaFillDestinationCachePolicy = 0;
+    internal const uint DmaFillSourceSelector = 2;
+    internal const byte DmaFillSourceCachePolicy = 0;
+    internal const byte DmaFillRawWait = 0;
+    internal const byte DmaFillDisableWriteConfirm = 0;
+    internal const byte DmaFillSync = 1;
+    internal const uint DmaMaximumByteCount = (1u << 26) - 1;
+
+    /// <summary>
+    /// Fills an incrementing GPU-memory range with a repeated 32-bit value using a synchronized
+    /// <c>DMA_DATA</c> packet on the graphics micro-engine.
+    /// </summary>
+    /// <remarks>
+    /// The packet writes through L2, keeps write confirmation enabled, and sets CP_SYNC so following
+    /// commands on the same engine do not execute before the fill completes. The destination and byte
+    /// count must be whole 32-bit words; one packet can address fewer than 64 MiB.
+    /// </remarks>
+    /// <exception cref="ArgumentNullException"><paramref name="destination"/> is null.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="numBytes"/> is zero, not a whole number of words, or exceeds the packet limit.</exception>
+    /// <exception cref="ArgumentException"><paramref name="destination"/> is not 32-bit aligned.</exception>
+    public nint FillMemory(void* destination, uint numBytes, uint value)
+    {
+        ValidateDmaFillArguments(destination, numBytes);
+        return (nint)SceAgc.sceAgcDcbDmaData(
+            St,
+            DmaFillEngine,
+            DmaFillDestinationSelector,
+            DmaFillDestinationCachePolicy,
+            destination,
+            DmaFillSourceSelector,
+            DmaFillSourceCachePolicy,
+            (void*)(nuint)value,
+            numBytes,
+            DmaFillRawWait,
+            DmaFillDisableWriteConfirm,
+            DmaFillSync);
+    }
+
+    internal static void ValidateDmaFillArguments(void* destination, uint numBytes)
+    {
+        if (destination is null)
+            throw new ArgumentNullException(nameof(destination));
+        if (((nuint)destination & (sizeof(uint) - 1)) != 0)
+            throw new ArgumentException("The DMA fill destination must be 32-bit aligned.", nameof(destination));
+        if (numBytes == 0 || numBytes > DmaMaximumByteCount || (numBytes & (sizeof(uint) - 1)) != 0)
+            throw new ArgumentOutOfRangeException(nameof(numBytes),
+                $"The DMA fill size must be a nonzero multiple of four no greater than {DmaMaximumByteCount} bytes.");
+    }
+
     /// <summary>The queue a draw buffer records into.</summary>
     private const uint DrawQueue = 0;
 

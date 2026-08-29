@@ -338,8 +338,9 @@ public static unsafe partial class SceAgc
     public static partial uint sceAgcDcbDispatchIndirectGetSize();
 
     /// <summary>Appends a DMA_DATA packet performing a GPU DMA copy/fill between memory or register sources and destinations, returning the advanced write cursor.</summary>
+    /// <remarks><paramref name="dstSel"/> and <paramref name="srcSel"/> pack the two-bit selector with address-space and increment-control bits. When the source selector names immediate data, <paramref name="srcAddrOrData"/>'s low 32 bits are repeated across the destination range.</remarks>
     [LibraryImport(Lib)]
-    public static partial uint* sceAgcDcbDmaData(void* commandBuffer, byte engine, uint dstSel, byte dstParam, void* dstAddr, uint srcSel, byte srcParam, void* srcAddr, uint numBytes, byte sizeMode, byte srcCachePolicy, byte dstCachePolicy);
+    public static partial uint* sceAgcDcbDmaData(void* commandBuffer, byte engine, uint dstSel, byte dstCachePolicy, void* dstAddr, uint srcSel, byte srcCachePolicy, void* srcAddrOrData, uint numBytes, byte rawWait, byte disableWriteConfirm, byte sync);
 
     /// <summary>Returns the size in dwords of a DMA_DATA packet (0x1c bytes).</summary>
     [LibraryImport(Lib)]

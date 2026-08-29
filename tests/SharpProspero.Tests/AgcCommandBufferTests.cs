@@ -31,6 +31,33 @@ public sealed unsafe class AgcCommandBufferTests
     }
 
     [Fact]
+    public void DmaFillContractIsSynchronizedImmediateDataToIncrementingL2Memory()
+    {
+        Assert.Equal((byte)0, DrawCommandBuffer.DmaFillEngine);
+        Assert.Equal(3u, DrawCommandBuffer.DmaFillDestinationSelector);
+        Assert.Equal((byte)0, DrawCommandBuffer.DmaFillDestinationCachePolicy);
+        Assert.Equal(2u, DrawCommandBuffer.DmaFillSourceSelector);
+        Assert.Equal((byte)0, DrawCommandBuffer.DmaFillSourceCachePolicy);
+        Assert.Equal((byte)0, DrawCommandBuffer.DmaFillRawWait);
+        Assert.Equal((byte)0, DrawCommandBuffer.DmaFillDisableWriteConfirm);
+        Assert.Equal((byte)1, DrawCommandBuffer.DmaFillSync);
+        Assert.Equal(0x03FF_FFFFu, DrawCommandBuffer.DmaMaximumByteCount);
+    }
+
+    [Fact]
+    public void DmaFillValidationAcceptsWholeAlignedRangeAndRejectsInvalidRanges()
+    {
+        DrawCommandBuffer.ValidateDmaFillArguments((void*)0x1000, 4);
+        DrawCommandBuffer.ValidateDmaFillArguments((void*)0x1000, 0x03FF_FFFCu);
+
+        Assert.Throws<ArgumentNullException>(() => DrawCommandBuffer.ValidateDmaFillArguments(null, 4));
+        Assert.Throws<ArgumentException>(() => DrawCommandBuffer.ValidateDmaFillArguments((void*)0x1001, 4));
+        Assert.Throws<ArgumentOutOfRangeException>(() => DrawCommandBuffer.ValidateDmaFillArguments((void*)0x1000, 0));
+        Assert.Throws<ArgumentOutOfRangeException>(() => DrawCommandBuffer.ValidateDmaFillArguments((void*)0x1000, 2));
+        Assert.Throws<ArgumentOutOfRangeException>(() => DrawCommandBuffer.ValidateDmaFillArguments((void*)0x1000, 0x0400_0000));
+    }
+
+    [Fact]
     public void FreshBufferIsEmptyWithFullCapacity()
     {
         const uint bytes = 4096;

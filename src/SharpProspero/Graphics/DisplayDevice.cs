@@ -36,13 +36,15 @@ public sealed unsafe class DisplayDevice : IDisposable
     // the frame is presented. Empty when the scan-out buffers are row-major and can be written directly.
     private readonly DirectMemoryRegion[] _staging;
     private readonly AgcSurfaceDescription _layout;
+    private readonly ulong _backBufferSizeBytes;
     private readonly int _stagingBytes;
     private int _index;
     private long _frame;
     private bool _disposed;
 
     private DisplayDevice(int handle, int width, int height, DirectMemoryRegion[] regions,
-        DirectMemoryRegion[] staging, AgcSurfaceDescription layout, int stagingBytes)
+        DirectMemoryRegion[] staging, AgcSurfaceDescription layout, ulong backBufferSizeBytes,
+        int stagingBytes)
     {
         _handle = handle;
         Width = width;
@@ -50,6 +52,7 @@ public sealed unsafe class DisplayDevice : IDisposable
         _regions = regions;
         _staging = staging;
         _layout = layout;
+        _backBufferSizeBytes = backBufferSizeBytes;
         _stagingBytes = stagingBytes;
     }
 
@@ -81,6 +84,13 @@ public sealed unsafe class DisplayDevice : IDisposable
 
     /// <summary>The index of the framebuffer being drawn, within the swap chain.</summary>
     public int CurrentBufferIndex => _index;
+
+    /// <summary>
+    /// Exact size in bytes of each registered scan-out allocation, including tiled padding beyond the
+    /// visible extent. GPU operations that initialize the whole buffer must use this size rather than
+    /// <c>Width * Height * 4</c>.
+    /// </summary>
+    public ulong BackBufferSizeBytes => _backBufferSizeBytes;
 
     /// <summary>The output handle, for the renderer's flip.</summary>
     public int OutputHandle => _handle;
@@ -191,7 +201,8 @@ public sealed unsafe class DisplayDevice : IDisposable
             throw;
         }
 
-        return new DisplayDevice(handle, width, height, regions, staging, desc, stagingBytes);
+        return new DisplayDevice(handle, width, height, regions, staging, desc, layout.TotalSizeBytes,
+            stagingBytes);
     }
 
     // The sizes the output takes: four named ones, and the widescreen ladder below 1080, which is any
