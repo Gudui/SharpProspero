@@ -109,7 +109,7 @@ public enum SystemModuleId : ushort
 /// System-module loader bindings. Several device libraries are not resident by default; a module
 /// loads the ones it needs by identifier before calling into them, and unloads them when finished.
 /// </summary>
-public static partial class Sysmodule
+public static unsafe partial class Sysmodule
 {
     private const string Lib = "libSceSysmodule";
 
@@ -124,4 +124,23 @@ public static partial class Sysmodule
     /// <summary>Reports whether the module with <paramref name="id"/> is loaded (zero when loaded).</summary>
     [LibraryImport(Lib)]
     public static partial int sceSysmoduleIsLoaded(ushort id);
+
+    /// <summary>
+    /// Loads a system module by its internal identifier (with the <c>0x80000000</c> mask).
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSysmoduleLoadModuleInternal(uint id);
+
+    /// <summary>
+    /// Unloads a system module by its internal identifier.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSysmoduleUnloadModuleInternal(uint id);
+
+    /// <summary>
+    /// Loads a system module by its SPRX filename.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSysmoduleLoadModuleByNameInternal(byte* fname,
+        ulong a1, ulong a2, ulong a3, ulong a4, ulong a5);
 }

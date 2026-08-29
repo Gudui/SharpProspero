@@ -1,7 +1,6 @@
 // SharpProspero - a C# SDK for on-device application modules.
 // Copyright (C) 2026 SvenGDK
 
-using SharpProspero.Interop.Posix;
 using System.Runtime.InteropServices;
 
 namespace SharpProspero.Payload;
@@ -274,13 +273,13 @@ public static unsafe partial class PayloadFileSystem
     /// <returns><see langword="true"/> on success.</returns>
     public static bool CopyFile(byte* src, byte* dst)
     {
-        int srcFd = PosixIo.open(src, O_RDONLY);
+        int srcFd = PayloadIo.open(src, O_RDONLY);
         if (srcFd < 0) return false;
 
-        int dstFd = PosixIo.open(dst, O_WRONLY | O_CREAT | O_TRUNC);
+        int dstFd = PayloadIo.open(dst, O_WRONLY | O_CREAT | O_TRUNC);
         if (dstFd < 0)
         {
-            PosixSocket.close(srcFd);
+            PayloadIo.close(srcFd);
             return false;
         }
 
@@ -288,20 +287,20 @@ public static unsafe partial class PayloadFileSystem
         bool ok = true;
         while (true)
         {
-            long n = PosixIo.read(srcFd, buf, 8192);
+            long n = PayloadIo.read(srcFd, buf, (nuint)8192);
             if (n <= 0) break;
             long written = 0;
             while (written < n)
             {
-                long w = PosixIo.write(dstFd, buf + written, (ulong)(n - written));
+                long w = PayloadIo.write(dstFd, buf + written, (nuint)(n - written));
                 if (w <= 0) { ok = false; break; }
                 written += w;
             }
             if (!ok) break;
         }
 
-        PosixSocket.close(dstFd);
-        PosixSocket.close(srcFd);
+        PayloadIo.close(dstFd);
+        PayloadIo.close(srcFd);
         return ok;
     }
 
@@ -384,6 +383,46 @@ public static unsafe partial class PayloadFileSystem
         if (rmdir(path) != 0) ok = false;
         return ok;
     }
+
+    /// <summary>Changes the ownership of a file by path.</summary>
+    /// <returns>Zero on success, or -1 on error.</returns>
+    [LibraryImport(Lib)]
+    public static partial int chown(byte* path, uint owner, uint group);
+
+    /// <summary>Changes the permissions of an open file descriptor.</summary>
+    /// <returns>Zero on success, or -1 on error.</returns>
+    [LibraryImport(Lib)]
+    public static partial int fchmod(int fd, ushort mode);
+
+    /// <summary>Changes the ownership of an open file descriptor.</summary>
+    /// <returns>Zero on success, or -1 on error.</returns>
+    [LibraryImport(Lib)]
+    public static partial int fchown(int fd, uint owner, uint group);
+
+    /// <summary>Truncates a file to <paramref name="length"/> bytes by path.</summary>
+    /// <returns>Zero on success, or -1 on error.</returns>
+    [LibraryImport(Lib)]
+    public static partial int truncate(byte* path, long length);
+
+    /// <summary>Creates a hard link from <paramref name="name1"/> to <paramref name="name2"/>.</summary>
+    /// <returns>Zero on success, or -1 on error.</returns>
+    [LibraryImport(Lib)]
+    public static partial int link(byte* name1, byte* name2);
+
+    /// <summary>Creates a named pipe (FIFO) at <paramref name="path"/>.</summary>
+    /// <returns>Zero on success, or -1 on error.</returns>
+    [LibraryImport(Lib)]
+    public static partial int mkfifo(byte* path, ushort mode);
+
+    /// <summary>
+    /// Sets the access and modification times of a file.
+    /// </summary>
+    /// <param name="path">A NUL-terminated UTF-8 path.</param>
+    /// <param name="times">An array of two <c>timeval</c> structs (access time, modification
+    /// time), each 16 bytes (tv_sec long + tv_usec long), or null to set to the current time.</param>
+    /// <returns>Zero on success, or -1 on error.</returns>
+    [LibraryImport(Lib)]
+    public static partial int utimes(byte* path, void* times);
 
     private static void JoinPath(byte* dst, byte* dir, byte* name)
     {

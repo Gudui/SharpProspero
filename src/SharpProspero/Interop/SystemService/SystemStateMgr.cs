@@ -10,6 +10,7 @@ namespace SharpProspero.Interop.SystemService;
 /// </summary>
 public static unsafe partial class SystemStateMgr
 {
+    // Published by the libSceSystemService module under a library name of its own.
     private const string Lib = "libSceSystemStateMgr";
 
     /// <summary>

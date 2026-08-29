@@ -92,4 +92,15 @@ public static unsafe partial class PayloadAppInstaller
         if (result != 0) return result;
         return sceAppInstUtilAppInstallAll(null);
     }
+
+    /// <summary>
+    /// Installs an application from a package file (.pkg) with optional installation
+    /// parameters. This is a different API from <see cref="sceAppInstUtilAppInstallTitleDir"/>
+    /// which installs from a directory.
+    /// </summary>
+    /// <param name="pkgPath">A NUL-terminated UTF-8 path to the .pkg file.</param>
+    /// <param name="param">Installation parameters, or null for defaults.</param>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceAppInstUtilInstallByPackage(byte* pkgPath, void* param);
 }

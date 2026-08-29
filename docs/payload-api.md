@@ -304,6 +304,66 @@ if (KernelOffsets.IsSupported(fw))
 `KernelOffsets1001` remains available for FW 10.01 absolute addresses and process-structure
 field offsets that are firmware-invariant (credential fields, file-descriptor table, etc.).
 
+## Signal handling
+
+`PayloadSignal` provides POSIX signal handling and non-local jumps:
+
+```csharp
+FreeBsdSigaction sa = default;
+sa.Handler = &MyHandler;
+sa.Flags = PayloadSignal.SaRestart;
+PayloadSignal.sigaction(PayloadProcessControl.SigSegv, &sa, null);
+
+// Non-local jump for fault recovery
+FreeBsdJmpBuf env;
+if (PayloadSignal.setjmp(&env) == 0) { /* normal */ }
+else { /* recovered from fault */ }
+```
+
+Also provides `select` for I/O multiplexing, `setenv`/`unsetenv` for environment variables,
+`setsid`/`setpgid` for session management, and `execve` for process replacement.
+
+## ELF reader and NID resolution
+
+`PayloadElfReader` parses ELF 64-bit headers from memory or from another process:
+
+```csharp
+if (PayloadElfReader.IsValidElf(data, length))
+{
+    Elf64Ehdr* hdr = PayloadElfReader.GetHeader(data);
+    ulong base = PayloadElfReader.GetBaseAddress(data, hdr);
+    Elf64Phdr* dyn = PayloadElfReader.FindProgramHeader(data, hdr, ElfConstants.PtDynamic);
+}
+```
+
+`PayloadNid` computes symbol identifiers for function resolution:
+
+```csharp
+string nid = PayloadNid.Compute("sceKernelSleep"u8);
+ulong raw = PayloadNid.ComputeRaw("sceKernelSleep"u8);
+```
+
+## Process memory and pattern scanning
+
+`PayloadProcessMemory` reads and writes another process's address space:
+
+```csharp
+PayloadProcessMemory.Attach(pid);
+ulong val = PayloadProcessMemory.ReadU64(pid, addr);
+nint match = PayloadProcessMemory.PatternScan(pid, start, length, pattern, mask);
+PayloadProcessMemory.Detach(pid);
+```
+
+## Image mount dispatch
+
+`PayloadImageMount` detects image files and mounts them through the correct device path:
+
+```csharp
+var type = PayloadImageMount.DetectType(path);
+int unit = PayloadImageMount.MdAttach(imagePath, 512, readOnly: true);
+int devId = PayloadImageMount.LvdAttach(2048, imageType, deviceSize);
+```
+
 ## User service
 
 ```csharp

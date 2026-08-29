@@ -14,6 +14,7 @@ public static unsafe partial class PayloadProcessControl
 {
     private const string LibC = "libc";
     private const string LibKernel = "libkernel";
+    private const string LibKernelSys = "libkernel_sys";
 
     // ---- FreeBSD signal constants ----
 
@@ -104,4 +105,75 @@ public static unsafe partial class PayloadProcessControl
     /// <returns>Zero on success, or a negative error code.</returns>
     [LibraryImport(LibKernel)]
     public static partial int sceKernelGetProcessName(int pid, byte* name);
+
+    /// <summary>
+    /// Sets the command name of the calling process (visible in process listings).
+    /// </summary>
+    [LibraryImport(LibKernel)]
+    public static partial int sceKernelSetProcessName(byte* name);
+
+    /// <summary>
+    /// Prepares a process for suspension. Call before <see cref="sceKernelSuspendProcess"/>.
+    /// Requires <c>libkernel_sys</c>.
+    /// </summary>
+    [LibraryImport(LibKernelSys)]
+    public static partial int sceKernelPrepareToSuspendProcess(int pid);
+
+    /// <summary>
+    /// Suspends a running process. The process must first be prepared with
+    /// <see cref="sceKernelPrepareToSuspendProcess"/>. Requires <c>libkernel_sys</c>.
+    /// </summary>
+    [LibraryImport(LibKernelSys)]
+    public static partial int sceKernelSuspendProcess(int pid);
+
+    /// <summary>
+    /// Prepares a suspended process for resumption. Call before
+    /// <see cref="sceKernelResumeProcess"/>. Requires <c>libkernel_sys</c>.
+    /// </summary>
+    [LibraryImport(LibKernelSys)]
+    public static partial int sceKernelPrepareToResumeProcess(int pid);
+
+    /// <summary>
+    /// Resumes a previously suspended process. Requires <c>libkernel_sys</c>.
+    /// </summary>
+    [LibraryImport(LibKernelSys)]
+    public static partial int sceKernelResumeProcess(int pid);
+
+    /// <summary>
+    /// Terminates a process by its identifier. Requires <c>libkernel_sys</c>.
+    /// </summary>
+    /// <param name="pid">The process to terminate.</param>
+    /// <param name="ret">On success, receives the process exit code.</param>
+    [LibraryImport(LibKernelSys)]
+    public static partial int sceKernelTerminateProcess(int pid, int* ret);
+
+    /// <summary>
+    /// Spawns a new process from an executable path. Requires <c>libkernel_sys</c>.
+    /// </summary>
+    /// <param name="pid">On success, receives the new process identifier.</param>
+    /// <param name="dbg">Debug flags (0 for default).</param>
+    /// <param name="path">A NUL-terminated path to the executable.</param>
+    /// <param name="root">A NUL-terminated root directory path, or null.</param>
+    /// <param name="argv">A null-terminated array of argument strings, or null.</param>
+    [LibraryImport(LibKernelSys)]
+    public static partial int sceKernelSpawn(int* pid, int dbg, byte* path, byte* root, byte** argv);
+
+    /// <summary>
+    /// Creates a JIT-capable shared memory region that can hold executable code.
+    /// </summary>
+    [LibraryImport(LibKernel)]
+    public static partial int sceKernelJitCreateSharedMemory(nuint addr, nuint length, ulong flags, int* fd);
+
+    /// <summary>
+    /// Creates a writable alias of a JIT shared memory region. Write code through the alias,
+    /// then execute through the original mapping.
+    /// </summary>
+    [LibraryImport(LibKernel)]
+    public static partial int sceKernelJitCreateAliasOfSharedMemory(int fd, int flags);
+
+    /// <summary>
+    /// Returns the process parameter block pointer for the calling process.
+    /// </summary>
+    [LibraryImport(LibKernel)]
+    public static partial nint sceKernelGetProcParam();
 }

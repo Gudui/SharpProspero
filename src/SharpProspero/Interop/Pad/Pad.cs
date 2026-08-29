@@ -522,4 +522,13 @@ public static unsafe partial class Pad
     /// <summary>Restores the light bar to its default color.</summary>
     [LibraryImport(Lib)]
     public static partial int scePadResetLightBar(int handle);
+
+    /// <summary>
+    /// Grants or revokes pad input privilege for the calling process. A background process
+    /// (such as a daemon) calls this with 1 to receive controller input without being the
+    /// foreground application.
+    /// </summary>
+    /// <param name="value">1 to grant privilege, 0 to revoke.</param>
+    [LibraryImport(Lib)]
+    public static partial int scePadSetProcessPrivilege(int value);
 }
