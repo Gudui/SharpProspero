@@ -61,6 +61,32 @@ public static unsafe partial class VideoOut
     /// <summary>Reads how far the output has got through the flips submitted to it.</summary>
     [LibraryImport(Lib)]
     public static partial int sceVideoOutGetFlipStatus(int handle, SceVideoOutFlipStatus* status);
+
+    /// <summary>Reads the vertical-blank counter and timing for the output.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceVideoOutGetVblankStatus(int handle, SceVideoOutVblankStatus* status);
+
+    /// <summary>
+    /// Registers a flip-complete event on the given equeue. The event fires each time a
+    /// submitted flip retires on the output.
+    /// </summary>
+    /// <param name="eq">An equeue handle from <c>sceKernelCreateEqueue</c>.</param>
+    /// <param name="handle">The display handle from <see cref="sceVideoOutOpen"/>.</param>
+    /// <param name="udata">User data pointer delivered with the event.</param>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceVideoOutAddFlipEvent(nint eq, int handle, void* udata);
+
+    /// <summary>
+    /// Registers a vertical-blank event on the given equeue. The event fires once per
+    /// vertical blank on the output.
+    /// </summary>
+    /// <param name="eq">An equeue handle from <c>sceKernelCreateEqueue</c>.</param>
+    /// <param name="handle">The display handle from <see cref="sceVideoOutOpen"/>.</param>
+    /// <param name="udata">User data pointer delivered with the event.</param>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceVideoOutAddVblankEvent(nint eq, int handle, void* udata);
 }
 
 /// <summary>
@@ -102,4 +128,27 @@ public struct SceVideoOutFlipStatus
 
     /// <summary>The counter reading when the last flip was asked for. Offset 64.</summary>
     public ulong SubmitProcessTimeCounter;
+}
+
+/// <summary>
+/// Vertical-blank timing information for a display output. Returned by
+/// <see cref="VideoOut.sceVideoOutGetVblankStatus"/>.
+/// </summary>
+[StructLayout(LayoutKind.Sequential, Size = 64)]
+public struct SceVideoOutVblankStatus
+{
+    /// <summary>How many vertical blanks have occurred since the output was opened.</summary>
+    public ulong Count;
+
+    /// <summary>Process-time of the last vertical blank.</summary>
+    public ulong ProcessTime;
+
+    /// <summary>TSC counter reading of the last vertical blank.</summary>
+    public ulong ProcessTimeCounter;
+
+    private ulong _reserved0;
+    private ulong _reserved1;
+    private ulong _reserved2;
+    private ulong _reserved3;
+    private ulong _reserved4;
 }

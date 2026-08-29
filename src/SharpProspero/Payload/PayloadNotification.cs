@@ -28,7 +28,7 @@ namespace SharpProspero.Payload;
 /// payload's DT_NEEDED list.</description></item>
 /// </list>
 /// </remarks>
-public static unsafe class PayloadNotification
+public static unsafe partial class PayloadNotification
 {
     /// <summary>The system user id that represents the local system rather than a signed-in user.</summary>
     public const int LocalUserIdSystem = 0xFE;
@@ -98,4 +98,22 @@ public static unsafe class PayloadNotification
         fixed (byte* pJson = jsonData)
             return SceNotification.sceNotificationSendById(userId, isLogged ? (byte)1 : (byte)0, pId, pJson);
     }
+
+    /// <summary>
+    /// Sends a system-level notification with plain text through the system-utility service.
+    /// This is a third notification path distinct from the kernel notification and the
+    /// JSON-based notification service. Requires <c>libSceSysUtil</c> in the payload's
+    /// DT_NEEDED list.
+    /// </summary>
+    /// <param name="messageType">The notification type code.</param>
+    /// <param name="message">A NUL-terminated UTF-8 message string.</param>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    public static int SendSystemNotification(int messageType, ReadOnlySpan<byte> message)
+    {
+        fixed (byte* p = message)
+            return sceSysUtilSendSystemNotificationWithText(messageType, p);
+    }
+
+    [System.Runtime.InteropServices.LibraryImport("libSceSysUtil")]
+    private static partial int sceSysUtilSendSystemNotificationWithText(int messageType, byte* message);
 }

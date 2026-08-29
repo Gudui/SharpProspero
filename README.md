@@ -11,20 +11,18 @@ from. A build needs only the .NET 10 SDK.
 
 ## Contents
 
-- [SharpProspero](#sharpprospero)
-  - [Contents](#contents)
-  - [At a glance](#at-a-glance)
-  - [How it works](#how-it-works)
-  - [Requirements](#requirements)
-  - [Quick start](#quick-start)
-  - [Samples](#samples)
-  - [Command-line tools](#command-line-tools)
-  - [Repository layout](#repository-layout)
-  - [Feature reference](#feature-reference)
-  - [Documentation](#documentation)
-  - [System-version support](#system-version-support)
-  - [Building the SDK](#building-the-sdk)
-  - [License](#license)
+- [At a glance](#at-a-glance)
+- [How it works](#how-it-works)
+- [Requirements](#requirements)
+- [Quick start](#quick-start)
+- [Samples](#samples)
+- [Command-line tools](#command-line-tools)
+- [Repository layout](#repository-layout)
+- [Feature reference](#feature-reference)
+- [Documentation](#documentation)
+- [System-version support](#system-version-support)
+- [Building the SDK](#building-the-sdk)
+- [License](#license)
 
 ## At a glance
 
@@ -147,7 +145,7 @@ Ready-to-build samples cover each kind of project. Copy the sample folder from `
 own workspace and build it with the shared pipeline.
 
 | Sample | Creates |
-|---|---|
+| --- | --- |
 | `prospero-app` | A frame-loop application that draws to the screen and reads the controller. |
 | `prospero-game` | A real-time game paced by the frame time, with a score and a frame-rate overlay. |
 | `prospero-scene` | A scrolling 2D scene: a camera that follows a sprite, a tile map with collision, and particles. |
@@ -416,7 +414,7 @@ The pages under `docs/` are both the repository documentation and a Jekyll site.
 - [Getting started](docs/getting-started.md) — from nothing to a running module.
 - [Setup](docs/setup.md) — the full install for Windows and Linux (x64 only).
 - [Application Modules](docs/application-modules.md) — the API surface for homebrew titles.
-- [Payloads](docs/payloads.md) — the runtime bring-up, the kernel-access surface, and the payload API.
+- [Payloads](docs/payloads.md) — the runtime bring-up, the kernel-access surface, multi-firmware offsets, and the full payload API (filesystem, mount, I/O, events, process control, threading, network utilities, SFO, notifications, and hardware info).
 
 Then by area:
 

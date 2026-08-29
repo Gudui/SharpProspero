@@ -62,4 +62,53 @@ public static unsafe partial class PayloadSysctl
     /// <returns>The number of mounted filesystems, or -1 on error.</returns>
     [LibraryImport(Lib)]
     public static partial int getmntinfo(void** bufp, int mode);
+
+    /// <summary>Third-level MIB: all processes (one entry per pid).</summary>
+    public const int KernProcPid = 0;
+
+    /// <summary>
+    /// Finds the process identifier of a running process by its command name.
+    /// </summary>
+    /// <param name="name">The NUL-terminated process command name to search for.</param>
+    /// <returns>The pid of the first matching process, or -1 if not found.</returns>
+    public static int FindPidByName(byte* name)
+    {
+        int* mib = stackalloc int[] { CtlKern, KernProc, KernProcProc };
+        nuint len = 0;
+
+        if (sysctl(mib, 3, null, &len, null, 0) != 0 || len == 0)
+            return -1;
+
+        byte* buf = stackalloc byte[(int)(len < 65536 ? len : 65536)];
+        nuint actualLen = (nuint)(len < 65536 ? len : 65536);
+        if (sysctl(mib, 3, buf, &actualLen, null, 0) != 0)
+            return -1;
+
+        // Walk the kinfo_proc array. On FreeBSD, ki_pid is at offset 72 (int32) and
+        // ki_comm is at offset 447 (char[20]). Each kinfo_proc is 1088 bytes on this platform.
+        const int KinfoSize = 1088;
+        const int KiPidOffset = 72;
+        const int KiCommOffset = 447;
+        const int KiCommMax = 20;
+
+        int count = (int)(actualLen / KinfoSize);
+        for (int i = 0; i < count; i++)
+        {
+            byte* entry = buf + i * KinfoSize;
+            byte* comm = entry + KiCommOffset;
+            int nameLen = 0;
+            while (nameLen < KiCommMax && name[nameLen] != 0) nameLen++;
+
+            bool match = true;
+            for (int j = 0; j < nameLen; j++)
+            {
+                if (comm[j] != name[j]) { match = false; break; }
+            }
+            if (match && comm[nameLen] == 0)
+            {
+                return *(int*)(entry + KiPidOffset);
+            }
+        }
+        return -1;
+    }
 }

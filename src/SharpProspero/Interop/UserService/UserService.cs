@@ -167,4 +167,12 @@ public static unsafe partial class UserService
     /// <summary>Reads whether <paramref name="userId"/> wants voice chat transcribed.</summary>
     [LibraryImport(Lib)]
     public static partial int sceUserServiceGetAccessibilityChatTranscription(int userId, int* chatTranscription);
+
+    /// <summary>
+    /// Writes the user id of the foreground user (the profile whose controller is active) to
+    /// <paramref name="userId"/>.
+    /// </summary>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceUserServiceGetForegroundUser(int* userId);
 }

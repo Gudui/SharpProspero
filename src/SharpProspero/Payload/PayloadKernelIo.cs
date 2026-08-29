@@ -151,6 +151,72 @@ public readonly unsafe partial struct PayloadKernelIo
         return CrtCopyin(buffer, kaddr, (ulong)length) == 0;
     }
 
+    // ---- Sub-word accessors ----
+
+    /// <summary>Reads a two-byte value from a kernel data address.</summary>
+    public ushort ReadU16(ulong kaddr)
+    {
+        ushort value = 0;
+        CrtCopyout(kaddr, &value, 2);
+        return value;
+    }
+
+    /// <summary>Writes a two-byte value to a kernel data address.</summary>
+    public void WriteU16(ulong kaddr, ushort value)
+    {
+        CrtCopyin(&value, kaddr, 2);
+    }
+
+    /// <summary>Reads a single byte from a kernel data address.</summary>
+    public byte ReadU8(ulong kaddr)
+    {
+        byte value = 0;
+        CrtCopyout(kaddr, &value, 1);
+        return value;
+    }
+
+    /// <summary>Writes a single byte to a kernel data address.</summary>
+    public void WriteU8(ulong kaddr, byte value)
+    {
+        CrtCopyin(&value, kaddr, 1);
+    }
+
+    /// <summary>Attempts to read a two-byte value from a kernel data address.</summary>
+    /// <returns><see langword="true"/> when the copyout succeeded and <paramref name="value"/>
+    /// holds the kernel data; <see langword="false"/> on primitive failure.</returns>
+    public bool TryReadU16(ulong kaddr, out ushort value)
+    {
+        ushort tmp = 0;
+        int rc = CrtCopyout(kaddr, &tmp, 2);
+        value = tmp;
+        return rc == 0;
+    }
+
+    /// <summary>Attempts to write a two-byte value to a kernel data address.</summary>
+    /// <returns><see langword="true"/> when the copyin succeeded.</returns>
+    public bool TryWriteU16(ulong kaddr, ushort value)
+    {
+        return CrtCopyin(&value, kaddr, 2) == 0;
+    }
+
+    /// <summary>Attempts to read a single byte from a kernel data address.</summary>
+    /// <returns><see langword="true"/> when the copyout succeeded and <paramref name="value"/>
+    /// holds the kernel data; <see langword="false"/> on primitive failure.</returns>
+    public bool TryReadU8(ulong kaddr, out byte value)
+    {
+        byte tmp = 0;
+        int rc = CrtCopyout(kaddr, &tmp, 1);
+        value = tmp;
+        return rc == 0;
+    }
+
+    /// <summary>Attempts to write a single byte to a kernel data address.</summary>
+    /// <returns><see langword="true"/> when the copyin succeeded.</returns>
+    public bool TryWriteU8(ulong kaddr, byte value)
+    {
+        return CrtCopyin(&value, kaddr, 1) == 0;
+    }
+
     [SuppressGCTransition]
     [LibraryImport("libScePosix", EntryPoint = "__sp_kernel_copyout")]
     private static partial int CrtCopyout(ulong kaddr, void* uaddr, ulong len);

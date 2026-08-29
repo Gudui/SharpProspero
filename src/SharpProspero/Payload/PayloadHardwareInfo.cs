@@ -108,4 +108,24 @@ public static unsafe partial class PayloadHardwareInfo
         temperature = result == 0 ? temp : 0;
         return result;
     }
+
+    /// <summary>
+    /// Reads the current fan duty cycle. The duty value ranges from 0 (off) to 255 (full speed).
+    /// </summary>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceKernelGetCurrentFanDuty(int* unk, int* duty);
+
+    /// <summary>Reads the current fan duty cycle as a percentage (0–100).</summary>
+    /// <param name="duty">When the method returns zero, the raw duty value (0–255); otherwise
+    /// zero.</param>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    public static int GetCurrentFanDuty(out int duty)
+    {
+        int unk;
+        int d;
+        int result = sceKernelGetCurrentFanDuty(&unk, &d);
+        duty = result == 0 ? d : 0;
+        return result;
+    }
 }

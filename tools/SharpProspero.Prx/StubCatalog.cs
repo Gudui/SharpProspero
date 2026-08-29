@@ -145,6 +145,9 @@ public static class StubCatalog
         new Entry("libSceCoredump", Coredump, ModuleName: "libkernel", Soname: "libkernel.prx"),
         new Entry("libSceAgc", Agc),
         new Entry("libSceAgcDriver", AgcDriver),
+        new Entry("libSceSysUtil", SysUtil),
+        new Entry("libSceSystemStateMgr", SystemStateMgr),
+        new Entry("libSceFsInternalForVsh", FsInternalForVsh),
     ];
 
     /// <summary>
@@ -365,6 +368,9 @@ public static class StubCatalog
         "sceVideoOutIsFlipPending",
         "sceVideoOutGetFlipStatus",
         "sceVideoOutWaitVblank",
+        "sceVideoOutGetVblankStatus",
+        "sceVideoOutAddFlipEvent",
+        "sceVideoOutAddVblankEvent",
     ];
 
     private static readonly string[] Pad =
@@ -405,6 +411,7 @@ public static class StubCatalog
         "sceUserServiceGetEvent",
         "sceUserServiceGetGamePresets",
         "sceUserServiceInitialize2",
+        "sceUserServiceGetForegroundUser",
     ];
 
     private static readonly string[] SystemService =
@@ -424,6 +431,14 @@ public static class StubCatalog
         "sceSystemServiceGetGpuLoadEmulationMode",
         "sceSystemServiceReportAbnormalTermination",
         "sceSystemServiceLaunchWebBrowser",
+        "sceSystemServiceGetAppIdOfRunningBigApp",
+        "sceSystemServiceKillApp",
+        "sceSystemServiceNavigateToGoHome",
+        "sceSystemServiceGetAppId",
+        "sceSystemServiceGetAppTitleId",
+        "sceLncUtilGetAppTitleId",
+        "sceLncUtilKillApp",
+        "sceLncUtilKillAppWithReason",
     ];
 
     private static readonly string[] AudioOut =
@@ -1122,6 +1137,7 @@ public static class StubCatalog
         "sceKernelGetHwModelName", "sceKernelGetHwSerialNumber",
         "sceKernelGetCpuFrequency", "sceKernelGetCpuTemperature",
         "sceKernelGetSocSensorTemperature",
+        "sceKernelGetCurrentFanDuty",
     ];
 
     // Asynchronous zlib decompression.
@@ -1270,6 +1286,7 @@ public static class StubCatalog
         "sceAppInstUtilAppUnInstall",
         "sceAppInstUtilAppUnInstall2",
         "sceAppInstUtilAppInstallTitleDir",
+        "sceAppInstUtilAppInstallAll",
     ];
 
     // USB mass storage, resolved by name at run time (Platform.UsbStorage). Kept in step with the
@@ -1640,5 +1657,23 @@ public static class StubCatalog
         "sceAgcDriverUserDataWritePushMarker",
         "sceAgcDriverUserDataWriteSetMarker",
         "sceAgcDriverWaitUntilSafeForRendering",
+    ];
+
+    private static readonly string[] SysUtil =
+    [
+        "sceSysUtilSendSystemNotificationWithText",
+    ];
+
+    private static readonly string[] SystemStateMgr =
+    [
+        "sceSystemStateMgrEnterStandby",
+    ];
+
+    private static readonly string[] FsInternalForVsh =
+    [
+        "sceFsInitMountSaveDataOpt",
+        "sceFsMountSaveData",
+        "sceFsInitUmountSaveDataOpt",
+        "sceFsUmountSaveData",
     ];
 }

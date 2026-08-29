@@ -55,4 +55,41 @@ public static unsafe partial class PayloadAppInstaller
         fixed (byte* pPath = path)
             return sceAppInstUtilAppInstallTitleDir(pTitle, pPath, null);
     }
+
+    /// <summary>
+    /// Uninstalls the application with the given <paramref name="titleId"/>.
+    /// </summary>
+    /// <param name="titleId">A NUL-terminated UTF-8 title identifier.</param>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceAppInstUtilAppUnInstall(byte* titleId);
+
+    /// <summary>
+    /// Installs all pending applications. On firmware 12.00 and later this is the required
+    /// entry point; the per-directory variant may not be available.
+    /// </summary>
+    /// <param name="param">Reserved parameter, pass null.</param>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceAppInstUtilAppInstallAll(void* param);
+
+    /// <summary>
+    /// Convenience wrapper for <see cref="sceAppInstUtilAppUnInstall"/> that accepts a span.
+    /// </summary>
+    public static int Uninstall(ReadOnlySpan<byte> titleId)
+    {
+        fixed (byte* p = titleId)
+            return sceAppInstUtilAppUnInstall(p);
+    }
+
+    /// <summary>
+    /// Initialises the install utility and installs all pending applications in a single call.
+    /// </summary>
+    /// <returns>Zero on success, or the first non-zero error code.</returns>
+    public static int InstallAll()
+    {
+        int result = sceAppInstUtilInitialize();
+        if (result != 0) return result;
+        return sceAppInstUtilAppInstallAll(null);
+    }
 }
