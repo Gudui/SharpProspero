@@ -9,7 +9,7 @@ namespace SharpProspero.Interop.Bluetooth;
 /// Bluetooth HID bindings (libSceBluetoothHid). This is the low-level driver surface for Bluetooth
 /// human-interface devices: it opens the <c>/dev/bt</c> and <c>/dev/bluetooth_hid</c> device nodes and
 /// forwards each call to the kernel as an ioctl. Every function returns a status code (0 on success,
-/// a negative 0x8154xxxx value on failure); <see cref="sceBluetoothHidInit"/> must run first.
+/// a negative 0x8154xxxx value on failure); <see cref="SceBluetoothHid.sceBluetoothHidInit"/> must run first.
 /// </summary>
 /// <remarks>
 /// The module has no public header, so these signatures were recovered from the module itself: the
@@ -18,6 +18,20 @@ namespace SharpProspero.Interop.Bluetooth;
 /// block) is not documented here, so this class stays at the entry-point level and does not offer a
 /// higher-level wrapper. Access to the device nodes is privileged.
 /// </remarks>
+/// <summary>
+/// The parameter block the module fills. Twelve bytes: the value the caller asked for, then a word the
+/// module clears. It is declared whole so a caller reserves what the module writes.
+/// </summary>
+[StructLayout(LayoutKind.Sequential, Size = 16)]
+public struct SceBluetoothHidParam
+{
+    /// <summary>The value the caller asked for. Offset 0.</summary>
+    public ulong Value;
+
+    /// <summary>Cleared by the module. Offset 8.</summary>
+    public uint Reserved;
+}
+
 public static unsafe partial class SceBluetoothHid
 {
     private const string Lib = "libSceBluetoothHid";
@@ -26,9 +40,13 @@ public static unsafe partial class SceBluetoothHid
     [LibraryImport(Lib)]
     public static partial int sceBluetoothHidInit();
 
-    /// <summary>Fills the caller's parameter block <paramref name="param"/> with <paramref name="value"/>.</summary>
+    /// <summary>
+    /// Fills the caller's parameter block with <paramref name="value"/>. The block is twelve bytes -
+    /// the value and a word the device clears after it - so it is named as a type of its own rather
+    /// than a single word, which the device would write four bytes past.
+    /// </summary>
     [LibraryImport(Lib)]
-    public static partial int sceBluetoothHidParamInitialize(ulong* param, ulong value);
+    public static partial int sceBluetoothHidParamInitialize(SceBluetoothHidParam* param, ulong value);
 
     /// <summary>Fills the caller's thread-parameter block <paramref name="param"/> from the given values.</summary>
     [LibraryImport(Lib)]

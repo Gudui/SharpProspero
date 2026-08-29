@@ -26,6 +26,13 @@ public static unsafe class RegisterDefaults
         0x0324, 0x0325, 0x0390, 0x0398, 0x03A0, 0x03A8, 0x03B0, 0x03B8,
     ];
 
+    private static readonly ushort[] BlendColorOffsets = [0x0105, 0x0106, 0x0107, 0x0108];
+    private static readonly ushort[] BlendControlOffsets = [0x01E0];
+    private static readonly ushort[] DepthStencilControlOffsets = [0x0200];
+    private static readonly ushort[] StencilOpControlOffsets = [0x010B];
+    private static readonly ushort[] StencilControlOffsets = [0x010C];
+    private static readonly ushort[] StencilControlBackFaceOffsets = [0x010D];
+
     private static void Ensure()
     {
         if (_descriptor is null) _descriptor = (byte*)SceAgc.sceAgcGetRegisterDefaults();
@@ -103,6 +110,32 @@ public static unsafe class RegisterDefaults
                 if (table[i] is null) nulls++;
             trace($"AGC_DEFAULTS context_count={count} null_records={nulls} render_target_matches={matched}/{block.Length}");
         }
+        return block;
+    }
+
+    /// <summary>The blend-equation register of colour target zero.</summary>
+    public static CxRegister[] BlendControlBlock() => Block(BlendControlOffsets);
+
+    /// <summary>The four constant blend-colour registers.</summary>
+    public static CxRegister[] BlendColorBlock() => Block(BlendColorOffsets);
+
+    /// <summary>The depth and stencil test control register.</summary>
+    public static CxRegister[] DepthStencilControlBlock() => Block(DepthStencilControlOffsets);
+
+    /// <summary>The front-face stencil mask register.</summary>
+    public static CxRegister[] StencilControlBlock() => Block(StencilControlOffsets);
+
+    /// <summary>The back-face stencil mask register.</summary>
+    public static CxRegister[] StencilControlBackFaceBlock() => Block(StencilControlBackFaceOffsets);
+
+    /// <summary>The stencil operation register.</summary>
+    public static CxRegister[] StencilOpControlBlock() => Block(StencilOpControlOffsets);
+
+    private static CxRegister[] Block(ReadOnlySpan<ushort> offsets)
+    {
+        var block = new CxRegister[offsets.Length];
+        for (int i = 0; i < block.Length; i++)
+            block[i] = new CxRegister(offsets[i], GetContextValue(offsets[i]));
         return block;
     }
 

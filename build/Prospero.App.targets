@@ -116,6 +116,7 @@
       <_ProsperoLinkArgs Condition="'@(ProsperoStubLibrary)' != ''">$(_ProsperoLinkArgs) @(ProsperoStubLibrary->'--stub &quot;%(FullPath)&quot;', ' ')</_ProsperoLinkArgs>
       <_ProsperoLinkArgs>$(_ProsperoLinkArgs) --out &quot;$(ProsperoModulePath)&quot; --entry $(ProsperoEntrySymbol)</_ProsperoLinkArgs>
       <_ProsperoLinkArgs Condition="'$(_ProsperoIsPrx)' == 'true'">$(_ProsperoLinkArgs) --kind prx</_ProsperoLinkArgs>
+      <_ProsperoLinkArgs Condition="'$(_ProsperoIsPrx)' != 'true'">$(_ProsperoLinkArgs) --kind eboot</_ProsperoLinkArgs>
       <!-- A library module exports the symbols named through ProsperoExportSymbol so another module
            can import them; these are the unmanaged entry points the module means to expose. -->
       <_ProsperoLinkArgs Condition="'@(ProsperoExportSymbol)' != ''">$(_ProsperoLinkArgs) @(ProsperoExportSymbol->'--export %(Identity)', ' ')</_ProsperoLinkArgs>

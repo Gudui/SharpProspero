@@ -11,11 +11,41 @@ namespace SharpProspero.Platform;
 /// <summary>A system event delivered to the application. Unknown values keep their raw number.</summary>
 public enum SystemEventType
 {
-    /// <summary>The application resumed from a suspended state; time and inputs may have moved on.</summary>
+    /// <summary>No event. The value the field holds before a real event is written into it.</summary>
+    Invalid = -1,
+
+    /// <summary>
+    /// The application was suspended and is running again. Arbitrary real time passed while it was
+    /// frozen and nothing inside it advanced, so re-read the wall clock, re-check which pads are
+    /// connected, and drop anything that was timed against the frame counter. This is the only
+    /// notification an application gets about being suspended, and it arrives afterwards: there is no
+    /// warning before the machine freezes the process.
+    /// </summary>
     Resume = 0x10000000,
+
+    /// <summary>An entitlement the signed-in user holds has changed.</summary>
+    EntitlementUpdate = 0x10000003,
 
     /// <summary>Another application was launched over this one.</summary>
     AppLaunched = 0x10000007,
+
+    /// <summary>Additional content finished installing.</summary>
+    AddContentInstalled = 0x10000009,
+
+    /// <summary>The install progress of the running application's own content moved.</summary>
+    PlayGoLocusUpdate = 0x1000000C,
+
+    /// <summary>A service entitlement the signed-in user holds has changed.</summary>
+    ServiceEntitlementUpdate = 0x1000000E,
+
+    /// <summary>The system is asking the application to act on an intent it was started with.</summary>
+    GameIntent = 0x10000017,
+
+    /// <summary>A unified entitlement the signed-in user holds has changed.</summary>
+    UnifiedEntitlementUpdate = 0x10000018,
+
+    /// <summary>A chunk of the running application's own content became available.</summary>
+    PlayGoChunkAdded = 0x10000019,
 }
 
 /// <summary>A snapshot of the system service's state.</summary>
@@ -36,14 +66,19 @@ public static unsafe class SystemControl
     /// Resets the idle-shutdown timer so the console stays awake. Call it periodically during a long
     /// operation such as a download or an install, when the user is not touching the controller.
     /// </summary>
+    /// <seealso cref="PowerControl"/>
     /// <exception cref="ProsperoException">The call failed.</exception>
-    public static void KeepAwake() =>
-        SceResult.ThrowIfFailed(SystemService.sceSystemServicePowerTick(), nameof(SystemService.sceSystemServicePowerTick));
+    public static void KeepAwake() => PowerControl.KeepAwake();
 
     /// <summary>
     /// Reads the next pending system event, returning false when none is waiting. Poll it each frame to
     /// react to events such as <see cref="SystemEventType.Resume"/>.
     /// </summary>
+    /// <remarks>
+    /// One queue feeds the whole module, and each read takes an event out of it, so keep this call in
+    /// one place and hand the result on. A caller watching only for a resume still has to look at every
+    /// event it takes, because dropping the others silently loses them.
+    /// </remarks>
     public static bool TryReceiveEvent(out SystemEventType type)
     {
         SceSystemServiceEvent native = default;

@@ -1,6 +1,7 @@
 ---
 title: Files and storage
 parent: Data and utilities
+grand_parent: Application Modules
 nav_order: 1
 ---
 
@@ -72,6 +73,36 @@ any missing parents), `CopyFile` and `CopyDirectory`.
 {: .note }
 > `/app0` is read-only. Writes need a writable mount such as the save-data or temporary storage a build is
 > granted; see [Save data](save-data.md).
+
+## Large files, read and written in pieces
+
+`ReadAllBytes` puts the whole file in one array, so it can only serve a file the heap can hold. A disc
+image, a video, a recorded stream or a save state larger than that needs `DeviceFileStream`, which is a
+`System.IO.Stream` over the file system and never holds more than the caller's own buffer.
+
+```csharp
+using DeviceFileStream rom = FileSystem.OpenRead("/data/game.iso");
+Span<byte> sector = stackalloc byte[2048];
+rom.Seek(sectorIndex * 2048L, SeekOrigin.Begin);
+int read = rom.Read(sector);
+```
+
+`FileSystem.OpenRead`, `FileSystem.Create` and `FileSystem.OpenAppend` cover the usual three cases;
+`DeviceFileStream.Open` takes a `FileMode` and a `FileAccess` for the rest. Being a `Stream`, it plugs
+straight into `BinaryReader`, `StreamReader` and anything else that reads a stream.
+
+| Member | What it does |
+|---|---|
+| `Read`, `Write`, `Seek`, `Position`, `Length` | The ordinary stream operations, at the file's own offset. |
+| `ReadAt`, `WriteAt`, `ReadExactlyAt` | Read or write at an offset without moving the file's own; safe from several threads at once. |
+| `SetLength` | Sizes an output file up front. Growing leaves the added bytes reading as zero without writing them. |
+| `Sync` | Waits for what was written to reach the device. Slow; call it when a save is finished, not after each write. |
+
+Every call goes straight to the file system, so a run of small reads is a run of system calls. Wrap the
+stream in a `BufferedStream` when reading a few bytes at a time, or read into a large span.
+
+`FileSystem.CopyFile` copies through a buffer rather than through memory, so it too handles a file larger
+than the heap; pass `bufferSize` to choose how much it uses.
 
 ## Paths as text
 

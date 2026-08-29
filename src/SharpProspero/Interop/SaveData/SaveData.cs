@@ -50,6 +50,48 @@ public enum SaveDataSortOrder : uint
     Descending = 1,
 }
 
+/// <summary>Which fields of <see cref="SceSaveDataParam"/> a set or get call carries.</summary>
+public enum SaveDataParamType : uint
+{
+    /// <summary>Every field at once. The buffer is a whole <see cref="SceSaveDataParam"/>.</summary>
+    All = 0,
+
+    /// <summary>The title alone. The buffer is a UTF-8 string.</summary>
+    Title = 1,
+
+    /// <summary>The subtitle alone. The buffer is a UTF-8 string.</summary>
+    SubTitle = 2,
+
+    /// <summary>The detail text alone. The buffer is a UTF-8 string.</summary>
+    Detail = 3,
+
+    /// <summary>The user parameter alone. The buffer is a <see cref="uint"/>.</summary>
+    UserParam = 4,
+
+    /// <summary>The modified time alone. The buffer is a <see cref="long"/>.</summary>
+    ModifiedTime = 5,
+}
+
+/// <summary>How an update opened by <see cref="SaveData.sceSaveDataPrepare"/> behaves.</summary>
+public enum SaveDataPrepareMode : uint
+{
+    /// <summary>Mark the save broken for the duration of the update.</summary>
+    Default = 0,
+
+    /// <summary>Leave the save readable for the duration of the update.</summary>
+    DestructOff = 1,
+}
+
+/// <summary>What <see cref="SaveData.sceSaveDataCommit"/> does after it confirms the update.</summary>
+public enum SaveDataCommitMode : uint
+{
+    /// <summary>Confirm and stop there.</summary>
+    Default = 0,
+
+    /// <summary>Confirm, then start a backup that runs on its own.</summary>
+    BackupAsync = 1,
+}
+
 /// <summary>A title id (10 characters plus padding).</summary>
 [StructLayout(LayoutKind.Sequential, Size = 16)]
 public unsafe struct SceSaveDataTitleId
@@ -84,6 +126,68 @@ public unsafe struct SceSaveDataParam
 
     /// <summary>The modified time, as a Unix timestamp in seconds.</summary>
     public long Mtime;
+    private fixed byte _reserved[32];
+}
+
+/// <summary>
+/// A save icon. The caller owns the buffer and points <see cref="Buf"/> at it; the service reads
+/// <see cref="DataSize"/> bytes out of it when saving and writes the byte count back into
+/// <see cref="DataSize"/> when loading.
+/// </summary>
+[StructLayout(LayoutKind.Sequential, Size = 56)]
+public unsafe struct SceSaveDataIcon
+{
+    /// <summary>The icon image, encoded as a PNG.</summary>
+    public void* Buf;
+
+    /// <summary>The capacity of <see cref="Buf"/>, in bytes.</summary>
+    public nuint BufSize;
+
+    /// <summary>The bytes in use: set before saving, filled in by a load.</summary>
+    public nuint DataSize;
+
+    private fixed byte _reserved[32];
+}
+
+/// <summary>An identifier that ties a save to the account that owns it.</summary>
+[StructLayout(LayoutKind.Sequential, Size = 80)]
+public unsafe struct SceSaveDataFingerprint
+{
+    public fixed byte Data[65];
+    private fixed byte _padding[15];
+}
+
+/// <summary>The parameters an update is opened with.</summary>
+[StructLayout(LayoutKind.Sequential, Size = 40)]
+public unsafe struct SceSaveDataPrepareParam
+{
+    /// <summary>A transaction resource id, or zero to run without one.</summary>
+    public int Resource;
+
+    public SaveDataPrepareMode PrepareMode;
+    private fixed byte _reserved[32];
+}
+
+/// <summary>The parameters an update is confirmed with.</summary>
+[StructLayout(LayoutKind.Sequential, Size = 40)]
+public unsafe struct SceSaveDataCommitParam
+{
+    /// <summary>The transaction resource id the matching prepare was given.</summary>
+    public int Resource;
+
+    public SaveDataCommitMode CommitMode;
+    private fixed byte _reserved[32];
+}
+
+/// <summary>The parameters of a backup.</summary>
+[StructLayout(LayoutKind.Sequential, Size = 64)]
+public unsafe struct SceSaveDataBackup
+{
+    public int UserId;
+    private int _pad0;
+    public SceSaveDataTitleId* TitleId;
+    public SceSaveDataDirName* DirName;
+    public SceSaveDataFingerprint* Fingerprint;
     private fixed byte _reserved[32];
 }
 
@@ -196,4 +300,81 @@ public static unsafe partial class SaveData
     /// <summary>Searches for save directories matching <paramref name="cond"/>.</summary>
     [LibraryImport(Lib)]
     public static partial int sceSaveDataDirNameSearch(SceSaveDataDirNameSearchCond* cond, SceSaveDataDirNameSearchResult* result);
+
+    /// <summary>The width of a small save icon, in pixels.</summary>
+    public const int IconWidthSmall = 688;
+
+    /// <summary>The height of a small save icon, in pixels.</summary>
+    public const int IconHeightSmall = 388;
+
+    /// <summary>The width of a full-size save icon, in pixels.</summary>
+    public const int IconWidthFull = 776;
+
+    /// <summary>The height of a full-size save icon, in pixels.</summary>
+    public const int IconHeightFull = 436;
+
+    /// <summary>The largest an icon file may be, in bytes.</summary>
+    public const int IconFileMaxSize = IconWidthFull * IconHeightFull * 4;
+
+    /// <summary>The longest an icon path may be, including the terminator.</summary>
+    public const int IconPathMaxSize = 128;
+
+    /// <summary>
+    /// Writes the fields named by <paramref name="paramType"/> into the mounted save's parameter
+    /// record, which is what the system browser lists the save by. For
+    /// <see cref="SaveDataParamType.All"/> the buffer is a <see cref="SceSaveDataParam"/>; for a single
+    /// field it is that field alone.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSaveDataSetParam(
+        SceSaveDataMountPoint* mountPoint, SaveDataParamType paramType, void* paramBuf, nuint paramBufSize);
+
+    /// <summary>
+    /// Reads the fields named by <paramref name="paramType"/> back out, writing the byte count into
+    /// <paramref name="gotSize"/>.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSaveDataGetParam(
+        SceSaveDataMountPoint* mountPoint, SaveDataParamType paramType, void* paramBuf, nuint paramBufSize, nuint* gotSize);
+
+    /// <summary>Writes <paramref name="icon"/> into the mounted save as its icon.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSaveDataSaveIcon(SceSaveDataMountPoint* mountPoint, SceSaveDataIcon* icon);
+
+    /// <summary>
+    /// Writes the icon at <paramref name="path"/> into the mounted save, so the caller does not have to
+    /// read the file itself. <paramref name="path"/> is a null-terminated UTF-8 string.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSaveDataSaveIconByPath(SceSaveDataMountPoint* mountPoint, byte* path);
+
+    /// <summary>Reads the mounted save's icon into the buffer <paramref name="icon"/> points at.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSaveDataLoadIcon(SceSaveDataMountPoint* mountPoint, SceSaveDataIcon* icon);
+
+    /// <summary>
+    /// Reserves <paramref name="size"/> bytes of working space for a prepare and commit pair, returning
+    /// a resource id, or a negative error code.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSaveDataCreateTransactionResource(uint size);
+
+    /// <summary>Releases a resource id taken from <see cref="sceSaveDataCreateTransactionResource"/>.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSaveDataDeleteTransactionResource(int resource);
+
+    /// <summary>Opens an update on the mounted save.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSaveDataPrepare(SceSaveDataMountPoint* mountPoint, SceSaveDataPrepareParam* param);
+
+    /// <summary>
+    /// Confirms the update opened by <see cref="sceSaveDataPrepare"/>. This is the route to persisting a
+    /// save without unmounting it; the unmount route sets <see cref="SaveDataUmountMode.Commit"/> instead.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSaveDataCommit(SceSaveDataCommitParam* param);
+
+    /// <summary>Copies a save into its backup slot.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSaveDataBackup(SceSaveDataBackup* backup);
 }

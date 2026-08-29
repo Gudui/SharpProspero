@@ -88,15 +88,17 @@ public class ElfToolsTests
     }
 
     [Fact]
-    public void Strip_RefusesAModuleWithoutADynamicSegment()
+    public void Strip_AcceptsTheDynamicPayloadFormat()
     {
-        // A payload is an ET_DYN whose section headers the loader reads; it has no dynamic segment, so
-        // stripping them would break it. The utility refuses rather than producing a broken file.
+        // The v0.8 payload carries PT_DYNAMIC, so the utility can remove its diagnostic section table
+        // without removing the loader's runtime metadata.
         var crt = ElfObjectReader.Read(PayloadCrtEmitter.BuildStartObject(), "crt");
         var options = new LinkOptions();
         options.ExtraObjects.Add(crt);
         LinkResolution res = Linker.Resolve(options);
         byte[] payload = PayloadWriter.Write(res, PayloadCrtEmitter.StartSymbol);
-        Assert.Throws<PrxFormatException>(() => ElfTools.Strip(payload));
+        byte[] stripped = ElfTools.Strip(payload);
+        Assert.Equal(0ul, BinaryPrimitives.ReadUInt64LittleEndian(stripped.AsSpan(0x28)));
+        Assert.Equal(0, BinaryPrimitives.ReadUInt16LittleEndian(stripped.AsSpan(0x3C)));
     }
 }

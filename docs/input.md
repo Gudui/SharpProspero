@@ -1,6 +1,7 @@
 ---
 title: Input
-nav_order: 7
+parent: Application Modules
+nav_order: 3
 ---
 
 # Input
@@ -50,7 +51,7 @@ protected override void OnFrame(FrameContext context)
 }
 ```
 
-See [Application](application.md) for the frame context and [Guides](guides.md) for worked examples.
+See [Application](application.md) for the frame context and [Tips for application modules](extras-app-module-tips.md) for worked examples.
 
 ### Buttons, sticks and triggers
 
@@ -137,6 +138,34 @@ gamePad.StopVibration();                                  // both motors off
 
 The large motor is the low-frequency left motor and the small motor the high-frequency right one.
 Disposing the pad stops both motors for you.
+
+### Several controllers at once
+
+A controller belongs to a signed-in user, and the service routes each user's samples to the handle opened
+for that user. There is no separate index for a second controller — the index argument is reserved and
+must be zero — so the way to reach every device is one handle per signed-in user. `GamePadSet` opens and
+keeps that set.
+
+```csharp
+using var pads = GamePadSet.OpenForSignedInUsers();
+
+// In the frame loop:
+pads.Refresh();     // picks up a player who has just signed in, drops one who has signed out
+pads.ReadAll();     // samples every open controller
+foreach (PlayerPad player in pads)
+    if (player.State.IsPressed(ScePadButton.Cross))
+        Fire(player.UserId);
+```
+
+Each `PlayerPad` carries the `UserId` it belongs to, the `UserName` read when it was opened, the `Pad`
+itself for rumble and the light bar, and the `State` from the last `ReadAll`. `ForUser` finds one by user
+id, and `Refresh` returns whether the set changed, so a player list is rebuilt only when it must be.
+
+A user signed in with no controller paired to them simply gets none — that is refusal, not failure.
+Where something else in the module already holds a user's controller (the single-pad `GamePad.Open`, most
+likely), the set reaches that open handle instead of failing, and leaves closing it to whoever opened it.
+`GamePad.IsConnected` says whether a device is attached to a handle right now, which is how a controller
+that has gone to sleep or run out of charge is noticed; `GetInformation` reports what the device is.
 
 ## Named actions
 

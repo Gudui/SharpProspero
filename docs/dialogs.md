@@ -1,6 +1,7 @@
 ---
 title: Dialogs and overlays
 parent: System services
+grand_parent: Application Modules
 nav_order: 2
 ---
 

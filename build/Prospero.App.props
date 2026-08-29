@@ -150,6 +150,7 @@
     <DirectPInvoke Include="libSceCffMgr" />
     <DirectPInvoke Include="libSceAgc" />
     <DirectPInvoke Include="libSceAgcDriver" />
+    <DirectPInvoke Include="libScePosix" />
   </ItemGroup>
 
 </Project>

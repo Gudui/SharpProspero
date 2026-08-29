@@ -42,7 +42,7 @@ public sealed class Spinner : UiElement
     /// <summary>Advances the turn by <paramref name="deltaSeconds"/>. A negative or zero delta does nothing.</summary>
     public void Advance(float deltaSeconds)
     {
-        if (deltaSeconds <= 0f)
+        if (!float.IsFinite(deltaSeconds) || deltaSeconds <= 0f)
             return;
         _phase += Speed * deltaSeconds;
         // Keep the phase bounded so it holds its precision over a spinner left turning for a long time.

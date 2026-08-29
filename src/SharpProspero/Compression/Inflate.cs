@@ -3,6 +3,7 @@
 
 using SharpProspero.Security;
 using System;
+using System.Collections.Generic;
 
 namespace SharpProspero.Compression;
 
@@ -83,41 +84,85 @@ public static class Inflate
         return result;
     }
 
-    /// <summary>Decompresses a gzip (RFC 1952) member and verifies its CRC-32 and length trailer.</summary>
+    /// <summary>
+    /// Decompresses a gzip (RFC 1952) file, verifying the CRC-32 and length trailer of every member.
+    /// </summary>
+    /// <remarks>
+    /// A gzip file is one or more members laid end to end and its content is theirs joined, which is
+    /// what appending one compressed log or chunk to another produces. Reading only the first member
+    /// would return a prefix, and where the members happen to be identical it would return that prefix
+    /// with both trailer checks passing, so every member is read.
+    /// </remarks>
     public static byte[] Gzip(ReadOnlySpan<byte> data)
     {
-        if (data.Length < 18 || data[0] != 0x1F || data[1] != 0x8B)
+        byte[] first = ReadGzipMember(data, 0, out int pos);
+        if (pos == data.Length)
+            return first;
+
+        var members = new List<byte[]> { first };
+        int total = first.Length;
+        while (pos < data.Length)
+        {
+            byte[] member = ReadGzipMember(data, pos, out pos);
+            members.Add(member);
+            total += member.Length;
+        }
+
+        var joined = new byte[total];
+        int written = 0;
+        foreach (byte[] member in members)
+        {
+            member.CopyTo(joined, written);
+            written += member.Length;
+        }
+        return joined;
+    }
+
+    // Decodes the member starting at `start`, checks its own trailer against its own output, and
+    // reports the offset just past it. The member's compressed data has no declared length, so where it
+    // ends is only known once the block loop has stopped: the trailer begins at the next byte boundary.
+    private static byte[] ReadGzipMember(ReadOnlySpan<byte> data, int start, out int next)
+    {
+        ReadOnlySpan<byte> member = data[start..];
+        if (member.Length < 18 || member[0] != 0x1F || member[1] != 0x8B)
             throw new CompressionException("The data is not a gzip member.");
-        if (data[2] != 8)
+        if (member[2] != 8)
             throw new CompressionException("The gzip member is not DEFLATE-compressed.");
-        int flags = data[3];
+        int flags = member[3];
         int pos = 10; // fixed header: magic(2), method(1), flags(1), mtime(4), xfl(1), os(1)
 
         if ((flags & 0x04) != 0) // FEXTRA
         {
-            if (pos + 2 > data.Length)
+            if (pos + 2 > member.Length)
                 throw new CompressionException("The gzip extra field is truncated.");
-            int xlen = data[pos] | (data[pos + 1] << 8);
+            int xlen = member[pos] | (member[pos + 1] << 8);
             pos += 2 + xlen;
         }
         if ((flags & 0x08) != 0) // FNAME
-            pos = SkipZeroTerminated(data, pos);
+            pos = SkipZeroTerminated(member, pos);
         if ((flags & 0x10) != 0) // FCOMMENT
-            pos = SkipZeroTerminated(data, pos);
+            pos = SkipZeroTerminated(member, pos);
         if ((flags & 0x02) != 0) // FHCRC
             pos += 2;
-        if (pos > data.Length - 8)
+        if (pos > member.Length - 8)
             throw new CompressionException("The gzip header is truncated.");
 
-        // The DEFLATE payload sits between the header and the 8-byte CRC-32 and length trailer.
-        byte[] result = RunToArray(data[pos..(data.Length - 8)], data.Length * 4);
-        int trailer = data.Length - 8;
-        uint crc = ReadLittle(data, trailer);
-        uint size = ReadLittle(data, trailer + 4);
+        var output = new GrowBuffer(Math.Max(64, (member.Length - pos) * 4));
+        var reader = new BitReader(member[pos..]);
+        Run(ref reader, output);
+        byte[] result = output.ToArray();
+
+        int trailer = pos + reader.BytePosition;
+        if (trailer > member.Length - 8)
+            throw new CompressionException("The gzip trailer is truncated.");
+        uint crc = ReadLittle(member, trailer);
+        uint size = ReadLittle(member, trailer + 4);
         if ((uint)result.Length != size)
             throw new CompressionException("The gzip length trailer did not match.");
         if (Crc32.Compute(result) != crc)
             throw new CompressionException("The gzip CRC-32 checksum did not match.");
+
+        next = start + trailer + 8;
         return result;
     }
 
@@ -347,6 +392,10 @@ public static class Inflate
         }
 
         public void AlignToByte() => _bitCount = 0;
+
+        // How many bytes the reader has taken. Any bits still buffered came out of the byte before
+        // this one, so this is where whatever follows a DEFLATE payload begins.
+        public readonly int BytePosition => _pos;
     }
 
     // A growable output buffer with a back-copy for DEFLATE back references (which may overlap).

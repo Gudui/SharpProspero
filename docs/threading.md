@@ -1,6 +1,7 @@
 ---
 title: Threading
-parent: Application
+parent: Application host
+grand_parent: Application Modules
 nav_order: 2
 ---
 
@@ -97,6 +98,40 @@ if (item.IsComplete && !item.Failed)
 {: .note }
 > Whatever a job shares with the frame thread must be guarded — a `lock`, an `Interlocked` counter — because the worker and the frame loop run at the same time. The safest design shares nothing and hands the finished result back through a `Dispatcher`.
 
+## Choosing which processor work runs on
+
+A large application keeps its parts apart so none of them can take time from the others: the frame loop on
+one processor, an emulated core or an audio mixer on another, background loading on the rest. `Processor`
+does the placing.
+
+```csharp
+using SharpProspero.Threading;
+
+var core = new BackgroundOperation(() =>
+{
+    Processor.NameCurrentThread("cpu-core");
+    Processor.PlaceCurrentThread(Processor.Only(4), Processor.PriorityDefault - 32);
+    RunCore();
+});
+```
+
+A processor set is a bit mask: bit *n* admits processor *n*. Build one with `Processor.Only`,
+`Processor.Mask` or `Processor.Range(first, afterLast)` rather than writing the number out; `Processor.All`
+is every processor and `Processor.Count` is how many there are.
+
+| Member | What it does |
+|---|---|
+| `Only`, `Mask`, `Range`, `All`, `Count` | Build a processor set. |
+| `SetCurrentThreadAffinity`, `TrySetCurrentThreadAffinity`, `CurrentThreadAffinity` | Confine the calling thread, or read where it may run. |
+| `CurrentThreadPriority`, `PriorityHighest`, `PriorityDefault`, `PriorityLowest` | How urgently the thread is served. A *smaller* number is served first. |
+| `PlaceCurrentThread` | Set the processor set and the priority in one call — what a worker does as its first act. |
+| `NameCurrentThread` | The name a profiler and a crash report show in place of a bare thread number. |
+| `Current`, `CurrentThreadId`, `Yield` | Which processor the thread is on now, its scheduler identifier, and giving up the rest of its slice. |
+
+These act on the thread that calls them, because a thread is addressed by a handle only that thread can
+read back. To place a worker, call them from inside that worker. `WorkQueue` does this for you: pass an
+`affinityMask` and every worker pins itself before taking its first job.
+
 ## Handing results back to the frame thread
 
 A drawing surface and most app state are not safe to touch off the frame thread, so a job should not apply its own result. `Dispatcher` is a one-way hand-off: work posted from any thread is queued and run later on the thread that drains it. `ProsperoApp` owns one and drains it once per frame before `OnFrame`, so posted work always runs on the frame thread. Reach it as `Dispatcher` inside the app or `context.Dispatcher` inside a frame.
@@ -126,3 +161,111 @@ flowchart LR
 ```
 
 `Log` in these snippets is in `SharpProspero.Diagnostics`; see [Diagnostics](diagnostics.md). The frame loop and `context` that owns the dispatcher are described in [Application](application.md), and per-frame budgeting sits alongside [Timing](timing.md).
+
+## Waiting on the platform's own primitives
+
+`WorkQueue` and `Dispatcher` cover work that starts and finishes inside the app. A part that has to
+wait on something the system owns — a descriptor becoming readable, a timer, a signal raised from a
+worker — waits on a platform primitive instead, because a thread blocked on one of those is visible to
+the system's scheduler and can be released in priority order.
+
+### An event flag
+
+An event flag is a 64-bit pattern of bits: several threads wait on it and one or more set it. Unlike a
+condition variable it keeps its state, so a thread that arrives after the bits were set is satisfied at
+once rather than missing the signal. One bit per thing being waited for lets a single thread wait for
+several unrelated things without a lock around them.
+
+```csharp
+using SharpProspero.Threading;
+
+using var ready = new EventFlag("assets-ready");
+
+// On the loading threads, as each part finishes:
+ready.Set(1UL << 0);   // textures
+ready.Set(1UL << 1);   // audio
+
+// On the thread that needs both:
+ready.Wait(0b11, EventFlagWait.All, timeout: TimeSpan.FromSeconds(10));
+```
+
+`EventFlagWait.Any` returns as soon as one named bit appears; `EventFlagClear` decides what happens to
+the pattern afterwards, which is how a bit becomes a one-shot token. `TryWait` reports a timeout as a
+value rather than an exception, `Poll` tests without blocking, and `CancelWaiters` releases everyone at
+once when a subsystem shuts down.
+
+### A counting semaphore
+
+`CountingSemaphore` holds a count between zero and a ceiling, and a waiter may take more than one unit
+at a time — which is what a pool of interchangeable resources needs when a job cannot start until it
+has several of them.
+
+```csharp
+using var slots = new CountingSemaphore("decode-slots", initialCount: 4, maximumCount: 4);
+
+slots.Wait(count: 2);          // this job needs two buffers
+try { Decode(); }
+finally { slots.Release(2); }
+```
+
+`TryWait` takes a timeout and reports it rather than throwing; `TryTake` never blocks.
+
+### One place to wait for everything
+
+`EventQueue` collects reports from several sources at once — timers, a descriptor becoming readable or
+writable, a file changing, and events the app raises itself — so a service thread blocks in one call
+instead of polling each source in turn.
+
+```csharp
+using var queue = new EventQueue("service");
+queue.AddTimer(id: 1, TimeSpan.FromMilliseconds(250));
+queue.AddReadable(socketDescriptor);
+queue.AddUserEvent(id: 99);          // used to break the wait from another thread
+
+Span<QueuedEvent> reports = stackalloc QueuedEvent[8];
+while (running)
+{
+    int count = queue.Wait(reports, TimeSpan.FromSeconds(1));
+    for (int i = 0; i < count; i++)
+        switch (reports[i].Source)
+        {
+            case EventSource.Timer: Tick(); break;
+            case EventSource.Readable: ReadSocket(); break;
+            case EventSource.User: running = false; break;
+        }
+}
+```
+
+`Wait` returns zero when a bounded wait runs out of time, so a timeout is an ordinary outcome rather
+than an exception. `TriggerUserEvent` is safe from any thread and is the way to wake a thread that is
+blocked in `Wait`. Each report carries the identifier its source was added under, so one queue can
+carry many timers without confusion, along with `Data` (readable bytes, or an error number when
+`IsError` is set) and `FilterFlags` (which change fired, for a file watch).
+
+Every timeout on these types is a `TimeSpan`, converted by `WaitTimeout.ToMicroseconds`. The platform
+counts whole microseconds in a 32-bit field, so a single wait caps at a little over 71 minutes
+(`WaitTimeout.Maximum`); a longer wait is built from repeated shorter ones. A remainder below a
+microsecond rounds up rather than down, so a very short wait never turns into "do not wait at all".
+
+## Policy, and measuring what a thread used
+
+`Processor.CurrentThreadPriority` decides which thread is served first. `SchedulingPolicy` decides what
+happens between threads that already share a priority, and `Processor.SetCurrentThreadScheduling` sets
+both together.
+
+| Policy | What it does |
+|---|---|
+| `Default` | The time-shared policy a thread runs under unless it is changed. |
+| `FirstInFirstOut` | Runs until it blocks or yields rather than being pre-empted by an equal. Starves its equals if it never yields. |
+| `RoundRobin` | Equal-priority threads take turns, so none of them can hold the processor. |
+
+```csharp
+Processor.SetCurrentThreadScheduling(SchedulingPolicy.RoundRobin, Processor.PriorityDefault - 32);
+```
+
+`Processor.ClampPriority` brings a priority computed as an offset back inside the accepted range —
+the platform refuses the whole call for an out-of-range value rather than doing what was meant.
+
+`Processor.CurrentThreadProcessorTime` reads the time this thread has actually spent running, which
+advances only while it is on a processor. Sampling it around a piece of work measures the work rather
+than the wall-clock time, so a worker that mostly waits does not look expensive.

@@ -1,6 +1,7 @@
 // SharpProspero - a C# SDK for on-device application modules.
 // Copyright (C) 2026 SvenGDK
 
+using SharpProspero.Diagnostics;
 using SharpProspero.Graphics;
 using SharpProspero.Input;
 using SharpProspero.Interop;
@@ -53,10 +54,7 @@ public abstract class ProsperoApp(AppConfig? config = null) : IDisposable
         // open for anyone who set one; the user matters to the controller, which is where it is used.
         _display = DisplayDevice.Open(Config.Width, Config.Height, Config.BufferCount, SceUser.System);
         if (Config.OpenGamePad)
-        {
-            try { _gamePad = GamePad.Open(Config.UserId); }
-            catch (ProsperoException) { _gamePad = null; }
-        }
+            TryOpenGamePad();
 
         OnLoad();
 
@@ -78,6 +76,13 @@ public abstract class ProsperoApp(AppConfig? config = null) : IDisposable
 
                 _context.Surface = _display.BackBuffer;
                 _context.PreviousInput = _context.Input;
+
+                // A controller that was not there at start-up is looked for again now and then. Without
+                // this a module that started a moment before the user signed in, or before the pad was
+                // paired, stays deaf to it for as long as it runs.
+                if (_gamePad is null && Config.OpenGamePad && _context.FrameIndex >= _nextGamePadAttempt)
+                    TryOpenGamePad();
+
                 _context.Input = _gamePad?.Read() ?? GamePadState.Neutral;
 
                 // Apply anything a worker thread handed back before the frame draws.
@@ -109,6 +114,33 @@ public abstract class ProsperoApp(AppConfig? config = null) : IDisposable
     /// <summary>Called once after the loop ends and before teardown. Release resources here.</summary>
     protected virtual void OnUnload()
     {
+    }
+
+    // How many frames pass before a missing controller is looked for again, and the frame the next
+    // attempt is allowed on. Once a second is often enough to pick one up without asking the service
+    // on every frame for something that is usually not there.
+    private const long GamePadRetryFrames = 60;
+    private long _nextGamePadAttempt;
+
+    /// <summary>
+    /// Opens the controller for <see cref="AppConfig.UserId"/>, resolving the launching user when that
+    /// is <see cref="SceUser.Invalid"/>. A failure leaves the controller unopened and is recorded
+    /// rather than passed on: a module that draws is more use than one that ends because a pad was not
+    /// ready, and the next attempt follows shortly.
+    /// </summary>
+    private void TryOpenGamePad()
+    {
+        _nextGamePadAttempt = _context.FrameIndex + GamePadRetryFrames;
+        try
+        {
+            // Open resolves the launching user itself when the setting names none.
+            _gamePad = GamePad.Open(Config.UserId);
+        }
+        catch (ProsperoException failure)
+        {
+            _gamePad = null;
+            Log.Warning($"The controller could not be opened: {failure.Message}");
+        }
     }
 
     private void InitializeServices()

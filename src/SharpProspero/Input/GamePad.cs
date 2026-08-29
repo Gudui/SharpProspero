@@ -1,8 +1,10 @@
 // SharpProspero - a C# SDK for on-device application modules.
 // Copyright (C) 2026 SvenGDK
 
+using SharpProspero.Graphics;
 using SharpProspero.Interop;
 using SharpProspero.Interop.Pad;
+using SharpProspero.Platform;
 using System;
 using System.Buffers.Binary;
 using System.Numerics;
@@ -161,20 +163,78 @@ public readonly struct GamePadState
 public sealed unsafe class GamePad : IDisposable
 {
     private readonly int _handle;
+    private readonly bool _ownsHandle;
+    private LightBar? _lightBar;
     private bool _disposed;
 
-    private GamePad(int handle) => _handle = handle;
+    private GamePad(int handle, bool ownsHandle)
+    {
+        _handle = handle;
+        _ownsHandle = ownsHandle;
+    }
+
+    /// <summary>The handle the controller service knows this device by.</summary>
+    public int Handle => _handle;
 
     /// <summary>
-    /// Initializes the controller subsystem and opens a handle for <paramref name="userId"/>.
+    /// Wraps a handle the caller already holds. When <paramref name="ownsHandle"/> is false, disposing
+    /// the wrapper leaves the handle open for whoever does own it.
     /// </summary>
-    /// <exception cref="ProsperoException">Initialization or opening the handle failed.</exception>
-    public static GamePad Open(int userId = SceUser.System)
+    internal static GamePad FromHandle(int handle, bool ownsHandle) => new(handle, ownsHandle);
+
+    /// <summary>
+    /// Initializes the controller subsystem and opens a handle for <paramref name="userId"/>, which
+    /// defaults to the user who started the application.
+    /// </summary>
+    /// <remarks>
+    /// A standard controller belongs to a signed-in user. The platform registers the handle against
+    /// the user it was opened for and routes that user's samples to it, so a handle opened for the
+    /// system user is accepted and then never delivers anything - every button reads as released for
+    /// as long as the module runs. Only the remote control is opened for the system user.
+    /// </remarks>
+    /// <exception cref="ProsperoException">
+    /// The user could not be read, or initialization or opening the handle failed.
+    /// </exception>
+    public static GamePad Open(int userId = SceUser.Invalid)
     {
+        if (userId == SceUser.Invalid)
+            userId = Users.InitialUserId;
         SceResult.ThrowIfFailed(Pad.scePadInit(), nameof(Pad.scePadInit));
-        int handle = Pad.scePadOpen(userId, 0, 0, null);
+        int handle = Pad.scePadOpen(userId, Pad.PortTypeStandard, 0, null);
         SceResult.ThrowIfFailed(handle, nameof(Pad.scePadOpen));
-        return new GamePad(handle);
+        return new GamePad(handle, ownsHandle: true);
+    }
+
+    /// <summary>
+    /// Reads what the device behind the handle is and whether it is attached right now. A wireless
+    /// controller that has gone to sleep or run out of charge still has its handle, and this is what
+    /// says so.
+    /// </summary>
+    /// <exception cref="ProsperoException">The information could not be read.</exception>
+    public ScePadControllerInformation GetInformation()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ScePadControllerInformation information = default;
+        SceResult.ThrowIfFailed(
+            Pad.scePadGetControllerInformation(_handle, &information),
+            nameof(Pad.scePadGetControllerInformation));
+        return information;
+    }
+
+    /// <summary>
+    /// Whether a device is attached to this handle right now. False for a controller that has gone to
+    /// sleep, run out of charge or been switched off, and for a handle the service cannot report on.
+    /// </summary>
+    public bool IsConnected
+    {
+        get
+        {
+            if (_disposed)
+                return false;
+            ScePadControllerInformation information = default;
+            return SceResult.Succeeded(Pad.scePadGetControllerInformation(_handle, &information))
+                && information.Connected != 0;
+        }
     }
 
     /// <summary>
@@ -211,8 +271,20 @@ public sealed unsafe class GamePad : IDisposable
         return SceResult.Succeeded(Pad.scePadSetLightBar(_handle, &color));
     }
 
+    /// <summary>
+    /// Sets the light-bar color from a <see cref="Color"/>, so the same value drives the light bar and
+    /// the screen. Alpha is dropped; the light bar has no blending.
+    /// </summary>
+    public bool SetLightBar(Color color) => SetLightBar(color.R, color.G, color.B);
+
     /// <summary>Restores the light bar to its default color.</summary>
     public bool ResetLightBar() => SceResult.Succeeded(Pad.scePadResetLightBar(_handle));
+
+    /// <summary>
+    /// The light bar of this controller, with the frame-driven states built on top of it. Created on
+    /// first use and following the system color until a state is set.
+    /// </summary>
+    public LightBar LightBar => _lightBar ??= new LightBar(this);
 
     /// <summary>Closes the controller handle.</summary>
     public void Dispose()
@@ -220,7 +292,17 @@ public sealed unsafe class GamePad : IDisposable
         if (_disposed)
             return;
         _disposed = true;
+
+        // A wrapper around someone else's handle leaves the device exactly as it found it: the owner is
+        // still driving it, and closing or quietening it here would take it away from them.
+        if (!_ownsHandle)
+            return;
+
         StopVibration();
+
+        // The controller outlives the module, so hand the light bar back to the system rather than
+        // leaving the last color the application set burning on it.
+        ResetLightBar();
         Pad.scePadClose(_handle);
     }
 }

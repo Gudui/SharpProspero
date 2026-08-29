@@ -101,6 +101,14 @@ public sealed class ZipBuilder
             WriteCentralHeader(record);
         uint directorySize = (uint)_output.Count - directoryOffset;
 
+        // The count is a sixteen-bit field. Past that the format needs its own extension, which this
+        // writer does not produce, and truncating the count would write an archive whose directory says
+        // it holds fewer entries than it does - readable, and quietly missing files.
+        if (_records.Count > ushort.MaxValue)
+            throw new CompressionException(
+                $"An archive of {_records.Count} entries cannot be written: the format records the count "
+                + $"in sixteen bits, so {ushort.MaxValue} is the most this writer supports.");
+
         WriteUInt32(EndOfCentralDirectorySignature);
         WriteUInt16(0); // this disk
         WriteUInt16(0); // disk with the central directory

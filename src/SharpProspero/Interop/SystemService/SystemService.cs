@@ -37,6 +37,30 @@ public static unsafe partial class SystemService
     /// <summary>Event type: another application was launched over this one.</summary>
     public const int EventLaunchApp = 0x10000007;
 
+    /// <summary>An internal failure inside the service. Value 0x80A10001.</summary>
+    public const int ErrorInternal = unchecked((int)0x80A10001);
+
+    /// <summary>The service cannot be used in the current state. Value 0x80A10002.</summary>
+    public const int ErrorUnavailable = unchecked((int)0x80A10002);
+
+    /// <summary>An argument was outside what the call accepts. Value 0x80A10003.</summary>
+    public const int ErrorParameter = unchecked((int)0x80A10003);
+
+    /// <summary>Nothing is waiting in the event queue. Value 0x80A10004.</summary>
+    public const int ErrorNoEvent = unchecked((int)0x80A10004);
+
+    /// <summary>The call was refused for the calling process. Value 0x80A10005.</summary>
+    public const int ErrorRejected = unchecked((int)0x80A10005);
+
+    /// <summary>The safe-area ratio has not been chosen yet. Value 0x80A10006.</summary>
+    public const int ErrorNeedDisplaySafeAreaSettings = unchecked((int)0x80A10006);
+
+    /// <summary>GPU load emulation off, so the GPU runs at its own pace.</summary>
+    public const int GpuLoadEmulationModeOff = 0;
+
+    /// <summary>GPU load emulation at the standard profile.</summary>
+    public const int GpuLoadEmulationModeNormal = 1;
+
     /// <summary>Removes the boot splash so the first rendered frame is shown.</summary>
     /// <returns>Zero on success, or a negative error code.</returns>
     [LibraryImport(Lib)]
@@ -88,6 +112,31 @@ public static unsafe partial class SystemService
     /// <returns>Zero on success, or a negative error code.</returns>
     [LibraryImport(Lib)]
     public static partial int sceSystemServiceGetDisplaySafeAreaInfo(SceSystemServiceDisplaySafeAreaInfo* info);
+
+    /// <summary>
+    /// Selects the GPU load emulation profile, one of the <c>GpuLoadEmulationMode*</c> values. The
+    /// profile shapes how much GPU work the system lets through, which is what the machine's power and
+    /// heat budget follows.
+    /// </summary>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceSystemServiceSetGpuLoadEmulationMode(int mode);
+
+    /// <summary>
+    /// Reads the GPU load emulation profile in effect. Returns one of the <c>GpuLoadEmulationMode*</c>
+    /// values rather than a result code, and reports the standard profile when the state is unreadable.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSystemServiceGetGpuLoadEmulationMode();
+
+    /// <summary>
+    /// Ends the process and records it as an abnormal termination. <paramref name="info"/> must be
+    /// null; any other value is refused with <see cref="ErrorParameter"/>. On acceptance the call does
+    /// not return, because the process is raised into a fault and torn down.
+    /// </summary>
+    /// <returns>A negative error code. It never returns on acceptance.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceSystemServiceReportAbnormalTermination(void* info);
 
     /// <summary>Stops the background media player, so this module has the audio output to itself.</summary>
     /// <returns>Zero on success, or a negative error code.</returns>

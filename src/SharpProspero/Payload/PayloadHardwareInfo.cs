@@ -1,0 +1,111 @@
+// SharpProspero - a C# SDK for on-device application modules.
+// Copyright (C) 2026 SvenGDK
+
+using System.Runtime.InteropServices;
+
+namespace SharpProspero.Payload;
+
+/// <summary>
+/// Reads hardware information from the kernel in a payload context: the console model name,
+/// its serial number, CPU frequency, CPU temperature, and SoC sensor temperatures. Wraps
+/// the five functions from <c>libkernel_sys</c> that the SDK <c>hwinfo</c> sample calls.
+/// </summary>
+/// <remarks>
+/// These functions are exported by <c>libkernel_sys.sprx</c>, not the default
+/// <c>libkernel_web.sprx</c>. A payload template that uses this class must declare
+/// <c>libkernel_sys.sprx</c> as its kernel module override, and include
+/// <c>&lt;DirectPInvoke Include="libkernel_sys" /&gt;</c> in its csproj.
+/// </remarks>
+public static unsafe partial class PayloadHardwareInfo
+{
+    private const string Lib = "libkernel_sys";
+
+    /// <summary>
+    /// Writes the console's model name into <paramref name="buffer"/>. The buffer should be at
+    /// least 1000 bytes.
+    /// </summary>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceKernelGetHwModelName(byte* buffer);
+
+    /// <summary>
+    /// Writes the console's serial number into <paramref name="buffer"/>. The buffer should be
+    /// at least 1000 bytes.
+    /// </summary>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceKernelGetHwSerialNumber(byte* buffer);
+
+    /// <summary>
+    /// Returns the CPU frequency in Hz. Divide by <c>1_000_000</c> for MHz.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial long sceKernelGetCpuFrequency();
+
+    /// <summary>
+    /// Writes the CPU temperature in degrees Celsius into <paramref name="temperature"/>.
+    /// </summary>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceKernelGetCpuTemperature(int* temperature);
+
+    /// <summary>
+    /// Writes the SoC sensor temperature for <paramref name="sensor"/> into
+    /// <paramref name="temperature"/> in degrees Celsius. Sensor 0 is the primary SoC sensor
+    /// used by the SDK <c>hwinfo</c> sample.
+    /// </summary>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceKernelGetSocSensorTemperature(int sensor, int* temperature);
+
+    /// <summary>Reads the console model name as a managed string.</summary>
+    /// <param name="modelName">When the method returns zero, the model name string; otherwise
+    /// an empty string.</param>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    public static int GetModelName(out string modelName)
+    {
+        byte* buf = stackalloc byte[1000];
+        buf[0] = 0;
+        int result = sceKernelGetHwModelName(buf);
+        modelName = result == 0 ? Marshal.PtrToStringUTF8((nint)buf) ?? string.Empty : string.Empty;
+        return result;
+    }
+
+    /// <summary>Reads the console serial number as a managed string.</summary>
+    /// <param name="serialNumber">When the method returns zero, the serial number string;
+    /// otherwise an empty string.</param>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    public static int GetSerialNumber(out string serialNumber)
+    {
+        byte* buf = stackalloc byte[1000];
+        buf[0] = 0;
+        int result = sceKernelGetHwSerialNumber(buf);
+        serialNumber = result == 0 ? Marshal.PtrToStringUTF8((nint)buf) ?? string.Empty : string.Empty;
+        return result;
+    }
+
+    /// <summary>Reads the CPU temperature in degrees Celsius.</summary>
+    /// <param name="temperature">When the method returns zero, the temperature; otherwise
+    /// zero.</param>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    public static int GetCpuTemperature(out int temperature)
+    {
+        int temp;
+        int result = sceKernelGetCpuTemperature(&temp);
+        temperature = result == 0 ? temp : 0;
+        return result;
+    }
+
+    /// <summary>Reads a SoC sensor temperature in degrees Celsius.</summary>
+    /// <param name="sensor">The sensor index (0 is the primary SoC sensor).</param>
+    /// <param name="temperature">When the method returns zero, the temperature; otherwise
+    /// zero.</param>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    public static int GetSocSensorTemperature(int sensor, out int temperature)
+    {
+        int temp;
+        int result = sceKernelGetSocSensorTemperature(sensor, &temp);
+        temperature = result == 0 ? temp : 0;
+        return result;
+    }
+}

@@ -12,17 +12,16 @@
     <NoWarn>$(NoWarn);CS1591</NoWarn>
 
     <PackageId>SharpProspero</PackageId>
-    <Version>0.5.0</Version>
+    <Version>0.8.0</Version>
     <Description>A C# SDK for building applications that compile to standalone ELF modules and pack into installable packages.</Description>
     <PackageLicenseExpression>GPL-3.0-or-later</PackageLicenseExpression>
     <PackageTags>ps5;prospero;homebrew;sdk;aot;elf</PackageTags>
   </PropertyGroup>
 
-  <!-- The tests exercise the internal layout hooks (placing controls into bounds and collecting the
-       focusable ones) so the interface logic can be checked without a display. -->
-  <ItemGroup>
-    <InternalsVisibleTo Include="SharpProspero.Tests" />
-  </ItemGroup>
+  <!-- Opt-in bridge for the internal layout hooks. Off by default; a run that needs it sets
+       EnableInternalTests=true on the MSBuild command line. -->
+  <Import Project="../../build/InternalBridge.props"
+          Condition="'$(EnableInternalTests)' == 'true' and Exists('../../build/InternalBridge.props')" />
 
   <!-- The built-in mesh shaders, compiled ahead of time and embedded so a 3D application renders with
        no shader tooling of its own. The .pssl sources sit beside them for reference. -->

@@ -94,7 +94,7 @@ public sealed class FrameStats
     /// <summary>Adds a frame of <paramref name="deltaSeconds"/>. A negative or zero delta is ignored.</summary>
     public void Record(float deltaSeconds)
     {
-        if (deltaSeconds <= 0f)
+        if (!float.IsFinite(deltaSeconds) || deltaSeconds <= 0f)
             return;
 
         float ms = deltaSeconds * 1000f;

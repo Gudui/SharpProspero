@@ -54,6 +54,9 @@ public static class StubCatalog
         new Entry("libSceUserService", UserService),
         new Entry("libSceSystemService", SystemService),
         new Entry("libSceAudioOut", AudioOut),
+        // A second library out of the same module as the one above, and an alternative to it rather
+        // than a layer over it.
+        new Entry("libSceAudioOut2", AudioOut2, ModuleName: "libSceAudioOut", Soname: "libSceAudioOut.prx"),
         new Entry("libSceSysmodule", Sysmodule),
         new Entry("libScePngDec", PngDec),
         new Entry("libScePngEnc", PngEnc),
@@ -91,6 +94,8 @@ public static class StubCatalog
         // This library publishes module version 2.1.
         new Entry("libSceSsl", Ssl, ModuleVersion: 0x0201),
         new Entry("libSceHttp", Http),
+        new Entry("libSceHttp2", Http2),
+        new Entry("libkernel_sys", KernelSys, ModuleName: "libkernel", Soname: "libkernel.prx"),
         new Entry("libSceContentDelete", ContentDelete),
         new Entry("libSceContentExport", ContentExport),
         // This library publishes module version 1.0, like the media player and play-go.
@@ -132,6 +137,12 @@ public static class StubCatalog
         new Entry("libSceNotification", Notification),
         new Entry("libSceBluetoothHid", BluetoothHid),
         new Entry("libSceCffMgr", CffMgr),
+        // The camera module publishes this library under a name of its own: library libSceCamera2,
+        // module libSceCamera, file libSceCamera.prx.
+        new Entry("libSceCamera2", Camera2, ModuleName: "libSceCamera", Soname: "libSceCamera.prx"),
+        // A fourth library out of the kernel module, alongside the kernel's own, the POSIX one and the
+        // console identifier.
+        new Entry("libSceCoredump", Coredump, ModuleName: "libkernel", Soname: "libkernel.prx"),
         new Entry("libSceAgc", Agc),
         new Entry("libSceAgcDriver", AgcDriver),
     ];
@@ -146,9 +157,11 @@ public static class StubCatalog
     public static IReadOnlyList<Entry> RuntimeResolved =>
     [
         new Entry("libSceAppInstUtil", AppInstUtil),
-        // This module publishes version 1.0 and three libraries; the last name below is carried by the
-        // other two rather than by the one named here. It is reached by name at run time rather than
-        // bound at link time, so which library carries it does not decide whether it resolves.
+        // This module publishes version 1.0 and three libraries: libSceUsbStorage, libSceUsbStorageAux
+        // and libSceUsbStorageForShellUI. Of the names below, sceUsbStorageGetMountPointOfShellCore is
+        // the one the library named here does not carry - the other two publish it. It is reached by
+        // name at run time rather than bound at link time, so which library carries it does not decide
+        // whether it resolves.
         new Entry("libSceUsbStorage", UsbStorage, ModuleVersion: 0x0100),
         new Entry("libSceAvcap2", Avcap2),
     ];
@@ -171,8 +184,8 @@ public static class StubCatalog
         "sceKernelAvailableDirectMemorySize", "sceKernelAvailableFlexibleMemorySize", "sceKernelCheckReachability", "sceKernelClockGettime",
         "sceKernelClose", "sceKernelDlsym", "sceKernelGetCurrentCpu", "sceKernelGetDirectMemorySize",
         "sceKernelGetProcessTime",
-        "sceKernelGetdents", "sceKernelLoadStartModule", "sceKernelLseek", "sceKernelMapDirectMemory",
-        "sceKernelConfiguredFlexibleMemorySize", "sceKernelAvailableFlexibleMemorySize",
+        "sceKernelGetdents", "sceKernelGetdirentries", "sceKernelLoadStartModule", "sceKernelLseek", "sceKernelMapDirectMemory",
+        "sceKernelConfiguredFlexibleMemorySize",
         "sceKernelReserveVirtualRange", "sceKernelQueryMemoryProtection",
         "sceKernelMapFlexibleMemory", "sceKernelMapNamedFlexibleMemory", "sceKernelMemoryPoolCommit",
         "sceKernelMemoryPoolDecommit", "sceKernelMemoryPoolExpand", "sceKernelMemoryPoolReserve",
@@ -180,6 +193,7 @@ public static class StubCatalog
         "sceKernelMunmap", "sceKernelOpen", "sceKernelRead", "sceKernelReleaseDirectMemory",
         "sceKernelReleaseFlexibleMemory", "sceKernelRename", "sceKernelRmdir", "sceKernelSendNotificationRequest",
         "sceKernelStopUnloadModule", "sceKernelTruncate", "sceKernelUnlink", "sceKernelUsleep",
+        "sceKernelGetAppInfo",
         "sceKernelVirtualQuery", "sceKernelWrite",
         "scePthreadGetthreadid",
         "scePthreadCondattrInit", "scePthreadCondattrDestroy",
@@ -189,8 +203,63 @@ public static class StubCatalog
         "scePthreadDetach", "scePthreadExit", "scePthreadGetspecific", "scePthreadJoin",
         "scePthreadKeyCreate", "scePthreadKeyDelete", "scePthreadMutexDestroy", "scePthreadMutexInit",
         "scePthreadMutexLock", "scePthreadMutexTrylock", "scePthreadMutexUnlock", "scePthreadRename",
-        "scePthreadCondattrSetclock", "scePthreadGetaffinity", "scePthreadSelf", "scePthreadSetspecific",
+        "scePthreadCondattrSetclock", "scePthreadGetaffinity", "scePthreadSetaffinity",
+        "scePthreadSelf", "scePthreadSetspecific",
         "scePthreadYield",
+        // Fine-grained timing: a counter far smaller than the microsecond the process-time call reports,
+        // the processor's own cycle counter, the frequencies that turn either into seconds, the sleep
+        // that takes nanoseconds, and the smallest step a clock can report.
+        "sceKernelGetProcessTimeCounter", "sceKernelGetProcessTimeCounterFrequency",
+        "sceKernelReadTsc", "sceKernelGetTscFrequency",
+        "sceKernelNanosleep", "sceKernelClockGetres",
+        // Placing work on a processor. The affinity pair above says where a thread may run; these say how
+        // urgently it is served once it is there.
+        "scePthreadSetprio", "scePthreadGetprio",
+        // The event queue: one place a thread waits for timers, descriptor readiness, file changes and
+        // events the application raises itself, instead of polling each source in turn.
+        "sceKernelCreateEqueue", "sceKernelDeleteEqueue", "sceKernelWaitEqueue",
+        "sceKernelAddTimerEvent", "sceKernelDeleteTimerEvent",
+        "sceKernelAddHRTimerEvent", "sceKernelDeleteHRTimerEvent",
+        "sceKernelAddReadEvent", "sceKernelDeleteReadEvent",
+        "sceKernelAddWriteEvent", "sceKernelDeleteWriteEvent",
+        "sceKernelAddFileEvent", "sceKernelDeleteFileEvent",
+        "sceKernelAddUserEvent", "sceKernelAddUserEventEdge", "sceKernelDeleteUserEvent",
+        "sceKernelTriggerUserEvent",
+        "sceKernelGetEventFilter", "sceKernelGetEventId", "sceKernelGetEventData",
+        "sceKernelGetEventFflags", "sceKernelGetEventError", "sceKernelGetEventUserData",
+        // Event flags and counting semaphores. Both keep state the platform's scheduler knows about, so
+        // a thread blocked on either is visible to the system rather than only to the runtime.
+        "sceKernelCreateEventFlag", "sceKernelDeleteEventFlag", "sceKernelWaitEventFlag",
+        "sceKernelPollEventFlag", "sceKernelSetEventFlag", "sceKernelClearEventFlag",
+        "sceKernelCancelEventFlag",
+        "sceKernelCreateSema", "sceKernelDeleteSema", "sceKernelWaitSema", "sceKernelPollSema",
+        "sceKernelSignalSema", "sceKernelCancelSema",
+        // Scheduling policy and the attribute block a thread's settings are chosen from before it starts.
+        "scePthreadGetschedparam", "scePthreadSetschedparam", "scePthreadGetcpuclockid",
+        "scePthreadEqual",
+        "scePthreadAttrInit", "scePthreadAttrDestroy", "scePthreadAttrGet",
+        "scePthreadAttrSetstacksize", "scePthreadAttrGetstacksize", "scePthreadAttrGetstack",
+        "scePthreadAttrSetguardsize", "scePthreadAttrGetguardsize",
+        "scePthreadAttrSetdetachstate", "scePthreadAttrGetdetachstate",
+        "scePthreadAttrSetaffinity", "scePthreadAttrGetaffinity",
+        "scePthreadAttrSetschedparam", "scePthreadAttrGetschedparam",
+        "scePthreadAttrSetschedpolicy", "scePthreadAttrGetschedpolicy",
+        "scePthreadAttrSetinheritsched", "scePthreadAttrGetinheritsched",
+        // Reading the address space back: what covers an address, what backs it, what it is named, and
+        // how many page-table entries are left. A build that maps many small ranges exhausts those
+        // before it exhausts memory.
+        "sceKernelDirectMemoryQuery", "sceKernelGetDirectMemoryType", "sceKernelIsStack",
+        "sceKernelSetVirtualRangeName", "sceKernelGetPageTableStats",
+        "sceKernelMsync", "sceKernelMtypeprotect",
+        "sceKernelAllocateMainDirectMemory", "sceKernelMapNamedDirectMemory",
+        "sceKernelCheckedReleaseDirectMemory", "sceKernelMemoryPoolGetBlockStats",
+        // What the process is and what it was started with.
+        "getargc", "getargv", "sceKernelUuidCreate",
+        // The event queue's direct entries. An application that manages its own event sources
+        // through the queue's descriptor rather than the higher-level wrappers above reaches for
+        // these. The wrappers do not expose the process filter, so an application that needs it
+        // has to ask by name.
+        "kqueue", "kevent",
     ];
 
     // The portable operating-system interface the platform layer forwards to. These are published
@@ -199,6 +268,9 @@ public static class StubCatalog
     private static readonly string[] Posix =
     [
         "chmod", "clock_gettime", "close", "fchmod",
+        // The socket calls under their plain names, which the interop bindings declare and an application
+        // module links against directly.
+        "socket", "bind", "listen", "accept", "connect", "send", "recv", "setsockopt", "shutdown",
         "fcntl", "flock", "fstat", "fsync",
         "ftruncate", "getdents", "getpid", "getsockopt", "gettimeofday",
         "lseek", "madvise", "mkdir", "mlock",
@@ -210,19 +282,48 @@ public static class StubCatalog
         "pthread_cond_signal", "pthread_cond_timedwait", "pthread_cond_wait", "pthread_condattr_destroy",
         // The older pair of timestamp routines, which the finer pair the runtime asks for stands on.
         "utimes", "futimes",
-        "pthread_condattr_init", "pthread_condattr_setclock", "pthread_create", "pthread_key_create",
+        "pthread_condattr_init", "pthread_condattr_setclock", "pthread_create", "pthread_getspecific",
+        "pthread_key_create",
         "pthread_mutex_destroy", "pthread_mutex_init", "pthread_mutex_lock", "pthread_mutex_unlock",
         "pthread_mutexattr_destroy", "pthread_mutexattr_init", "pthread_mutexattr_settype", "pthread_rwlock_rdlock",
         "pthread_rwlock_unlock", "pthread_rwlock_wrlock", "pthread_self", "pthread_setcancelstate",
         "pthread_setspecific", "pthread_sigmask", "pwrite", "pwritev",
         "read", "rename", "rmdir", "sched_yield",
         "stat", "sync", "unlink", "write",
+        // Sizes the system imposes on the process, and the priority bounds a policy accepts. These four
+        // are published here only: the kernel library carries no spelling of its own for them.
+        "getpagesize", "getdtablesize", "sched_get_priority_max", "sched_get_priority_min",
+        // Pinning the whole address space. The per-range pair above is listed already; these two act on
+        // everything at once and are refused for a process that has not been granted the right.
+        "mlockall", "munlockall",
+        // Naming a thread. The compat object forwards to this one rather than to the kernel library's
+        // own, because this one answers a plain error number and the other wraps it into a code.
+        "pthread_rename_np",
+        "sysctl", "getmntinfo", "ptrace", "wait4", "waitpid", "getuid", "geteuid",
     ];
 
     // C runtime: the allocation, memory, string, control, formatting, and unwind functions the
     // compiled image and its runtime reach.
     private static readonly string[] C =
     [
+        // The rest of the arithmetic the C library publishes. The framework's own maths surface
+        // reaches these by name, so a program that takes a cube root or a base-two logarithm
+        // fails to link without them rather than at the call.
+        "acos", "acosf", "acosh", "acoshf",
+        "asin", "asinf", "asinh", "asinhf",
+        "atan", "atanf", "atanh", "atanhf",
+        "cbrt", "cbrtf", "copysign", "copysignf",
+        "cosh", "coshf", "exp2", "exp2f",
+        "expm1", "expm1f", "fdim", "fdimf",
+        "fma", "fmaf", "fmax", "fmaxf",
+        "fmin", "fminf", "hypot", "hypotf",
+        "ilogb", "ilogbf", "log10", "log10f",
+        "log1p", "log1pf", "log2", "log2f",
+        "logb", "logbf", "modf", "modff",
+        "nearbyint", "nearbyintf", "nextafter", "nextafterf",
+        "remainder", "remainderf", "remquo", "remquof",
+        "rint", "rintf", "scalbn", "scalbnf",
+        "sinh", "sinhf", "tanh", "tanhf",
         "_Unwind_Resume", "__cxa_allocate_exception", "__cxa_atexit", "__cxa_begin_catch",
         "__cxa_end_catch", "__cxa_finalize", "__cxa_free_exception", "__cxa_guard_acquire",
         "__cxa_guard_release", "__cxa_rethrow", "__cxa_throw", "abort",
@@ -231,7 +332,7 @@ public static class StubCatalog
         "catchReturnFromMain", "Need_sceLibc",
         "ceil", "ceilf", "cos", "cosf",
         "exit", "exp", "expf", "fabs",
-        "fabsf", "fclose", "fflush", "floor",
+        "fabsf", "fclose", "fflush", "fileno", "floor",
         "floorf", "fmod", "fmodf", "fopen",
         "fprintf", "fputs", "free", "fwrite",
         "log", "logf", "longjmp", "lrand48",
@@ -243,11 +344,12 @@ public static class StubCatalog
         "srand48", "sscanf", "strcasecmp", "strcat",
         "strchr", "strcmp", "strcpy", "strdup",
         "strerror", "strerror_r", "strlen", "strncat",
+        "vfprintf",
         "strncmp", "strncpy", "strrchr", "strstr",
         "strtok_r", "strtol", "strtoll", "strtoul",
         "strtoull", "tan", "tanf", "time",
         "trunc", "truncf", "vsnprintf",
-        "_Stderr", "_Stdout",
+        "__stderrp", "__stdoutp", "__stdinp",
         "_init_env",
     ];
 
@@ -274,6 +376,17 @@ public static class StubCatalog
         "scePadSetVibration",
         "scePadSetLightBar",
         "scePadResetLightBar",
+        "scePadGetControllerInformation",
+        "scePadGetHandle",
+        "scePadGetTriggerEffectState",
+        "scePadRead",
+        "scePadResetOrientation",
+        "scePadSetAngularVelocityDeadbandState",
+        "scePadSetMotionSensorState",
+        "scePadSetTiltCorrectionState",
+        "scePadSetTriggerEffect",
+        "scePadSetVibrationMode",
+        "scePadSetVibrationTriggerEffectWeakWhileEmbeddedMicInUse",
     ];
 
     private static readonly string[] UserService =
@@ -284,6 +397,14 @@ public static class StubCatalog
         "sceUserServiceGetLoginUserIdList",
         "sceUserServiceGetUserName",
         "sceUserServiceGetUserNumber",
+        "sceUserServiceGetAccessibilityChatTranscription",
+        "sceUserServiceGetAccessibilityPressAndHoldDelay",
+        "sceUserServiceGetAccessibilityTriggerEffect",
+        "sceUserServiceGetAccessibilityVibration",
+        "sceUserServiceGetAgeLevel",
+        "sceUserServiceGetEvent",
+        "sceUserServiceGetGamePresets",
+        "sceUserServiceInitialize2",
     ];
 
     private static readonly string[] SystemService =
@@ -299,6 +420,10 @@ public static class StubCatalog
         "sceSystemServiceGetDisplaySafeAreaInfo",
         "sceSystemServiceDisableMediaPlay",
         "sceSystemServiceReenableMediaPlay",
+        "sceSystemServiceSetGpuLoadEmulationMode",
+        "sceSystemServiceGetGpuLoadEmulationMode",
+        "sceSystemServiceReportAbnormalTermination",
+        "sceSystemServiceLaunchWebBrowser",
     ];
 
     private static readonly string[] AudioOut =
@@ -307,7 +432,45 @@ public static class StubCatalog
         "sceAudioOutOpen",
         "sceAudioOutClose",
         "sceAudioOutOutput",
+        "sceAudioOutOutputs",
         "sceAudioOutSetVolume",
+        // What a port will say about itself: where its samples are going, and how far the output has got.
+        "sceAudioOutGetPortState",
+        "sceAudioOutGetLastOutputTime",
+    ];
+
+    // The object-based output path: ports placed in space rather than fed to fixed channels.
+    private static readonly string[] AudioOut2 =
+    [
+        "sceAudioOut2Initialize",
+        "sceAudioOut2ContextResetParam",
+        "sceAudioOut2ContextQueryMemory",
+        "sceAudioOut2ContextCreate",
+        "sceAudioOut2ContextDestroy",
+        "sceAudioOut2ContextSetAttributes",
+        "sceAudioOut2ContextAdvance",
+        "sceAudioOut2ContextPush",
+        "sceAudioOut2ContextGetQueueLevel",
+        "sceAudioOut2PortCreate",
+        "sceAudioOut2PortDestroy",
+        "sceAudioOut2PortSetAttributes",
+        "sceAudioOut2PortGetState",
+        "sceAudioOut2GetSpeakerArrayMemorySize",
+        "sceAudioOut2SpeakerArrayCreate",
+        "sceAudioOut2SpeakerArrayDestroy",
+        "sceAudioOut2GetSpeakerArrayCoefficients",
+        "sceAudioOut2GetSpeakerArrayAmbisonicsCoefficients",
+        "sceAudioOut2GetSystemState",
+        "sceAudioOut2GetSpeakerInfo",
+        "sceAudioOut2UserCreate",
+        "sceAudioOut2UserDestroy",
+        "sceAudioOut2UserGetSupportedAttributes",
+        "sceAudioOut2EnableChat",
+        "sceAudioOut2DisableChat",
+        "sceAudioOut2MasteringInit",
+        "sceAudioOut2MasteringTerm",
+        "sceAudioOut2MasteringSetParam",
+        "sceAudioOut2MasteringGetState",
     ];
 
     private static readonly string[] Sysmodule =
@@ -354,6 +517,11 @@ public static class StubCatalog
         "sceFontRenderCharGlyphImageHorizontal",
         "sceFontRenderSurfaceInit",
         "sceFontRenderSurfaceSetScissor",
+        "sceFontGetRenderScaledKerning",
+        "sceFontGetScalePixel",
+        "sceFontSetResolutionDpi",
+        "sceFontSetScalePixel",
+        "sceFontSetScalePoint",
     ];
 
     // The FreeType backend for the font engine.
@@ -584,6 +752,15 @@ public static class StubCatalog
         "sceNgs2CalcWaveformBlock",
         "sceNgs2GetWaveformFrameInfo",
         "sceNgs2JobSchedulerResetOption",
+        "sceNgs2GeomResetListenerParam",
+        "sceNgs2GeomResetSourceParam",
+        "sceNgs2GeomCalcListener",
+        "sceNgs2GeomApply",
+        "sceNgs2PanInit",
+        "sceNgs2PanGetVolumeMatrix",
+        "sceNgs2ReportRegisterHandler",
+        "sceNgs2ReportUnregisterHandler",
+        "sceNgs2CustomRackGetModuleInfo",
     ];
 
     private static readonly string[] Audio3d =
@@ -744,6 +921,16 @@ public static class StubCatalog
         "sceSaveDataGetMountInfo",
         "sceSaveDataDelete",
         "sceSaveDataDirNameSearch",
+        "sceSaveDataBackup",
+        "sceSaveDataCommit",
+        "sceSaveDataCreateTransactionResource",
+        "sceSaveDataDeleteTransactionResource",
+        "sceSaveDataGetParam",
+        "sceSaveDataLoadIcon",
+        "sceSaveDataPrepare",
+        "sceSaveDataSaveIcon",
+        "sceSaveDataSaveIconByPath",
+        "sceSaveDataSetParam",
     ];
 
     // Install and download progress.
@@ -762,6 +949,16 @@ public static class StubCatalog
     [
         "sceAppContentInitialize",
         "sceAppContentAppParamGetInt",
+        "sceAppContentAddcontEnqueueDownload",
+        "sceAppContentAddcontMount",
+        "sceAppContentAddcontUnmount",
+        "sceAppContentDownloadDataFormat",
+        "sceAppContentDownloadDataGetAvailableSpaceKb",
+        "sceAppContentGetAddcontDownloadProgress",
+        "sceAppContentTemporaryDataFormat",
+        "sceAppContentTemporaryDataGetAvailableSpaceKb",
+        "sceAppContentTemporaryDataMount2",
+        "sceAppContentTemporaryDataUnmount",
     ];
 
     // Content deletion (captures and other content).
@@ -783,6 +980,9 @@ public static class StubCatalog
         "sceContentExportFromFile",
         "sceContentExportCancel",
         "sceContentExportGetProgress",
+        "sceContentExportFromData",
+        "sceContentExportFromDataWithThumbnail",
+        "sceContentExportFromFileWithThumbnail",
     ];
 
     // Content search (the library of captures and imported media).
@@ -832,6 +1032,7 @@ public static class StubCatalog
         "sceNetResolverCreate",
         "sceNetResolverStartNtoa",
         "sceNetResolverDestroy",
+        "sceNetInit",
     ];
 
     // The TLS context the HTTP service uses.
@@ -839,6 +1040,23 @@ public static class StubCatalog
     [
         "sceSslInit",
         "sceSslTerm",
+        "sceSslClose",
+        "sceSslConnect",
+        "sceSslCreateConnection",
+        "sceSslDeleteConnection",
+        "sceSslDisableVerifyOption",
+        "sceSslEnableVerifyOption",
+        "sceSslGetAlpnSelected",
+        "sceSslLoadCert",
+        "sceSslRead",
+        "sceSslRecv",
+        "sceSslReuseConnection",
+        "sceSslSend",
+        "sceSslSetAlpn",
+        "sceSslSetMinSslVersion",
+        "sceSslSetVerifyCallback",
+        "sceSslUnloadCert",
+        "sceSslWrite",
     ];
 
     // HTTP downloads.
@@ -858,6 +1076,52 @@ public static class StubCatalog
         "sceHttpReadData",
         "sceHttpSetConnectTimeOut",
         "sceHttpSetRecvTimeOut",
+        "sceHttpAbortRequest",
+        "sceHttpAddRequestHeader",
+        "sceHttpCreateRequestWithURL2",
+        "sceHttpGetAllResponseHeaders",
+        "sceHttpGetAutoRedirect",
+        "sceHttpGetLastErrno",
+        "sceHttpParseResponseHeader",
+        "sceHttpParseStatusLine",
+        "sceHttpRemoveRequestHeader",
+        "sceHttpSetAutoRedirect",
+        "sceHttpSetChunkedTransferEnabled",
+        "sceHttpSetInflateGZIPEnabled",
+        "sceHttpSetRequestContentLength",
+        "sceHttpSetResolveRetry",
+        "sceHttpSetResolveTimeOut",
+        "sceHttpSetResponseHeaderMaxSize",
+        "sceHttpSetSendTimeOut",
+        "sceHttpUriBuild",
+        "sceHttpUriEscape",
+        "sceHttpUriMerge",
+        "sceHttpUriParse",
+        "sceHttpUriSweepPath",
+        "sceHttpUriUnescape",
+        "sceHttpsDisableOption",
+        "sceHttpsEnableOption",
+        "sceHttpsGetSslError",
+        "sceHttpsLoadCert",
+        "sceHttpsSetSslVersion",
+        "sceHttpsUnloadCert",
+    ];
+
+    // HTTP/2 client. Used by the http2_get template for HTTP/2 requests.
+    private static readonly string[] Http2 =
+    [
+        "sceHttp2Init", "sceHttp2Term",
+        "sceHttp2CreateTemplate", "sceHttp2DeleteTemplate",
+        "sceHttp2CreateRequestWithURL", "sceHttp2DeleteRequest",
+        "sceHttp2SendRequest", "sceHttp2GetStatusCode", "sceHttp2ReadData",
+    ];
+
+    // Hardware information from the kernel system-level interface.
+    private static readonly string[] KernelSys =
+    [
+        "sceKernelGetHwModelName", "sceKernelGetHwSerialNumber",
+        "sceKernelGetCpuFrequency", "sceKernelGetCpuTemperature",
+        "sceKernelGetSocSensorTemperature",
     ];
 
     // Asynchronous zlib decompression.
@@ -1005,6 +1269,7 @@ public static class StubCatalog
         "sceAppInstUtilAppGetSize",
         "sceAppInstUtilAppUnInstall",
         "sceAppInstUtilAppUnInstall2",
+        "sceAppInstUtilAppInstallTitleDir",
     ];
 
     // USB mass storage, resolved by name at run time (Platform.UsbStorage). Kept in step with the
@@ -1053,6 +1318,51 @@ public static class StubCatalog
         "sceAvcap2SetMicVolumeForRec",
         "sceAvcap2SetChapterOpenLevel",
         "sceAvcap2SetChapterPermissionLevel",
+    ];
+
+    // The front camera, published by the camera module under a library of its own.
+    private static readonly string[] Camera2 =
+    [
+        "sceCamera2Close",
+        "sceCamera2Finalize",
+        "sceCamera2GetAttribute",
+        "sceCamera2GetAutoExposureGain",
+        "sceCamera2GetAutoWhiteBalance",
+        "sceCamera2GetConfig",
+        "sceCamera2GetExposureGain",
+        "sceCamera2GetFieldOfView",
+        "sceCamera2GetFrameData",
+        "sceCamera2GetWhiteBalance",
+        "sceCamera2Initialize",
+        "sceCamera2IsAttached",
+        "sceCamera2IsValidFrameData",
+        "sceCamera2Open",
+        "sceCamera2SetAttribute",
+        "sceCamera2SetAutoExposureGain",
+        "sceCamera2SetAutoWhiteBalance",
+        "sceCamera2SetConfig",
+        "sceCamera2SetExposureGain",
+        "sceCamera2SetVideoSync",
+        "sceCamera2SetWhiteBalance",
+        "sceCamera2Start",
+        "sceCamera2Stop",
+    ];
+
+    // Crash reporting: what an application adds to the report the system writes when it faults.
+    private static readonly string[] Coredump =
+    [
+        "sceCoredumpAttachMemoryRegion",
+        "sceCoredumpAttachMemoryRegionAsUserFile",
+        "sceCoredumpAttachUserFile",
+        "sceCoredumpAttachUserMemoryFile",
+        "sceCoredumpConfigDumpMode",
+        "sceCoredumpDebugTextOut",
+        "sceCoredumpGetStopInfoCpu",
+        "sceCoredumpGetStopInfoGpu",
+        "sceCoredumpGetThreadContextInfo",
+        "sceCoredumpRegisterCoredumpHandler",
+        "sceCoredumpUnregisterCoredumpHandler",
+        "sceCoredumpWriteUserData",
     ];
 
     private static readonly string[] Agc =

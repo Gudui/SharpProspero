@@ -60,8 +60,9 @@ public class PayloadWriterTests
         Assert.Equal((byte)'E', elf[1]);
         Assert.Equal(3, BinaryPrimitives.ReadUInt16LittleEndian(elf.AsSpan(0x10)));  // ET_DYN
         Assert.Equal(0x3E, BinaryPrimitives.ReadUInt16LittleEndian(elf.AsSpan(0x12))); // x86-64
-        Assert.NotEqual(0ul, BinaryPrimitives.ReadUInt64LittleEndian(elf.AsSpan(0x18))); // entry
-        Assert.Equal(3, BinaryPrimitives.ReadUInt16LittleEndian(elf.AsSpan(0x38)));   // three load segments
+        // The first load segment is based at VA zero and _start is its first symbol.
+        Assert.Equal(0ul, BinaryPrimitives.ReadUInt64LittleEndian(elf.AsSpan(0x18))); // entry
+        Assert.Equal(4, BinaryPrimitives.ReadUInt16LittleEndian(elf.AsSpan(0x38)));   // 3 LOAD + DYNAMIC
     }
 
     [Fact]
@@ -82,13 +83,11 @@ public class PayloadWriterTests
             }
         }
         Assert.Equal(3, loads);
-        Assert.Contains(4u | 1u, flags); // R+X text
-        Assert.Contains(4u, flags);      // R rodata
-        Assert.Contains(4u | 2u, flags); // R+W data
+        Assert.Equal([7u, 6u, 6u], flags); // corpus payload shape: RWE text, RW relro, RW data
     }
 
     [Fact]
-    public void RelocationSectionHoldsOnlyRelativeFixups()
+    public void RelocationSectionHoldsRelativeFixupsThenDynamicImports()
     {
         byte[] elf = BuildPayload();
         Assert.True(TryFindRela(elf, out int relaOff, out int relaSize));
@@ -98,8 +97,12 @@ public class PayloadWriterTests
         for (int i = 0; i < count; i++)
         {
             ulong info = BinaryPrimitives.ReadUInt64LittleEndian(elf.AsSpan(relaOff + i * 24 + 8));
-            Assert.Equal(8u, info & 0xFFFFFFFF);  // R_X86_64_RELATIVE
-            Assert.Equal(0u, info >> 32);          // no symbol
+            uint type = (uint)info;
+            Assert.Contains(type, new uint[] { 6, 8 }); // GLOB_DAT or RELATIVE
+            if (type == 8)
+                Assert.Equal(0u, info >> 32);
+            else
+                Assert.NotEqual(0u, info >> 32);
         }
     }
 
@@ -121,21 +124,21 @@ public class PayloadWriterTests
     [Fact]
     public void ConstructorsGetBaseRelativeFixups()
     {
-        // A payload with one .init_array entry adds three base-relative records over one without: the
-        // constructor pointer itself, and the two header pointers naming the constructor range.
+        // The dynamic table names the constructor range directly. Only the constructor pointer stored
+        // in the array needs a base-relative record.
         int withoutCtor = RelativeCount(BuildPayload(withConstructor: false));
         int withCtor = RelativeCount(BuildPayload(withConstructor: true));
-        Assert.Equal(withoutCtor + 3, withCtor);
+        Assert.Equal(withoutCtor + 1, withCtor);
     }
 
     [Fact]
-    public void StartCodeResolvesTheThreadPointerPrimitives()
+    public void StartCodeCarriesTheThreadBootstrapPrimitives()
     {
-        // The start code allocates and installs the thread-local block, so the allocator and the
-        // thread-pointer setter it resolves are named in the file.
+        // The v0.8 start code installs its own TCB directly, preserves the host FS base, and primes
+        // pthread_self before managed code runs.
         byte[] elf = BuildPayload();
-        Assert.True(ContainsBytes(elf, Encoding.ASCII.GetBytes("calloc\0")));
-        Assert.True(ContainsBytes(elf, Encoding.ASCII.GetBytes("amd64_set_fsbase\0")));
+        Assert.True(ContainsBytes(elf, Encoding.ASCII.GetBytes("pthread_self\0")));
+        Assert.True(ContainsBytes(elf, Encoding.ASCII.GetBytes("__sp_saved_fsbase\0")));
     }
 
     [Fact]

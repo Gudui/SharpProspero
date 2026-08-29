@@ -1,6 +1,7 @@
 ---
 title: Networking
-nav_order: 10
+parent: Application Modules
+nav_order: 6
 ---
 
 # Networking
@@ -171,10 +172,27 @@ if (response.IsSuccess)
     FileSystem.WriteAllBytes("/data/homebrew.pkg", response.Body);
 ```
 
-`Get` resolves the host in the URL itself and returns an `HttpResponse` with the `StatusCode` and the
-`Body`; `IsSuccess` is true for a 2xx code. `Create` accepts an optional user-agent string. `FileSystem`
-is covered in [Files and storage](storage.md); combined with the package installer in
+`Get` resolves the host in the URL itself and returns an `HttpResponse` with the `StatusCode`, the
+`Body` and the `Headers`; `IsSuccess` is true for a 2xx code, and `Header("Content-Type")` picks one
+header out without regard to case. `Create` accepts an optional user-agent string. `FileSystem` is
+covered in [Files and storage](storage.md); combined with the package installer in
 [Packages and devices](packages-devices.md), this downloads and installs a package from the network.
+
+`Post` sends a body and names what it is. `Send` is the general form: it takes any `HttpMethod`, an
+optional body, and header lines of the form `Name: value`.
+
+```csharp
+HttpResponse created = http.Send(
+    HttpMethod.Post,
+    "https://example.com/api/items",
+    Encoding.UTF8.GetBytes("""{"name":"one"}"""),
+    ["Content-Type: application/json", "Authorization: Bearer " + token]);
+
+string? location = created.Header("Location");
+```
+
+The body's length is declared on the request before it is sent, so a server that refuses a request
+without one accepts these. A `Head` request reads the headers and no body.
 
 ## An HTTP server
 

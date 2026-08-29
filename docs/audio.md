@@ -1,6 +1,7 @@
 ---
 title: Audio
-nav_order: 8
+parent: Application Modules
+nav_order: 4
 ---
 
 # Audio
@@ -67,6 +68,41 @@ the output.
 {: .warning }
 > `Output` blocks until the block has played, so a full audio loop paces itself to the hardware. Run it
 > on its own thread rather than the frame thread — see [Threading](threading.md).
+
+`LastOutputTime` reads the audio clock at the port's last output, so the difference between two readings
+says how far the output has advanced — which is how a caller works out whether its own mixing is keeping
+up. `GetPortState` reports where the samples are going and how many channels the destination takes;
+watching its `RerouteCounter` catches the player moving from the television to a headset, which is when a
+mix built for one speaker layout has to be rebuilt for another.
+
+## Output that never blocks the caller
+
+`AudioOutDevice` publishes no way to ask how much room its queue has left, so there is no telling in
+advance whether a push will block. `AudioQueueDevice` is the output that does answer that. It reports how
+many blocks are queued and how many more will fit, so a frame loop can mix exactly as much as the output
+can take and never stall.
+
+```csharp
+using var audio = AudioQueueDevice.OpenStereo(grain: 256, sampleRate: 48000, queueDepth: 4);
+short[] block = new short[audio.SamplesPerBlock];
+
+// In the frame loop:
+while (audio.FreeBlocks > 0)
+{
+    mixer.Fill(block);
+    audio.TryOutput(block);
+}
+```
+
+The queue holds `QueueDepth` blocks of `Grain` frames each. At 48 kHz a grain of 256 frames is about
+5.3 ms, so a depth of two is roughly 11 ms of buffered audio and a depth of eight about 43 ms — deeper
+survives a longer frame spike, shallower answers sooner. `QueuedBlocks` and `FreeBlocks` read one side
+each; `ReadQueue` reads both in one call. `TryOutput` queues a block only if there is room and reports
+whether it did; `Output` waits for room the way the blocking output does. `Gain` scales the port from 0
+to 1.
+
+This is a separate output path rather than a layer over `AudioOutDevice`, and an application uses one or
+the other.
 
 ## Generate tones and effects
 
@@ -374,3 +410,43 @@ the rendered block goes straight to `AudioOutDevice.Output`.
 Reach for this only when the `AudioMixer` above is not enough. The encoders' lower-level bindings,
 `M4aacEnc` and `At9Enc`, sit alongside it for finer control, and the spatial-audio and audio-job bindings
 are listed on the [Bindings](bindings.md) page.
+
+### Placing a sound in a scene
+
+The same class carries the calls that turn a listener and a source into the pitch and per-speaker levels
+a voice is then driven with:
+
+| Call | What it does |
+|---|---|
+| `sceNgs2GeomResetListenerParam`, `sceNgs2GeomResetSourceParam` | Fill a listener or a source with its defaults. |
+| `sceNgs2GeomCalcListener` | Turns the listener's placing into the working form the next call takes. Do this once a frame. |
+| `sceNgs2GeomApply` | Works out what one source sounds like to that listener, into a `SceNgs2GeomAttribute`. |
+
+`SceNgs2GeomAttribute.PitchRatio` goes to the voice's pitch and `Level` to its volume matrix. Choose what
+is worked out with `Ngs2GeomApplyFlags`; `Default` covers everything but the ambisonic form.
+
+Without a scene, `sceNgs2PanInit` and `sceNgs2PanGetVolumeMatrix` do the same from an angle and a
+distance per source. Prepare the workspace once with where the speakers sit, then ask for the levels.
+
+`sceNgs2ReportRegisterHandler` is the only channel a rejected rack or voice parameter is described
+through - the call that made it answers a single number - so register a handler for
+`Ngs2ReportType.Message` while bringing a graph up.
+
+## Object-based output
+
+`SharpProspero.Interop.Audio.AudioOut2` is the other output path, and an alternative to `AudioOutDevice`
+rather than a layer over it. A context holds a pool of ports and a queue; a port carries one stream of
+samples into a mix, and a port opened as an object is placed in space rather than fed to fixed channels.
+
+| Call | What it does |
+|---|---|
+| `sceAudioOut2Initialize` | Starts the service. |
+| `sceAudioOut2ContextResetParam`, `sceAudioOut2ContextQueryMemory` | Fill a context description with its defaults and report the memory it needs. |
+| `sceAudioOut2ContextCreate` | Creates the context in that memory. |
+| `sceAudioOut2PortCreate` | Opens a port of one `AudioOut2PortType`; the `Object` types are the placeable ones. |
+| `sceAudioOut2PortSetAttributes` | Supplies the samples and, for an object port, where it sits. |
+| `sceAudioOut2ContextAdvance`, `sceAudioOut2ContextPush` | Move to the next block and hand it to the output. |
+
+Samples and placing both arrive through the attribute list, so a frame is: set the attributes on each
+port, advance the context, push it. `sceAudioOut2GetSpeakerInfo` reports what the machine is playing
+through, and the speaker-array calls work out per-speaker levels for a source placed in space.

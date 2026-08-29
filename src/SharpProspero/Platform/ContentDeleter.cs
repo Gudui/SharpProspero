@@ -4,6 +4,7 @@
 using SharpProspero.Interop;
 using SharpProspero.Interop.Content;
 using SharpProspero.Interop.Sysmodule;
+using SharpProspero.Modules;
 using System;
 using System.Text;
 using Native = SharpProspero.Interop.Content.ContentDelete;
@@ -24,9 +25,13 @@ namespace SharpProspero.Platform;
 /// </example>
 public sealed unsafe class ContentDeleter : IDisposable
 {
+    // The loadable module the service lives in, owned from the moment it is loaded so that every way
+    // out of the open sequence gives it back rather than leaving it mapped for the life of the process.
+    private readonly SystemModule _module;
     private bool _disposed;
+    private bool _initialized;
 
-    private ContentDeleter() { }
+    private ContentDeleter(SystemModule module) => _module = module;
 
     /// <summary>
     /// The working heap the service is started with. It is not a size to choose: the service compares
@@ -39,13 +44,19 @@ public sealed unsafe class ContentDeleter : IDisposable
     /// <exception cref="ProsperoException">The service could not be started.</exception>
     public static ContentDeleter Open()
     {
-        SceResult.ThrowIfFailed(
-            Sysmodule.sceSysmoduleLoadModule((ushort)SystemModuleId.ContentDelete),
-            "sceSysmoduleLoadModule(ContentDelete)");
-
-        var param = new SceContentDeleteInitParam { HeapSize = HeapSize };
-        SceResult.ThrowIfFailed(Native.sceContentDeleteInitialize(&param), nameof(Native.sceContentDeleteInitialize));
-        return new ContentDeleter();
+        var deleter = new ContentDeleter(SystemModule.Load(SystemModuleId.ContentDelete));
+        try
+        {
+            var param = new SceContentDeleteInitParam { HeapSize = HeapSize };
+            SceResult.ThrowIfFailed(Native.sceContentDeleteInitialize(&param), nameof(Native.sceContentDeleteInitialize));
+            deleter._initialized = true;
+            return deleter;
+        }
+        catch
+        {
+            deleter.Dispose();
+            throw;
+        }
     }
 
     /// <summary>Deletes the content at <paramref name="path"/>.</summary>
@@ -76,7 +87,8 @@ public sealed unsafe class ContentDeleter : IDisposable
         if (_disposed)
             return;
         _disposed = true;
-        Native.sceContentDeleteTerminate();
-        Sysmodule.sceSysmoduleUnloadModule((ushort)SystemModuleId.ContentDelete);
+        if (_initialized)
+            Native.sceContentDeleteTerminate();
+        _module.Dispose();
     }
 }

@@ -4,6 +4,7 @@
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <EnableInternalTests>true</EnableInternalTests>
   </PropertyGroup>
 
   <ItemGroup>
@@ -16,10 +17,10 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\SharpProspero\SharpProspero.csproj" />
-    <ProjectReference Include="..\..\tools\SharpProspero.Prx\SharpProspero.Prx.csproj" />
-    <ProjectReference Include="..\..\tools\SharpProspero.Link\SharpProspero.Link.csproj" />
-    <ProjectReference Include="..\..\tools\SharpProspero.Texture\SharpProspero.Texture.csproj" />
+    <ProjectReference Include="..\..\src\SharpProspero\SharpProspero.csproj" AdditionalProperties="EnableInternalTests=true" />
+    <ProjectReference Include="..\..\tools\SharpProspero.Prx\SharpProspero.Prx.csproj" AdditionalProperties="EnableInternalTests=true" />
+    <ProjectReference Include="..\..\tools\SharpProspero.Link\SharpProspero.Link.csproj" AdditionalProperties="EnableInternalTests=true" />
+    <ProjectReference Include="..\..\tools\SharpProspero.Texture\SharpProspero.Texture.csproj" AdditionalProperties="EnableInternalTests=true" />
   </ItemGroup>
 
 </Project>

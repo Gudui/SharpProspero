@@ -5,6 +5,7 @@ using SharpProspero.Interop;
 using SharpProspero.Interop.Dialog;
 using SharpProspero.Interop.Sysmodule;
 using SharpProspero.Interop.UserService;
+using SharpProspero.Modules;
 using System;
 using System.Runtime.InteropServices;
 
@@ -41,11 +42,17 @@ public sealed unsafe class TextInputDialog : IDisposable
     private char* _title;
     private char* _placeholder;
     private readonly int _capacity;
+
+    // The loadable module the keyboard lives in, owned from the moment it is loaded so that every way
+    // out of the open sequence gives it back rather than leaving it mapped for the life of the process.
+    private readonly SystemModule _module;
     private bool _disposed;
+    private bool _initialized;
     private bool _finished;
 
-    private TextInputDialog(char* buffer, char* title, char* placeholder, int capacity)
+    private TextInputDialog(SystemModule module, char* buffer, char* title, char* placeholder, int capacity)
     {
+        _module = module;
         _buffer = buffer;
         _title = title;
         _placeholder = placeholder;
@@ -82,31 +89,30 @@ public sealed unsafe class TextInputDialog : IDisposable
         // The keyboard sits on the shared dialog subsystem and its own loadable module, both brought
         // up before its own init, or that init fails.
         CommonDialog.EnsureInitialized();
-        SceResult.ThrowIfFailed(
-            Sysmodule.sceSysmoduleLoadModule((ushort)SystemModuleId.ImeDialog),
-            "sceSysmoduleLoadModule(ImeDialog)");
-
-        int user = userId;
-        if (user == int.MinValue)
-        {
-            int initial;
-            SceResult.ThrowIfFailed(UserService.sceUserServiceGetInitialUser(&initial),
-                nameof(UserService.sceUserServiceGetInitialUser));
-            user = initial;
-        }
 
         // The buffer holds the entered text and must outlive the dialog, so it lives on the unmanaged
-        // heap for the object's lifetime. Room for maxLength characters plus the terminator.
+        // heap for the object's lifetime. Room for maxLength characters plus the terminator. The object
+        // takes the module and the buffers before anything that can fail runs, so every way out of the
+        // sequence below gives all of them back.
         int capacity = maxLength + 1;
-        char* buffer = AllocString(capacity);
-        char* titlePtr = CopyString(title);
-        char* placeholderPtr = CopyString(placeholder);
-        if (!string.IsNullOrEmpty(initialText))
-            WriteString(buffer, capacity, initialText);
-
-        var dialog = new TextInputDialog(buffer, titlePtr, placeholderPtr, capacity);
+        var dialog = new TextInputDialog(
+            SystemModule.Load(SystemModuleId.ImeDialog),
+            AllocString(capacity), CopyString(title), CopyString(placeholder), capacity);
         try
         {
+            char* buffer = dialog._buffer;
+            if (!string.IsNullOrEmpty(initialText))
+                WriteString(buffer, capacity, initialText);
+
+            int user = userId;
+            if (user == int.MinValue)
+            {
+                int initial;
+                SceResult.ThrowIfFailed(UserService.sceUserServiceGetInitialUser(&initial),
+                    nameof(UserService.sceUserServiceGetInitialUser));
+                user = initial;
+            }
+
             SceImeDialogParam param;
             ImeDialog.InitializeParam(&param);
             param.UserId = user;
@@ -116,8 +122,8 @@ public sealed unsafe class TextInputDialog : IDisposable
             param.Option = options;
             param.MaxTextLength = (uint)maxLength;
             param.InputTextBuffer = buffer;
-            param.Title = titlePtr;
-            param.Placeholder = placeholderPtr;
+            param.Title = dialog._title;
+            param.Placeholder = dialog._placeholder;
 
             // Center the keyboard on a standard 1080p screen using the size the service reports for
             // these parameters. Left/top alignment with the panel's own extent gives a true center.
@@ -132,6 +138,7 @@ public sealed unsafe class TextInputDialog : IDisposable
 
             SceResult.ThrowIfFailed(ImeDialog.sceImeDialogInit(&param, null),
                 nameof(ImeDialog.sceImeDialogInit));
+            dialog._initialized = true;
             return dialog;
         }
         catch
@@ -180,10 +187,13 @@ public sealed unsafe class TextInputDialog : IDisposable
             return;
         _disposed = true;
 
-        if (!_finished)
-            ImeDialog.sceImeDialogAbort();
-        ImeDialog.sceImeDialogTerm();
-        Sysmodule.sceSysmoduleUnloadModule((ushort)SystemModuleId.ImeDialog);
+        if (_initialized)
+        {
+            if (!_finished)
+                ImeDialog.sceImeDialogAbort();
+            ImeDialog.sceImeDialogTerm();
+        }
+        _module.Dispose();
 
         Free(ref _buffer);
         Free(ref _title);

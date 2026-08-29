@@ -13,7 +13,7 @@
 // turned away while its program headers are scanned, so it is part of the required shape rather than
 // a convenience.
 //
-// Structure is validated against the reference module format. Loading on the device is the final step.
+// Structure follows the required dynamic section format. Loading on the device is the final step.
 
 using SharpProspero.Prx;
 using System;
@@ -162,6 +162,10 @@ public static class DynamicWriter
         /// <summary>The name the providing module publishes; the identifier is computed from this.</summary>
         public required string PublishedName { get; init; }
         public required string ModuleName { get; init; }
+        /// <summary>The library that publishes the name, which the long form is built from.</summary>
+        public required string LibraryName { get; init; }
+        /// <summary>The name the providing module publishes itself under, for the same reason.</summary>
+        public required string PublishedModuleName { get; init; }
         public int ModuleId { get; set; }
         public int LibraryId { get; set; }
         public string MangledName { get; set; } = "";
@@ -231,6 +235,10 @@ public static class DynamicWriter
                 PlainName = imp.Name,
                 PublishedName = imp.PublishedName ?? imp.Name,
                 ModuleName = imp.Soname,
+                LibraryName = imp.LibraryName,
+                // The name the providing module publishes itself under, which is what its own long
+                // forms carry - not the file it lives in, which is often spelled differently.
+                PublishedModuleName = imp.ModuleName,
                 ModuleId = n + 1,
                 LibraryId = l
             });
@@ -351,12 +359,18 @@ public static class DynamicWriter
                     list.Add((obj, i));
                 }
             // Known names in the recorded order, then anything else in the order it was first seen.
+            // The tie-break reads a snapshot rather than the list being sorted: asking the list where a
+            // name currently sits, while the sort is moving names around inside it, answers about the
+            // arrangement so far rather than the one the names arrived in.
+            var firstSeen = new Dictionary<string, int>(seen.Count, StringComparer.Ordinal);
+            for (int i = 0; i < seen.Count; i++)
+                firstSeen[seen[i]] = i;
             seen.Sort((a, b) =>
             {
                 int ra = Array.IndexOf(order, a), rb = Array.IndexOf(order, b);
                 if (ra < 0) ra = order.Length;
                 if (rb < 0) rb = order.Length;
-                return ra != rb ? ra.CompareTo(rb) : seen.IndexOf(a).CompareTo(seen.IndexOf(b));
+                return ra != rb ? ra.CompareTo(rb) : firstSeen[a].CompareTo(firstSeen[b]);
             });
             // Within either constructor array, the order is the one each section's own name asks for:
             // a section named for a priority runs before one named for a higher priority, and the
@@ -498,9 +512,10 @@ public static class DynamicWriter
         // library records use the bare name (no extension), matching the reference layout.
         string fileName = moduleFileName ?? (kind == ModuleKind.Library ? "prospero_module.prx" : "eboot.bin");
         string publishedModuleName = moduleName ?? System.IO.Path.GetFileNameWithoutExtension(fileName);
+        string exportLibraryPublishedName = exportLibraryName ?? publishedModuleName;
         var dynstr = new StringTable();
         int moduleInfoName = dynstr.Add(publishedModuleName);
-        int exportLibNameOffset = dynstr.Add(exportLibraryName ?? publishedModuleName);
+        int exportLibNameOffset = dynstr.Add(exportLibraryPublishedName);
         int origFileNameOff = dynstr.Add(fileName);
         var moduleRecords = new (int SonameOff, int ModuleNameOff, int ModuleId, ushort ModuleVersion)[moduleIndex.Count];
         foreach ((string soname, int n) in moduleIndex)
@@ -640,18 +655,22 @@ public static class DynamicWriter
         }
         byte[] dynstrBytes = dynstr.ToBytes();
         byte[] dynsymBytes = [.. dynsym];
-        // The hash table is indexed by the name a symbol was written with, not by the shortened name the
-        // string table ends up holding: the string table holds the shortened form, while the bucket a
-        // symbol sits in is the hash of the plain name it had before it was shortened. Hashing the
-        // shortened form instead files every shortened symbol in a bucket no lookup ever reaches.
+        // The bucket a symbol sits in is the hash of its long form - the identifier, the library that
+        // publishes it and the module that carries it, joined by hashes - and not of the shortened
+        // name the string table holds nor of the plain name it was computed from. That is what the
+        // loader hashes when it searches a module for a name, so an export filed under anything else
+        // sits in a bucket no lookup reaches and cannot be found at all. Measured on two modules the
+        // console ships: twenty-six of twenty-six exports land where the long form puts them and none
+        // where either other form does.
+        //
+        // A module's own imports are never searched for in its own table - the loader looks them up in
+        // the module that publishes them - so what they hash to cannot be observed. They are given the
+        // same long form for consistency rather than because anything reads it.
         var dynsymNames = new List<string>(imports.Count + exports.Count + 1) { "" };
         foreach (Import imp in imports)
-            // The published name, because that is the one the shortened form in the string table was
-            // computed from. Hashing the name the reference carried instead puts a routine that stands
-            // in front of a published name into a bucket nothing looks in.
-            dynsymNames.Add(imp.PublishedName);
-        foreach ((string _, ElfObject _, ElfSymbol sym, bool _) in exports)
-            dynsymNames.Add(sym.Name);
+            dynsymNames.Add($"{SceNid.Compute(imp.PublishedName)}#{imp.LibraryName}#{imp.PublishedModuleName}");
+        foreach ((string mangled, ElfObject _, ElfSymbol _, bool _) in exports)
+            dynsymNames.Add($"{mangled.Split('#')[0]}#{exportLibraryPublishedName}#{publishedModuleName}");
         byte[] hashBytes = BuildSysVHash(dynsymNames);
         // The imports that something calls, in the order they were collected. Only these take a slot in
         // the linkage table and a binding record; the rest are reached through a relocation on the

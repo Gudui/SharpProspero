@@ -48,7 +48,8 @@ param(
     [string]$SystemVersion = "",
     [string]$SdkRoot = "",
     [string]$TitleId = "",
-    [switch]$Payload
+    [switch]$Payload,
+    [switch]$DiagnosticBreadcrumbs
 )
 
 $ErrorActionPreference = "Stop"
@@ -131,6 +132,7 @@ if (-not (Test-Path $objectPath)) {
 }
 Write-Host "  Compiled $targetName.o for $rid."
 
+
 # 2. Gather the ahead-of-time runtime archives. They are restored by the publish above (the .NET SDK's
 # NativeAOT runtime pack), so they are found in the package cache rather than assembled by hand. On
 # Windows the cache lives in WSL, so the archives are copied out to the project's obj folder.
@@ -209,9 +211,59 @@ if ($Payload) {
     $name = [System.IO.Path]::GetFileNameWithoutExtension($ProjectPath)
     New-Item -ItemType Directory -Force -Path $OutputFolder | Out-Null
     $elf = Join-Path $OutputFolder "$name.elf"
+
+    # Extract ProsperoSprx ItemGroup entries from the project. Each entry becomes a --sprx flag
+    # so the linker emits DT_NEEDED for the declared SPRX modules. Templates that declare no
+    # <ProsperoSprx> items get the three defaults (libkernel_web, libSceLibcInternal, libSceNet).
+    $sprxItems = @()
+    try {
+        $sprxRaw = (& dotnet msbuild $ProjectPath -getItem:ProsperoSprx `
+            -p:Configuration=$Configuration -p:RuntimeIdentifier=$rid "-p:SharpProsperoRoot=$SdkRoot" --nologo 2>$null | Out-String).Trim()
+        if ($sprxRaw) {
+            $sprxParsed = $sprxRaw | ConvertFrom-Json
+            # MSBuild 18.x wraps -getItem output in {"Items":{"ProsperoSprx":[...]}};
+            # older versions may return a bare array. Handle both.
+            $arr = if ($sprxParsed.Items) { $sprxParsed.Items.ProsperoSprx } else { $sprxParsed }
+            if ($arr) {
+                foreach ($item in $arr) {
+                    $sprxItems += $item.Identity
+                }
+            }
+        }
+    } catch {
+        # Silently ignore: older MSBuild versions may not support -getItem.
+    }
+    if ($sprxItems.Count -gt 0) {
+        Write-Host "  SPRX: $($sprxItems -join ', ')"
+    }
+
+    # Extract ProsperoKernelSprx from the project. When set, it replaces the default
+    # libkernel_web.sprx with a different kernel module (e.g. libkernel_sys.sprx for
+    # process-level payloads like the SDK samples/mntinfo and samples/hwinfo).
+    $kernelSprx = ""
+    try {
+        $kernelSprx = (& dotnet msbuild $ProjectPath -getProperty:ProsperoKernelSprx `
+            -p:Configuration=$Configuration -p:RuntimeIdentifier=$rid "-p:SharpProsperoRoot=$SdkRoot" --nologo 2>$null | Out-String).Trim()
+    } catch { }
+    if ($kernelSprx) {
+        Write-Host "  Kernel SPRX: $kernelSprx"
+    }
+
+    # Every payload links the full CRT and all runtime archives. There are no profile tiers.
     $linkArgs = @("link", "--kind", "payload", "--self-contained", "--obj", $objectPath)
-    foreach ($o in Get-ChildItem -Path $supportDir -File -Filter *.o) { $linkArgs += @("--obj", $o.FullName) }
+    foreach ($s in $sprxItems) { $linkArgs += @("--sprx", $s) }
+    if ($kernelSprx) { $linkArgs += @("--kernel-sprx", $kernelSprx) }
+    # The payload CRT supplies its own start sequence.  libbootstrapper.o is included because it
+    # provides the NativeAOT runtime bootstrap (RhInitialize, RhRegisterOSModule, InitializeModules)
+    # that must run before the managed entry point.  Its main() calls __managed__Main, which the
+    # template's [UnmanagedCallersOnly(EntryPoint = "__managed__Main")] exports.
+    # libbootstrapperdll.o is the DLL-mode bootstrapper (PRX modules) and is excluded.
+    foreach ($o in Get-ChildItem -Path $supportDir -File -Filter *.o) {
+        if ($o.Name -eq 'libbootstrapperdll.o') { continue }
+        $linkArgs += @("--obj", $o.FullName)
+    }
     foreach ($a in Get-ChildItem -Path $supportDir -File -Filter *.a) { $linkArgs += @("--lib", $a.FullName) }
+    if ($DiagnosticBreadcrumbs) { $linkArgs += @("--diagnostics") }
     $linkArgs += @("--out", $elf)
     & dotnet run --project (Join-Path $SdkRoot "tools/SharpProspero.Bindings.Generator/SharpProspero.Bindings.Generator.csproj") `
         -c $Configuration -- @linkArgs
@@ -352,8 +404,9 @@ if ($Output -eq "Folder") {
 }
 
 Write-Host "== Package =="
+$packArgs = @("--in", $moduleFolder, "--out", $OutputFolder)
 & dotnet run --project (Join-Path $SdkRoot "tools/SharpProspero.Packager/SharpProspero.Packager.csproj") `
-    -c $Configuration -- --in $moduleFolder --out $OutputFolder
+    -c $Configuration -- @packArgs
 if ($LASTEXITCODE -ne 0) { throw "Packaging failed." }
 
 Write-Host "Package written to $OutputFolder"

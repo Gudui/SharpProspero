@@ -57,18 +57,29 @@ public static unsafe class AgcDevice
         public byte Flag;
     }
 
+    // The largest submission the graphics library accepts, in 32-bit words, and the status it answers
+    // with above it. The limit is not a diagnostic nicety: the driver folds the word count into a
+    // twenty-bit field of the packet it builds, without checking it, so a larger recording would run as
+    // its low twenty bits - a truncated command stream with nothing reported.
+    private const uint MaximumSubmitDwords = 0xFFFFF;
+    private const int SubmitSizeTooLarge = unchecked((int)0x8A6C0020);
+
     /// <summary>
     /// Submits a recorded command buffer to the graphics queue. The buffer's recorded contents run on
     /// the GPU; keep the buffer and everything it references alive until the GPU has finished. A buffer
     /// with nothing recorded is not submitted.
     /// </summary>
-    /// <exception cref="ProsperoException">The driver refused the submission.</exception>
+    /// <exception cref="ProsperoException">
+    /// The recording is larger than the graphics library accepts, or the driver refused the submission.
+    /// </exception>
     public static void Submit(DrawCommandBuffer commandBuffer)
     {
         ArgumentNullException.ThrowIfNull(commandBuffer);
         uint words = commandBuffer.SubmitSizeDwords;
         if (words == 0)
             return;
+        if (words > MaximumSubmitDwords)
+            throw new ProsperoException(nameof(SceAgcDriver.sceAgcDriverSubmitDcb), SubmitSizeTooLarge);
 
         var description = new SubmitDescription
         {

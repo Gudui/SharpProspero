@@ -109,12 +109,22 @@ public static class Log
 internal static class LogFormat
 {
     /// <summary>Builds the full log line, without a trailing newline.</summary>
+    /// <remarks>
+    /// The time is built from its parts rather than through a format string. Handing a format string
+    /// to a date reaches the general formatter, which carries the time-zone specifiers, which asks for
+    /// the local time zone, which reads a time-zone database off the file system. That database is not
+    /// there, and the cost is not a failure at run time: the reader pulls in the process layer of the
+    /// run-time support library, and thirteen of the names that layer needs are published by nothing,
+    /// so any module that writes a log line fails to link. The failure names those thirteen and says
+    /// nothing about a timestamp.
+    /// </remarks>
     public static string Line(LogLevel level, string message)
     {
         string time;
         try
         {
-            time = SystemClock.LocalNow.ToString("HH:mm:ss.fff");
+            DateTime now = SystemClock.LocalNow;
+            time = $"{Pad2(now.Hour)}:{Pad2(now.Minute)}:{Pad2(now.Second)}.{Pad3(now.Millisecond)}";
         }
         catch
         {
@@ -123,6 +133,15 @@ internal static class LogFormat
         }
         return $"{time} {Tag(level)} {message}";
     }
+
+    private static string Pad2(int value) => value < 10 ? "0" + value.ToString() : value.ToString();
+
+    private static string Pad3(int value) => value switch
+    {
+        < 10 => "00" + value.ToString(),
+        < 100 => "0" + value.ToString(),
+        _ => value.ToString(),
+    };
 
     private static string Tag(LogLevel level) => level switch
     {

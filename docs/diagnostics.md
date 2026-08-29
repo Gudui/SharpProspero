@@ -1,6 +1,7 @@
 ---
 title: Diagnostics
-parent: Application
+parent: Application host
+grand_parent: Application Modules
 nav_order: 3
 ---
 

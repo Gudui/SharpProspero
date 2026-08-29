@@ -266,7 +266,10 @@ public static class Linker
     /// of them, so the resolver must not call them unresolved. Where the image starts, where its code
     /// ends, and where its frame index sits: the last two are what lets a module describe itself to
     /// whatever walks the stack, since its own header table is inside the code group and that group
-    /// cannot be read.
+    /// cannot be read. The section-boundary names below name group edges the writer draws itself
+    /// (the writable image bounds, the constructor and destructor array bounds, the zero-filled data
+    /// bounds, and the legacy text/data/end trio); a run-time reference to any of these succeeds
+    /// against the writer's own layout addresses, so they must never be routed to the resolver.
     /// </summary>
     internal static readonly IReadOnlySet<string> LinkerProvided =
         new HashSet<string>(StringComparer.Ordinal)
@@ -274,6 +277,14 @@ public static class Linker
             "_init", "_fini",
             CompatEmitter.ModuleBaseSymbol, CompatEmitter.TextEndSymbol, CompatEmitter.FrameIndexSymbol,
             CompatEmitter.FrameIndexEndSymbol,
+            "__image_start", "__image_end",
+            "__bss_start", "__bss_end",
+            "__init_array_start", "__init_array_end",
+            "__fini_array_start", "__fini_array_end",
+            "__preinit_array_start", "__preinit_array_end",
+            "_DYNAMIC",
+            "edata", "end", "etext",
+            "_edata", "_end", "_etext",
         };
 
     internal static bool IsEncapsulationSymbol(string name, ICollection<string> sectionNames, out string section, out bool isStop)

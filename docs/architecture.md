@@ -87,31 +87,50 @@ trigger travel, motion as orientation, acceleration and angular velocity, and th
 and drives the controller's motors and light bar. The frame loop keeps the previous sample so the
 per-frame context can report button edges (pressed and released this frame).
 
-### Audio, timing, files and modules
+### Audio
 
 `SharpProspero.Audio` opens a stereo output port that paces the caller to the audio clock.
+
+### Timing
+
 `SharpProspero.Timing` holds a monotonic clock (`GameClock`) for frame pacing, a wall-clock reader
 (`SystemClock`) for the calendar date and time, and timers driven by the frame delta: `Cooldown`,
 `Interval`, `Countdown`, `FixedTimestep` for a fixed simulation step, and `FrameScheduler` for
-delayed and repeating callbacks. `SharpProspero.Storage` reads the files bundled with
-the module (`PackageFile`) and browses and changes files and directories by path (`FileSystem`).
+delayed and repeating callbacks.
+
+### Storage
+
+`SharpProspero.Storage` reads the files bundled with the module (`PackageFile`) and browses and
+changes files and directories by path (`FileSystem`).
+
+### Modules
+
 `SharpProspero.Modules` loads a system module by id or a supplied `.prx` at run time.
+
+### Media
+
 `SharpProspero.Media` plays a media file and hands back decoded audio frames.
-`SharpProspero.Numerics` holds the arithmetic game code is built on: `Vector2` and `RectF`, the
-scalar helpers in `MathUtil`, the overlap tests in `Collision`, a `Quadtree<T>` spatial index, a
+
+### Numerics
+
+`SharpProspero.Numerics` holds the arithmetic game code runs on: `Vector2` and `RectF`, the scalar
+helpers in `MathUtil`, the overlap tests in `Collision`, a `Quadtree<T>` spatial index, a
 `RectPacker` that fits many small rectangles into one atlas, coherent `NoiseField` sampling for
 procedural content, a reproducible gameplay generator (`GameRandom`) drawing its seed from the
 entropy source (`HardwareEntropy`), a `WeightedTable<T>` for drop and encounter draws, and the 3D
 set: `Camera3D`, `Transform`, `Ray`, and the `BoundingBox` and `BoundingSphere` volumes a `Frustum`
 culls against.
+
+### Platform
+
 `SharpProspero.Platform` is the system-service layer: console facts, signed-in users and system
 parameters, system settings and the events the module receives, the overlay dialogs and
 notifications, save data, trophies and the telemetry behind them, the content library and screen
 capture, installing and launching titles, the attached storage and disc devices, and networking from
-a TCP or UDP socket up to an HTTP client and server. Services that a title does not link
-against are loaded at run time and resolved by name through `SystemLibrary`, so no extra library is
-needed to reach them. `FirmwareVersion` and `FirmwareSupport` read the running system version and
-report whether the SDK supports it, and `FirmwareRegistry` holds, in one place, what each
+a TCP or UDP socket up to an HTTP client and server. Services that a title does not link against
+are loaded at run time and resolved by name through `SystemLibrary`, so no extra library is needed
+to reach them. `FirmwareVersion` and `FirmwareSupport` read the running system version and report
+whether the SDK supports it, and `FirmwareRegistry` holds, in one place, what each
 resolved-by-name service depends on and the version it was confirmed on. See
 [Firmware compatibility](firmware.md).
 
@@ -135,6 +154,20 @@ low and any percentile, as a text readout or a graph. See [Diagnostics](diagnost
 so an application does not draw its interface by hand. A `UiScreen` lays a tree of controls out into a
 rectangle, moves focus with the controller, and draws it on a `Surface`. The layout, focus navigation
 and input handling are plain logic with no device dependency; only the drawing touches the framebuffer.
+
+### Payload
+
+`SharpProspero.Payload` provides the API surface a payload uses instead of the application host.
+`PayloadNetwork` wraps the plain socket calls the operating-system library publishes by name (a
+payload has no dynamic linker, so the managed network types an application module uses do not
+resolve). `PayloadKernel` and `PayloadKernelIo` walk the kernel's process list and modify process
+credentials and filesystem jails through the CRT-emitted per-field accessors (initialized once
+during CRT startup from the loader's `payload_args` block). `PayloadEntryPoint` holds the loader's
+argument pointer. `PayloadFileSystem`, `PayloadProcess`, `PayloadNotification`,
+`PayloadHardwareInfo`, `PayloadSysctl`, `PayloadDebug`, `PayloadDlfcn`, `PayloadHttp2`,
+`PayloadBrowser`, `PayloadRandom`, and `PayloadUserService` each expose one subsystem of the
+device through the syscall gateway the CRT provides. `KernelOffsets1001` records the structure
+offsets for firmware 10.01.
 
 ### Application
 

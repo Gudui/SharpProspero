@@ -1,6 +1,7 @@
 ---
 title: Packages and devices
 parent: System services
+grand_parent: Application Modules
 nav_order: 6
 ---
 

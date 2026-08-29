@@ -39,7 +39,46 @@ public static unsafe partial class KernelClock
     [LibraryImport(Lib)]
     public static partial int sceKernelClockGettime(int clockId, KernelTimespec* time);
 
+    /// <summary>Reads the smallest step clock <paramref name="clockId"/> can report.</summary>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceKernelClockGetres(int clockId, KernelTimespec* time);
+
     /// <summary>Suspends the calling thread for <paramref name="microseconds"/>.</summary>
     [LibraryImport(Lib)]
     public static partial int sceKernelUsleep(uint microseconds);
+
+    /// <summary>
+    /// Suspends the calling thread for <paramref name="requested"/>. When the wait ends early the time
+    /// left is written to <paramref name="remaining"/>, which may be null.
+    /// </summary>
+    /// <returns>Zero when the whole interval elapsed, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceKernelNanosleep(KernelTimespec* requested, KernelTimespec* remaining);
+
+    /// <summary>
+    /// The monotonic counter that starts at process launch, in the counter's own units rather than in
+    /// microseconds. Divide by <see cref="sceKernelGetProcessTimeCounterFrequency"/> for seconds.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial ulong sceKernelGetProcessTimeCounter();
+
+    /// <summary>How many units of <see cref="sceKernelGetProcessTimeCounter"/> make one second.</summary>
+    [LibraryImport(Lib)]
+    public static partial ulong sceKernelGetProcessTimeCounterFrequency();
+
+    /// <summary>The processor's own cycle counter.</summary>
+    [LibraryImport(Lib)]
+    public static partial ulong sceKernelReadTsc();
+
+    /// <summary>How many units of <see cref="sceKernelReadTsc"/> make one second.</summary>
+    [LibraryImport(Lib)]
+    public static partial ulong sceKernelGetTscFrequency();
+
+    /// <summary>
+    /// Which processor the calling thread is running on at this instant. A thread free to move reports a
+    /// different number from one call to the next.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceKernelGetCurrentCpu();
 }

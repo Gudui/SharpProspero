@@ -4,7 +4,9 @@
 using SharpProspero.Interop;
 using SharpProspero.Interop.Audio;
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Threading;
 
 namespace SharpProspero.Audio;
 
@@ -22,7 +24,8 @@ public readonly record struct AudioDecodeResult(int BytesConsumed, int BytesProd
 /// Load the codec's system module before creating a decoder
 /// (<c>SystemModule.Load(SystemModuleId.AudioDec)</c>), and dispose the decoder when finished. The
 /// settings and the reported stream details live in unmanaged memory the decoder owns, so a decode
-/// call allocates nothing. It is not thread-safe; use one per thread.
+/// call allocates nothing. A decoder is not thread-safe; use one per thread. Several decoders of the
+/// same form may be alive at once and share the library underneath them.
 /// </remarks>
 /// <example>
 /// <code>
@@ -93,19 +96,42 @@ public sealed unsafe class AudioDecoder : IDisposable
             info => ((SceAudiodecMp3Info*)info)->Size = (uint)sizeof(SceAudiodecMp3Info));
     }
 
+    /// <summary>The rates a raw-block Advanced Audio Coding stream can be decoded at, in hertz.</summary>
+    public static ReadOnlySpan<int> AacSampleRates =>
+        [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000];
+
     /// <summary>
     /// Creates a decoder for MPEG-4 Advanced Audio Coding. <paramref name="selfDescribingFrames"/>
-    /// suits a stream whose frames carry their own header, which is the usual case for a file.
+    /// suits a stream whose frames carry their own header, which is the usual case for a file; a stream
+    /// of raw blocks carries no rate of its own, so <paramref name="rawBlockSampleRate"/> must give it.
     /// </summary>
+    /// <param name="maxChannels">The most channels to decode, up to <see cref="Audiodec.AacMaxChannels"/>.</param>
+    /// <param name="selfDescribingFrames">True when every frame carries its own header.</param>
+    /// <param name="highEfficiency">True to decode the high-efficiency form.</param>
+    /// <param name="wordSize">The sample form to write.</param>
+    /// <param name="rawBlockSampleRate">
+    /// The rate to decode raw blocks at, one of <see cref="AacSampleRates"/>. Required when
+    /// <paramref name="selfDescribingFrames"/> is false and ignored otherwise.
+    /// </param>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <paramref name="maxChannels"/> is out of range, or the stream is raw blocks and
+    /// <paramref name="rawBlockSampleRate"/> is not one the decoder offers.
+    /// </exception>
     /// <exception cref="ProsperoException">The library or the decoder could not be created.</exception>
     public static AudioDecoder CreateAac(
         int maxChannels = 2,
         bool selfDescribingFrames = true,
         bool highEfficiency = false,
-        AudiodecWordSize wordSize = AudiodecWordSize.Signed16)
+        AudiodecWordSize wordSize = AudiodecWordSize.Signed16,
+        int rawBlockSampleRate = 0)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxChannels);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(maxChannels, Audiodec.AacMaxChannels);
+
+        // The pair of numbers below is handed to the decoder core as its whole configuration, and for
+        // raw blocks the index is the only place the output rate can come from. A stream whose frames
+        // describe themselves carries its own rate, so the index is left at the historical value there.
+        uint frequencyIndex = selfDescribingFrames ? AdtsSamplingFrequencyIndex : RateIndex(rawBlockSampleRate);
 
         int output = Audiodec.AacMaxFrameSamples * maxChannels * BytesPerSample(wordSize);
         return Create(
@@ -116,25 +142,43 @@ public sealed unsafe class AudioDecoder : IDisposable
                 p->Size = (uint)sizeof(SceAudiodecParamM4aac);
                 p->WordSize = (int)wordSize;
                 p->ConfigNumber = selfDescribingFrames ? 1u : 2u;
-                p->SamplingFrequencyIndex = 4;   // 44.1 kHz, used only for raw blocks
+                p->SamplingFrequencyIndex = frequencyIndex;
                 p->MaxChannels = (uint)maxChannels;
                 p->EnableHeAac = highEfficiency ? 1u : 0u;
             },
             info => ((SceAudiodecM4aacInfo*)info)->Size = (uint)sizeof(SceAudiodecM4aacInfo));
     }
 
+    // The index the header path has always carried. The decoder only bounds-checks it for raw blocks.
+    private const uint AdtsSamplingFrequencyIndex = 4;
+
+    private static uint RateIndex(int rawBlockSampleRate)
+    {
+        ReadOnlySpan<int> rates = AacSampleRates;
+        for (int i = 0; i < rates.Length; i++)
+        {
+            if (rates[i] == rawBlockSampleRate)
+                return (uint)i;
+        }
+        throw new ArgumentOutOfRangeException(
+            nameof(rawBlockSampleRate), rawBlockSampleRate,
+            "A raw-block stream carries no rate of its own, so one of the twelve rates in AacSampleRates must be given.");
+    }
+
     private static AudioDecoder Create(
         AudiodecCodecType codec, int paramSize, int infoSize, int suggestedOutput,
         Action<IntPtr> fillParam, Action<IntPtr> fillInfo)
     {
-        SceResult.ThrowIfFailed(Audiodec.sceAudiodecInitLibrary(codec), nameof(Audiodec.sceAudiodecInitLibrary));
+        AcquireLibrary(codec);
 
-        // One block holds every structure the decoder points at, so its lifetime matches this object
-        // and a decode call touches no managed allocation.
-        int total = sizeof(SceAudiodecCtrl) + sizeof(SceAudiodecAuInfo) + sizeof(SceAudiodecPcmItem) + paramSize + infoSize;
-        void* block = NativeMemory.AllocZeroed((nuint)total);
+        void* block = null;
         try
         {
+            // One block holds every structure the decoder points at, so its lifetime matches this
+            // object and a decode call touches no managed allocation.
+            int total = sizeof(SceAudiodecCtrl) + sizeof(SceAudiodecAuInfo) + sizeof(SceAudiodecPcmItem) + paramSize + infoSize;
+            block = NativeMemory.AllocZeroed((nuint)total);
+
             byte* at = (byte*)block;
             SceAudiodecCtrl* ctrl = (SceAudiodecCtrl*)at; at += sizeof(SceAudiodecCtrl);
             SceAudiodecAuInfo* au = (SceAudiodecAuInfo*)at; at += sizeof(SceAudiodecAuInfo);
@@ -158,9 +202,49 @@ public sealed unsafe class AudioDecoder : IDisposable
         }
         catch
         {
-            NativeMemory.Free(block);
-            Audiodec.sceAudiodecTermLibrary(codec);
+            if (block != null)
+                NativeMemory.Free(block);
+            ReleaseLibrary(codec);
             throw;
+        }
+    }
+
+    // Starting and stopping the library is a per-codec, per-process operation, not a per-decoder one:
+    // the start registers the codec once against the single service context the module holds, and the
+    // stop unregisters it again, which would leave every other decoder of that codec running against a
+    // codec the service no longer knows. Counting the live decoders of each codec pairs the start with
+    // the first of them and the stop with the last.
+    private static readonly Lock LibraryLock = new();
+    private static readonly Dictionary<AudiodecCodecType, int> LibraryUsers = [];
+
+    private static void AcquireLibrary(AudiodecCodecType codec)
+    {
+        lock (LibraryLock)
+        {
+            if (LibraryUsers.TryGetValue(codec, out int users))
+            {
+                LibraryUsers[codec] = users + 1;
+                return;
+            }
+            SceResult.ThrowIfFailed(
+                Audiodec.sceAudiodecInitLibrary(codec), nameof(Audiodec.sceAudiodecInitLibrary));
+            LibraryUsers[codec] = 1;
+        }
+    }
+
+    private static void ReleaseLibrary(AudiodecCodecType codec)
+    {
+        lock (LibraryLock)
+        {
+            if (!LibraryUsers.TryGetValue(codec, out int users))
+                return;
+            if (users > 1)
+            {
+                LibraryUsers[codec] = users - 1;
+                return;
+            }
+            LibraryUsers.Remove(codec);
+            Audiodec.sceAudiodecTermLibrary(codec);
         }
     }
 
@@ -220,7 +304,10 @@ public sealed unsafe class AudioDecoder : IDisposable
         _ => 4,
     };
 
-    /// <summary>Destroys the decoder and stops the library for its form.</summary>
+    /// <summary>
+    /// Destroys the decoder, and stops the library for its form once the last decoder of that form has
+    /// gone.
+    /// </summary>
     public void Dispose()
     {
         if (_disposed)
@@ -228,6 +315,6 @@ public sealed unsafe class AudioDecoder : IDisposable
         _disposed = true;
         Audiodec.sceAudiodecDeleteDecoder(_handle);
         NativeMemory.Free(_block);
-        Audiodec.sceAudiodecTermLibrary(_codec);
+        ReleaseLibrary(_codec);
     }
 }

@@ -32,11 +32,20 @@ public static unsafe partial class ErrorDialog
 {
     private const string Lib = "libSceErrorDialog";
 
-    /// <summary>Zeroes <paramref name="param"/> and sets its size.</summary>
+    /// <summary>
+    /// Clears <paramref name="param"/>, sets its size, and names the system profile as the user.
+    /// </summary>
+    /// <remarks>
+    /// The user has to be named. Clearing the block leaves it at nought, and the dialog refuses that
+    /// outright - it takes an identifier from one to two hundred and fifty-five, or one of the larger
+    /// range the platform assigns, and nothing else. Set <see cref="SceErrorDialogParam.UserId"/> to a
+    /// real signed-in user where the message belongs to one.
+    /// </remarks>
     public static void InitializeParam(SceErrorDialogParam* param)
     {
         *param = default;
         param->Size = sizeof(SceErrorDialogParam);
+        param->UserId = SceUser.System;
     }
 
     /// <summary>Brings the error dialog up. Zero on success.</summary>

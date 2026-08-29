@@ -1,6 +1,7 @@
 ---
 title: Text utilities
 parent: Data and utilities
+grand_parent: Application Modules
 nav_order: 4
 ---
 

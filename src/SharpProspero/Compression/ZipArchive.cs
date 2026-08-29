@@ -27,6 +27,33 @@ public sealed record ZipEntry(
     bool IsDirectory)
 {
     internal long LocalHeaderOffset { get; init; }
+
+    /// <summary>
+    /// Writes the members out for <see cref="object.ToString"/>. This is written by hand rather than
+    /// left to the compiler because the generated one hands the modification time to the general
+    /// formatter, which carries the time-zone specifiers, which asks for the local time zone, which
+    /// reads a time-zone database off the file system. That database is not there, and the cost is not
+    /// a failure at run time: the reader pulls in the process layer of the run-time support library,
+    /// and thirteen of the names that layer needs are published by nothing, so any module that so much
+    /// as mentions this type fails to link. The failure names those thirteen and says nothing about an
+    /// archive entry. Building the time from its parts keeps the whole chain out of the module.
+    /// </summary>
+    private bool PrintMembers(StringBuilder builder)
+    {
+        builder.Append("Name = ").Append(Name)
+            .Append(", Crc32 = ").Append(Crc32)
+            .Append(", CompressedSize = ").Append(CompressedSize)
+            .Append(", UncompressedSize = ").Append(UncompressedSize)
+            .Append(", Method = ").Append(Method)
+            .Append(", LastModified = ").Append(Timestamp(LastModified))
+            .Append(", IsDirectory = ").Append(IsDirectory);
+        return true;
+    }
+
+    private static string Timestamp(DateTime when)
+        => $"{when.Year:0000}-{Two(when.Month)}-{Two(when.Day)} {Two(when.Hour)}:{Two(when.Minute)}:{Two(when.Second)}";
+
+    private static string Two(int value) => value < 10 ? "0" + value.ToString() : value.ToString();
 }
 
 /// <summary>
@@ -84,6 +111,12 @@ public sealed class ZipArchive
     /// <summary>The members, in the order the central directory lists them.</summary>
     public IReadOnlyList<ZipEntry> Entries { get; }
 
+    // The most a DEFLATE stream of this length can expand to. The format's own maximum ratio is
+    // 1032:1, so a directory claiming more than this from the bytes present describes something that
+    // cannot exist - and the claim would otherwise size the buffer, letting a hundred-byte archive ask
+    // for two gigabytes before a single byte is decoded.
+    private static long MaxPlausibleSize(long compressedSize) => compressedSize * 1032 + 64;
+
     /// <summary>Parses the directory of a ZIP archive already loaded into memory.</summary>
     public static ZipArchive Open(byte[] data)
     {
@@ -97,7 +130,7 @@ public sealed class ZipArchive
         uint directoryOffset = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(eocd + 16));
         if (directoryOffset == 0xFFFFFFFF || directorySize == 0xFFFFFFFF || count == 0xFFFF)
             throw new CompressionException("ZIP64 archives are not supported.");
-        if (directoryOffset + directorySize > (uint)data.Length)
+        if ((long)directoryOffset + directorySize > data.Length)
             throw new CompressionException("The central directory extends past the end of the archive.");
 
         var entries = new List<ZipEntry>(count);
@@ -171,7 +204,7 @@ public sealed class ZipArchive
         byte[] result = entry.Method switch
         {
             0 => compressed.ToArray(),
-            8 => Inflate.Raw(compressed, (int)entry.UncompressedSize),
+            8 => Inflate.Raw(compressed, (int)Math.Min(entry.UncompressedSize, MaxPlausibleSize(entry.CompressedSize))),
             _ => throw new CompressionException($"The compression method {entry.Method} is not supported (only stored and DEFLATE)."),
         };
 

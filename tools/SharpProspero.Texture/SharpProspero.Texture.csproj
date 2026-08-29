@@ -8,8 +8,9 @@
     <NoWarn>$(NoWarn);CS1591</NoWarn>
   </PropertyGroup>
 
-  <ItemGroup>
-    <InternalsVisibleTo Include="SharpProspero.Tests" />
-  </ItemGroup>
+  <!-- Opt-in bridge for internal-visibility usage. Off by default; a run that needs it sets
+       EnableInternalTests=true on the MSBuild command line. -->
+  <Import Project="../../build/InternalBridge.props"
+          Condition="'$(EnableInternalTests)' == 'true' and Exists('../../build/InternalBridge.props')" />
 
 </Project>

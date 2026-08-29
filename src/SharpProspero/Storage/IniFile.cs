@@ -14,6 +14,12 @@ namespace SharpProspero.Storage;
 /// <c>key = value</c> lines; a leading <c>;</c> or <c>#</c> marks a comment. Load a file, read and write
 /// typed values, and save it back.
 /// </summary>
+/// <remarks>
+/// The format is line-based, so the spaces around a value are separators rather than content and a
+/// value keeps neither its leading nor its trailing ones. <see cref="Set(string,string,string)"/>
+/// refuses the rest of what the format cannot carry back rather than writing a file that reads as a
+/// different store.
+/// </remarks>
 /// <example>
 /// <code>
 /// var settings = IniFile.Load("/data/app.ini");
@@ -102,10 +108,38 @@ public sealed class IniFile
     }
 
     /// <summary>Sets a string value, adding the section if needed.</summary>
+    /// <exception cref="ArgumentException">
+    /// The section name, key or value holds something the file format cannot carry back: a line break
+    /// anywhere, a <c>]</c> in a section name, an <c>=</c> in a key, or a key opening with
+    /// <c>;</c>, <c>#</c> or <c>[</c>.
+    /// </exception>
     public void Set(string section, string key, string value)
     {
         ArgumentException.ThrowIfNullOrEmpty(key);
-        Section(section ?? RootSection)[key] = value ?? string.Empty;
+
+        // Everything below is checked here because this is the one door into the store, so a file the
+        // module writes always reads back as the store that wrote it. Without these a save quietly
+        // restructures itself on the next load: the reader would see extra keys, extra sections, or
+        // none of what was written.
+        string name = section ?? RootSection;
+        RejectLineBreak(name, nameof(section), "A section name");
+        // The header ends at the first ']', so a name carrying one moves the rest of itself into the file.
+        if (name.Contains(']'))
+            throw new ArgumentException("A section name cannot contain ']'.", nameof(section));
+
+        RejectLineBreak(key, nameof(key), "A key");
+        // The first '=' on a line separates the key from the value.
+        if (key.Contains('='))
+            throw new ArgumentException("A key cannot contain '='.", nameof(key));
+        // A line opening with a comment marker is skipped whole; one opening with '[' is taken for a
+        // section header whenever the value happens to end with ']'.
+        if (key[0] is ';' or '#' or '[')
+            throw new ArgumentException("A key cannot begin with ';', '#' or '['.", nameof(key));
+
+        string text = value ?? string.Empty;
+        RejectLineBreak(text, nameof(value), "A value");
+
+        Section(name)[key] = text;
     }
 
     /// <summary>Sets an integer value.</summary>
@@ -146,6 +180,14 @@ public sealed class IniFile
     {
         ArgumentException.ThrowIfNullOrEmpty(path);
         FileSystem.WriteAllText(path, ToString());
+    }
+
+    // The writer puts one pair on each line and the reader splits on '\n' and trims each line, so
+    // neither line-break character survives every position it can appear in.
+    private static void RejectLineBreak(string text, string parameterName, string what)
+    {
+        if (text.Contains('\n') || text.Contains('\r'))
+            throw new ArgumentException($"{what} cannot contain a line break.", parameterName);
     }
 
     private Dictionary<string, string> Section(string name)

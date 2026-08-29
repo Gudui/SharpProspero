@@ -106,7 +106,7 @@ public sealed class ParticleSystem
     /// <summary>Advances every particle by <paramref name="deltaSeconds"/>, retiring the ones that expire.</summary>
     public void Update(float deltaSeconds)
     {
-        if (deltaSeconds <= 0f)
+        if (!float.IsFinite(deltaSeconds) || deltaSeconds <= 0f)
             return;
 
         int i = 0;

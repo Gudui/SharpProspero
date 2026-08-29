@@ -42,8 +42,8 @@ public sealed class CompatEmitterTests
         (byte Question, byte[] Answer)[] expected =
         [
             (30, [0xB8, 0x00, 0x40, 0x00, 0x00]),   // page size: 16384
-            (83, [0xB8, 0x08, 0x00, 0x00, 0x00]),   // processors
-            (84, [0xB8, 0x08, 0x00, 0x00, 0x00]),
+            (83, [0x55, 0x48, 0x89, 0xE5]),         // processors: ask the thread's affinity
+            (84, [0x55, 0x48, 0x89, 0xE5]),
             (85, [0x55, 0x48, 0x89, 0xE5]),         // memory: the routine that asks the pool
             (86, [0x55, 0x48, 0x89, 0xE5]),         // free memory: its own routine, not the one above
         ];
@@ -71,7 +71,8 @@ public sealed class CompatEmitterTests
         // reporting a non-zero result from its entry, with nothing to say why. The caller asking how
         // much is free does not check at all and reads -1 as sixteen million million pages.
         Assert.Equal(
-            ["sceKernelConfiguredFlexibleMemorySize", "sceKernelAvailableFlexibleMemorySize"],
+            ["scePthreadSelf", "scePthreadGetaffinity",
+             "sceKernelConfiguredFlexibleMemorySize", "sceKernelAvailableFlexibleMemorySize"],
             CallsOf(obj, "sysconf"));
         // The figure used when neither can answer is a fixed cautious one, deliberately not the
         // machine's own memory size: the pages the collector gets come from the pool this module maps
@@ -191,7 +192,8 @@ public sealed class CompatEmitterTests
         // nothing behind them, which is one call and covers both holding a fresh range and giving the
         // memory behind one back - mapping room over a range pinned releases what was there and leaves
         // the addresses held. Access asked for means memory out of the flexible budget.
-        Assert.Equal(["sceKernelReserveVirtualRange", "sceKernelMapFlexibleMemory"], mmapCalls);
+        Assert.Equal(["sceKernelReserveVirtualRange", "sceKernelMapFlexibleMemory",
+                      "__sp_error_numbers", "__sp_set_errno"], mmapCalls);
         // The pool answers neither: it hands out room carved from memory already put into it, and it
         // starts empty, so the collector's first reservation - larger than anything the module had
         // asked for - was refused before the runtime could start.
@@ -204,6 +206,8 @@ public sealed class CompatEmitterTests
             "sceKernelVirtualQuery",          // what is behind this address?
             "sceKernelMapFlexibleMemory",     // nothing yet: put memory behind it, pinned
             "sceKernelMprotect",              // anything else: protection only, nothing moves
+            "__sp_error_numbers",             // translate a failure into the runtime's numbering
+            "__sp_set_errno",
         ], protCalls);
 
         // The mapping call reads two registers past the ones it takes and refuses the request outright
@@ -349,13 +353,16 @@ public sealed class CompatEmitterTests
             "the platform's place is left holding something the next read would take as news");
 
         // Both shapes of refusal go through it, and both still answer -1 afterwards.
-        foreach (string name in (string[])["poll", "ioctl", "chdir", "link", "symlink", "getrlimit"])
+        foreach (string name in (string[])["poll", "ioctl", "chdir", "link", "symlink"])
         {
             ElfSymbol f = Assert.Single(obj.Symbols, s => s.Name == name && !s.IsUndefined);
             Assert.Contains("__sp_set_errno", CallsOf(obj, name));
             Assert.True(Holds(obj, f, [0xBF, 38, 0x00, 0x00, 0x00]),
                 $"{name} does not say there is no such routine");
         }
+        // No process-wide limit applies to the module, so this is a successful answer rather than a
+        // refusal: both limits are filled with infinity and errno is deliberately left untouched.
+        Assert.DoesNotContain("__sp_set_errno", CallsOf(obj, "getrlimit"));
         // The wide refusal fills the whole register, so a caller comparing all 64 bits of a pointer or
         // a count does not read the refusal as a large positive number and take it for a success.
         ElfSymbol wide = Assert.Single(obj.Symbols, s => s.Name == "__getdelim" && !s.IsUndefined);
@@ -475,12 +482,12 @@ public sealed class CompatEmitterTests
         foreach (string name in (string[])["sceKernelGetOpenPsId", "sceKernelGetProsperoSystemSwVersion",
                                            "sceKernelGetAllowedSdkVersionOnSystem", "sysctlbyname"])
             Assert.DoesNotContain(name, defined);
-        // The variables the runtime reads rather than calls. Two hold the address of a stream the C
+        // The variables the runtime reads rather than calls. Three hold the address of a stream the C
         // module publishes, one starts out empty, and the last holds the address of the marker that
         // records the module was linked against that library.
         var objects = obj.Symbols.Where(s => !s.IsUndefined && s.Type == SymType.Object && s.Bind != SymBind.Local).ToList();
-        Assert.Equal(4, objects.Count);
-        foreach (string name in (string[])["stdout", "stderr", "environ", "__sce_libc_marker"])
+        Assert.Equal(5, objects.Count);
+        foreach (string name in (string[])["stdin", "stdout", "stderr", "environ", "__sce_libc_marker"])
             Assert.Contains(objects, s => s.Name == name && s.Size == 8);
         // The full compat surface, which is what the emitter says it defines.
         Assert.Equal(CompatEmitter.DefinedNames.Count, defined.Count + objects.Count);
@@ -665,7 +672,7 @@ public sealed class CompatEmitterTests
         ElfObject obj = Read();
         var undefined = obj.Symbols.Where(s => s.IsUndefined && s.Name.Length > 0).Select(s => s.Name).ToHashSet();
         // The base names a module publishes stay undefined here, so the link imports them.
-        foreach (string baseName in new[] { "open", "lseek", "pread", "fopen", "fstat", "stat", "__error", "scePthreadRename", "nanosleep", "ftruncate", "pwrite", "pwritev", "preadv" })
+        foreach (string baseName in new[] { "open", "lseek", "pread", "fopen", "fstat", "stat", "__error", "pthread_rename_np", "nanosleep", "ftruncate", "pwrite", "pwritev", "preadv" })
             Assert.Contains(baseName, undefined);
         // The ones nothing publishes are defined here instead, so the link never imports them.
         var defined = obj.Symbols.Where(s => !s.IsUndefined).Select(s => s.Name).ToHashSet();
@@ -682,14 +689,14 @@ public sealed class CompatEmitterTests
         ElfObject obj = Read();
         var relocs = obj.Relocations.Values.SelectMany(list => list).ToList();
 
-        // Two per-thread places, reached through three local-exec relocations: the entry readdir64
+        // The per-thread places are reached through three local-exec relocations: the entry readdir64
         // translates into, and the record of what was last written to the error number - which is read
         // where the number is translated on the way out, and written again where a refusal puts a
         // number there itself, since a number written without that record is translated a second time.
         Assert.Equal(3, relocs.Count(r => r.Type == RelType.TpOff32));
         // Each variable holding an address carries one absolute fixup.
         int addresses = relocs.Count(r => r.Type == RelType.R64);
-        Assert.Equal(3, addresses);
+        Assert.Equal(4, addresses);
         // Everything else is a tail or forward call to a base name a module publishes.
         int calls = relocs.Count(r => r.Type == RelType.Plt32);
         Assert.Equal(relocs.Count - 3 - addresses, calls);

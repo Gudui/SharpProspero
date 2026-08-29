@@ -3,6 +3,7 @@
 
 using SharpProspero.Interop;
 using SharpProspero.Interop.Sysmodule;
+using SharpProspero.Modules;
 using Native = SharpProspero.Interop.AppContent.AppContent;
 using NativeBoot = SharpProspero.Interop.AppContent.SceAppContentBootParam;
 using NativeParam = SharpProspero.Interop.AppContent.SceAppContentInitParam;
@@ -25,14 +26,22 @@ public static unsafe class AppContent
     {
         if (_initialized)
             return;
-        SceResult.ThrowIfFailed(
-            Sysmodule.sceSysmoduleLoadModule((ushort)SystemModuleId.AppContent),
-            "sceSysmoduleLoadModule(AppContent)");
 
-        NativeParam init = default;
-        NativeBoot boot = default;
-        SceResult.ThrowIfFailed(Native.sceAppContentInitialize(&init, &boot), nameof(Native.sceAppContentInitialize));
-        _initialized = true;
+        // The module is given back when the service refuses to start. Without that, a caller that tries
+        // again after a refusal loads it once more each time, and nothing ever unloads any of them.
+        SystemModule module = SystemModule.Load(SystemModuleId.AppContent);
+        try
+        {
+            NativeParam init = default;
+            NativeBoot boot = default;
+            SceResult.ThrowIfFailed(Native.sceAppContentInitialize(&init, &boot), nameof(Native.sceAppContentInitialize));
+            _initialized = true;
+        }
+        catch
+        {
+            module.Dispose();
+            throw;
+        }
     }
 
     /// <summary>

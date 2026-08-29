@@ -1,10 +1,10 @@
 // SharpProspero - a C# SDK for on-device application modules.
 // Copyright (C) 2026 SvenGDK
 
+using SharpProspero.Interop.Kernel;
 using SharpProspero.Memory;
 using System;
 using System.Buffers.Binary;
-using System.Runtime.InteropServices;
 
 namespace SharpProspero.Graphics.Agc;
 
@@ -12,8 +12,8 @@ namespace SharpProspero.Graphics.Agc;
 /// A compiled shader binary, ready to prepare into a runnable shader. The shader compiler writes the
 /// program as a container with two parts: a header block that describes the program (its magic, version,
 /// the register values it needs, and the sizes of its pieces) and a code block of graphics-processor
-/// microcode. This type reads those two parts out of the container so the header can be prepared in place
-/// and the code placed in graphics-readable memory.
+/// microcode. This type reads those two parts out of the container so both can be placed in
+/// graphics-readable memory, where the header is then prepared.
 /// </summary>
 public sealed class ShaderBinary
 {
@@ -35,7 +35,7 @@ public sealed class ShaderBinary
     /// <summary>The shader-binary format version the header declares.</summary>
     public uint Version => BinaryPrimitives.ReadUInt32LittleEndian(_header.AsSpan(4));
 
-    /// <summary>The header block, describing the program. Prepared in place when the shader is created.</summary>
+    /// <summary>The header block, describing the program. Copied into graphics-readable memory to prepare.</summary>
     public ReadOnlySpan<byte> Header => _header;
 
     /// <summary>The microcode block, which must be placed in graphics-readable memory to run.</summary>
@@ -92,18 +92,40 @@ public sealed class ShaderBinary
     }
 
     /// <summary>
-    /// Places the microcode in graphics-readable memory, prepares the header in place, and creates a
-    /// runnable shader. The returned object owns both the header memory (pinned so it stays put while the
-    /// shader references it) and the code region; dispose it when the shader is no longer used.
+    /// Places both the header and the microcode in graphics-readable memory, prepares the header there,
+    /// and creates a runnable shader. The returned object owns both regions; dispose it when the shader
+    /// is no longer used.
     /// </summary>
     public unsafe PreparedShader Prepare()
     {
-        var codeRegion = DirectMemoryRegion.Allocate((nuint)_code.Length);
-        _code.AsSpan().CopyTo(new Span<byte>(codeRegion.Pointer, _code.Length));
-        // The header is prepared in place and referenced by the shader for its lifetime, so pin it.
-        GCHandle pin = GCHandle.Alloc(_header, GCHandleType.Pinned);
-        AgcShader shader = AgcShader.Create((void*)pin.AddrOfPinnedObject(), codeRegion.Pointer);
-        return new PreparedShader(shader, codeRegion, pin, this);
+        // Both blocks carry data the graphics processor reads while the shader runs, so both have to sit
+        // in memory it can reach. The managed heap is mapped for this program alone, so a header left
+        // there is out of the processor's reach however firmly it is pinned. The regions stay writable
+        // from here as well, which is what lets the header be prepared in place.
+        // The header asks for eight-byte alignment, so the smallest reservation the kernel grants is
+        // more than enough; the code asks for far more and keeps the larger default.
+        var headerRegion = DirectMemoryRegion.Allocate((nuint)_header.Length, KernelMemory.PageSize);
+        try
+        {
+            var codeRegion = DirectMemoryRegion.Allocate((nuint)_code.Length);
+            try
+            {
+                _header.AsSpan().CopyTo(new Span<byte>(headerRegion.Pointer, _header.Length));
+                _code.AsSpan().CopyTo(new Span<byte>(codeRegion.Pointer, _code.Length));
+                AgcShader shader = AgcShader.Create(headerRegion.Pointer, codeRegion.Pointer);
+                return new PreparedShader(shader, headerRegion, codeRegion, this);
+            }
+            catch
+            {
+                codeRegion.Dispose();
+                throw;
+            }
+        }
+        catch
+        {
+            headerRegion.Dispose();
+            throw;
+        }
     }
 
     private static ulong SectionOffset(ReadOnlySpan<byte> data, ulong shoff, ushort entsize, int index, out ulong size)
@@ -122,22 +144,22 @@ public sealed class ShaderBinary
 }
 
 /// <summary>
-/// A runnable shader and the memory it depends on: the prepared header (pinned in place) and the code
-/// region in graphics-readable memory. The renderer binds <see cref="Shader"/> when drawing. Dispose it
-/// after the shader is no longer used by any in-flight frame.
+/// A runnable shader and the memory it depends on: the prepared header and the code, both in
+/// graphics-readable memory. The renderer binds <see cref="Shader"/> when drawing. Dispose it after the
+/// shader is no longer used by any in-flight frame.
 /// </summary>
 public sealed class PreparedShader : IDisposable
 {
     private readonly ShaderBinary _binary;
-    private GCHandle _headerPin;
+    private DirectMemoryRegion? _headerRegion;
     private DirectMemoryRegion? _codeRegion;
     private bool _disposed;
 
-    internal PreparedShader(AgcShader shader, DirectMemoryRegion codeRegion, GCHandle headerPin, ShaderBinary binary)
+    internal PreparedShader(AgcShader shader, DirectMemoryRegion headerRegion, DirectMemoryRegion codeRegion, ShaderBinary binary)
     {
         Shader = shader;
+        _headerRegion = headerRegion;
         _codeRegion = codeRegion;
-        _headerPin = headerPin;
         _binary = binary;
     }
 
@@ -150,13 +172,14 @@ public sealed class PreparedShader : IDisposable
     /// <summary>The number of shader registers the program sets.</summary>
     public int ShaderRegisterCount => _binary.ShaderRegisterCount;
 
-    /// <summary>Releases the code region and unpins the header.</summary>
+    /// <summary>Releases the header and code regions.</summary>
     public void Dispose()
     {
         if (_disposed) return;
         _disposed = true;
         _codeRegion?.Dispose();
         _codeRegion = null;
-        if (_headerPin.IsAllocated) _headerPin.Free();
+        _headerRegion?.Dispose();
+        _headerRegion = null;
     }
 }

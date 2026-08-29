@@ -2,6 +2,7 @@
 // Copyright (C) 2026 SvenGDK
 
 using SharpProspero.Interop;
+using SharpProspero.Interop.Kernel;
 using SharpProspero.Interop.Share;
 using SharpProspero.Interop.Sysmodule;
 using SharpProspero.Modules;
@@ -32,19 +33,29 @@ public sealed unsafe class ShareCapture : IDisposable
 
     /// <summary>
     /// Loads the share module and starts the service. <paramref name="heapSize"/> is the service's
-    /// internal heap and <paramref name="threadPriority"/> its helper-thread priority (256 highest to
-    /// 767 lowest).
+    /// internal heap, <paramref name="threadPriority"/> its helper-thread priority (256 highest to
+    /// 767 lowest), and <paramref name="affinityMask"/> the processors its helper thread may run on.
     /// </summary>
+    /// <remarks>
+    /// The mask has to name at least one processor. An empty one is accepted everywhere it is stored
+    /// and refused where the thread is finally created, so starting the service with nothing named
+    /// fails with a deadlock error rather than anything naming the mask.
+    /// </remarks>
     /// <exception cref="ProsperoException">The module could not be loaded or the service could not start.</exception>
-    public static ShareCapture Start(int heapSize = Share.DefaultHeapSize, int threadPriority = Share.DefaultThreadPriority)
+    public static ShareCapture Start(
+        int heapSize = Share.DefaultHeapSize,
+        int threadPriority = Share.DefaultThreadPriority,
+        ulong affinityMask = SceKernelCpumask.All)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(heapSize, Share.DefaultHeapSize);
+        ArgumentOutOfRangeException.ThrowIfZero(affinityMask);
 
         SystemModule module = SystemModule.Load(SystemModuleId.Share);
         try
         {
             SceResult.ThrowIfFailed(
-                Share.sceShareInitialize((nuint)heapSize, threadPriority, 0), nameof(Share.sceShareInitialize));
+                Share.sceShareInitialize((nuint)heapSize, threadPriority, affinityMask),
+                nameof(Share.sceShareInitialize));
             return new ShareCapture(module);
         }
         catch

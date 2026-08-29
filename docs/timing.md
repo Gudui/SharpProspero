@@ -1,6 +1,7 @@
 ---
 title: Timing
-parent: Application
+parent: Application host
+grand_parent: Application Modules
 nav_order: 1
 ---
 
@@ -64,6 +65,33 @@ use it to measure an elapsed duration.
 {: .warning }
 > Do not derive a per-frame delta from `SystemClock`. If the user changes the console clock mid-frame the
 > difference can go negative or leap forward. Use `GameClock` or the frame delta for that.
+
+### PrecisionClock — the finest monotonic counter
+
+`GameClock` counts whole microseconds. Where that is too coarse — pacing an emulated core, measuring a
+block of work that takes tens of microseconds, landing a frame on a deadline — `PrecisionClock` reads the
+hardware counter directly and reports in the counter's own units.
+
+```csharp
+ulong start = PrecisionClock.Ticks;
+Simulate();
+double ms = PrecisionClock.ElapsedSince(start).TotalMilliseconds;
+```
+
+| Member | What it does |
+|---|---|
+| `Ticks`, `Frequency` | The counter now, and how many of its units make a second. |
+| `ElapsedSince`, `SecondsSince` | The time since an earlier reading. |
+| `ToTimeSpan`, `ToMicroseconds`, `FromTimeSpan` | Convert between counter units and durations at a given frequency. |
+| `Resolution` | The smallest step the clock can report — the floor on how precise a sleep can be. |
+| `Sleep`, `SleepNanoseconds` | Suspend the caller to nanosecond precision, asking again for the remainder if the wait is cut short. |
+| `WaitUntil` | Sleep most of the way to a counter reading, then yield in short turns for the last part. |
+| `CycleCounter`, `CycleCounterFrequency` | The processor's own cycle counter. Finer still, but per-processor — pin the thread first. |
+| `CurrentProcessor` | Which processor the calling thread is on at this instant. |
+
+`WaitUntil` is what paces a loop to a deadline: it sleeps for the bulk of the wait, which costs nothing,
+and spends only the last fraction of a millisecond yielding, which lands far closer to the mark than a
+sleep alone.
 
 ## Frame timers
 

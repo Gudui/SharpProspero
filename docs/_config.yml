@@ -1,6 +1,7 @@
 title: SharpProspero
 description: A C# SDK and toolchain for building application modules that run on the console.
 
+# Published at https://svengdk.github.io/SharpProspero/.
 url: https://svengdk.github.io
 baseurl: /SharpProspero
 
@@ -11,6 +12,14 @@ remote_theme: just-the-docs/just-the-docs@v0.12.0
 plugins:
   - jekyll-remote-theme
   - jekyll-seo-tag
+  - jekyll-relative-links
+
+# Rewrite `[text](file.md)` links to the built HTML paths so a local Jekyll build matches the
+# GitHub Pages behavior (which enables this plugin by default). Applies to every page — collections
+# included — so cross-links resolve wherever they live.
+relative_links:
+  enabled: true
+  collections: true
 
 # Apply the theme's page layout to every page. Setting this here keeps rendering correct no matter how
 # the theme is loaded, rather than relying on a default the theme carries in its own configuration.

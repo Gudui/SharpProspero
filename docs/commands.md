@@ -1,7 +1,7 @@
 ---
 title: Command reference
-nav_order: 8
-parent: Toolchain
+parent: References
+nav_order: 4
 ---
 
 # Command reference
@@ -39,8 +39,9 @@ build a piece by hand.
 
 `crt` writes the start object an executable link uses; `compat` writes the compatibility object a link adds
 once it pulls in the runtime archives. Writing them out lets another linker take the same inputs. `compat`
-always writes the executable form here - a `--kind prx` link builds a library variant of its own, and a
-payload link supplies its own start object.
+always writes the application-module form; a `--kind prx` link builds a library variant, and a `--kind
+payload` link builds a payload variant (wider memory-protection commit, thread-block management on new
+threads, no libc marker). A payload link also supplies its own start object through `PayloadCrtEmitter`.
 
 ```
 sharpprospero-bindgen compat --out compat.o

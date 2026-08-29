@@ -1,6 +1,7 @@
 ---
 title: GPU command layer
 parent: Graphics
+grand_parent: Application Modules
 nav_order: 2
 ---
 
@@ -317,7 +318,7 @@ while (running)
 `MeshData` builds cube, sphere, plane, and quad geometry, or takes your own vertices and indices;
 `MeshBuffer.Upload` places it in graphics memory. `Camera3D` (in `SharpProspero.Numerics`) gives the
 view and projection matrices, with `Transform`, `Ray`, `BoundingBox`, `BoundingSphere`, and `Frustum`
-alongside it for placing, picking, and culling. The `prospero-3d` template is a running example.
+alongside it for placing, picking, and culling. The `prospero-3d` sample is a running example.
 
 {: .note }
 > The built-in mesh shaders are compiled ahead of time and embedded; `BuiltInShaders.MeshVertex()` and

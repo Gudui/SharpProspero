@@ -1,6 +1,7 @@
 ---
 title: Interface toolkit
-nav_order: 13
+parent: Application Modules
+nav_order: 8
 ---
 
 # Interface toolkit

@@ -93,8 +93,10 @@ public static class PrxStubEmitter
         // .dynamic
         byte[] dynamic = BuildDynamic(sonameOff, moduleNameOff, libraryNameOff, moduleVersion, libraryVersion);
 
-        // .sceversion: the library name and its module and library version records.
-        byte[] sceversion = BuildSceVersion(libraryName + "_stub");
+        // .sceversion: the stub's own name and its version records. The name carries the _stub_weak
+        // suffix because the export attribute BuildDynamic records is the weak one; the two travel
+        // together, and a reader that trusts one and not the other reads a contradiction.
+        byte[] sceversion = BuildSceVersion(libraryName + "_stub_weak");
 
         // .shstrtab
         var shstr = new StringTable();
@@ -177,7 +179,9 @@ public static class PrxStubEmitter
             (DtSceStubLibraryName, (ulong)libraryNameOff),
             (DtSceStubModuleVersion, moduleVersion),
             (DtSceStubLibraryVersion, libraryVersion),
-            (DtSceExportLibAttr, 0x0000000000000009), // auto-export | weak-export, library id 0
+            // Bit 1 is what separates a weak stub from a strong one; the library id sits in the high word
+            // and is 0, because a stub declares exactly one library.
+            (DtSceExportLibAttr, 0x0000000000000003),
             (DtNull, 0),
         ];
         byte[] d = new byte[16 * entries.Length];
@@ -189,20 +193,26 @@ public static class PrxStubEmitter
         return d;
     }
 
+    /// <summary>The eight bytes of one version record. Every stub carries two of them, both identical.</summary>
+    private static ReadOnlySpan<byte> VersionRecord => [0x02, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x01];
+
     private static byte[] BuildSceVersion(string name)
     {
         byte[] nameBytes = Encoding.ASCII.GetBytes(name);
+        // Zero word, then the byte count of everything that follows it, a tag byte, the stub's name, a
+        // colon separator, then the version records. A reader takes the count on trust, so it has to
+        // cover the tag byte through the last record.
+        int payload = 1 + nameBytes.Length + 1 + (2 * VersionRecord.Length);
         var s = new MemoryStream();
-        s.WriteByte(0); s.WriteByte(0);                 // leading word
+        s.WriteByte(0); s.WriteByte(0);
+        Span<byte> count = stackalloc byte[2];
+        BinaryPrimitives.WriteUInt16LittleEndian(count, (ushort)payload);
+        s.Write(count);
+        s.WriteByte(0x08);
         s.Write(nameBytes);
         s.WriteByte((byte)':');
-        // Two version records: {version=2, attr=9, sub=1}.
-        Span<byte> rec = stackalloc byte[9];
-        BinaryPrimitives.WriteUInt32LittleEndian(rec, 2);
-        BinaryPrimitives.WriteUInt32LittleEndian(rec[4..], 9);
-        rec[8] = 1;
         for (int r = 0; r < 2; r++)
-            s.Write(rec);
+            s.Write(VersionRecord);
         return s.ToArray();
     }
 

@@ -7,7 +7,7 @@ nav_order: 2
 
 Write a homebrew application in C#, build it into an installable package, and run it on the console.
 This page gets you from nothing to a running module; [Setup](setup.md) has the full per-operating-system
-install, and [Templates](templates.md) covers the other kinds of project you can start from.
+install, and [Samples](app-samples.md) covers the other kinds of project you can start from.
 
 ## What you need
 
@@ -28,27 +28,26 @@ Linux (via WSL on Windows).
 
 ## 1. Create a project
 
-The quickest start is the project template. Install it once, then create an application. On Windows
-(PowerShell):
+Copy the closest sample folder into your workspace and rename it. On Windows (PowerShell):
 
 ```powershell
-dotnet new install $env:SHARPPROSPERO_ROOT/templates/prospero-app
-dotnet new prospero-app -n MyGame --title "My Game" --titleId PPSA99099
+Copy-Item -Recurse $env:SHARPPROSPERO_ROOT/samples/prospero-app MyGame
 ```
 
-On Linux or macOS (bash), the root is `$SHARPPROSPERO_ROOT` instead:
+On Linux (bash):
 
 ```bash
-dotnet new install $SHARPPROSPERO_ROOT/templates/prospero-app
-dotnet new prospero-app -n MyGame --title "My Game" --titleId PPSA99099
+cp -r $SHARPPROSPERO_ROOT/samples/prospero-app MyGame
 ```
 
-That writes a `MyGame` folder with `Program.cs`, the `sce_sys` package metadata, and a `build.ps1`.
-Other project kinds — an interface app, a library, a toolbox — are in [Templates](templates.md).
+The copy carries `Program.cs`, the `sce_sys` package metadata (`param.json`, `icon0.png`), and a
+`SampleApp.csproj`. Edit `sce_sys/param.json` to set the title id and display name; see
+[The sce_sys/param.json fields](param-json.md) for every field. Other project kinds — an interface
+app, a library, a toolbox — are in [Samples](app-samples.md).
 
 ## 2. Write the application
 
-The template's `Program.cs` derives from `ProsperoApp` and draws each frame:
+The sample's `Program.cs` derives from `ProsperoApp` and draws each frame:
 
 ```csharp
 using SharpProspero.Application;
@@ -102,8 +101,9 @@ directly.
 
 ## Where to go next
 
-- [Setup](setup.md) — the full install for Windows, Linux and macOS.
-- [Templates](templates.md) — starting points for each kind of project.
-- [Guides and tips](guides.md) — everyday recipes and troubleshooting.
+- [Setup](setup.md) — the full install for Windows and Linux (x64).
+- [Samples](app-samples.md) — starting points for each kind of project.
+- [Extras](extras.md) — tips per form and package metadata.
+- [Help](help.md) — troubleshooting for the build, pack, install, and run.
 - [Architecture](architecture.md) — how the layers fit together.
 - [Build pipeline](build-pipeline.md) — what compile, link and pack each do.

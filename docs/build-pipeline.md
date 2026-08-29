@@ -10,7 +10,7 @@ An application goes through a fixed sequence to become a package: compile the C#
 object into an ELF module, gather and check what travels with it, settle the system version, wrap the
 module, and write the output. The compile and the link are driven by MSBuild files in `build/`; the
 steps after them are toolchain commands, and the last hands the folder to the packager.
-`build/build-app.ps1` runs the whole sequence. The sample and every project generated from a template
+`build/build-app.ps1` runs the whole sequence. Every project copied from a sample
 ship a `build.ps1` that forwards to it.
 
 ## Inputs
@@ -59,18 +59,19 @@ wherever the script is started.
 
 1. Checks the runtime archives and the compiled object exist, stopping with a specific message if one
    is missing.
-2. Runs the SDK's linker over the application object and the runtime archives. The
-   linker supplies its own start object (which carries the `_start` entry point) and its own stubs for
-   the modules the SDK imports from. It reads each object and archive, resolves the symbol graph, lays
-   the sections into segments, applies the relocations, and writes `eboot.bin` — the exception-frame
-   index and the thread-local template included.
+2. Passes `--kind eboot` to the SDK's linker along with the application object and the runtime
+   archives. The linker supplies its own start object (which carries the `_start` entry point) and
+   its own stubs for the modules the SDK imports from. It reads each object and archive, resolves the
+   symbol graph, lays the sections into segments, applies the relocations, and writes `eboot.bin` —
+   the exception-frame index and the thread-local template included. The kind is always named
+   explicitly; a self-contained link that omits it is refused.
 
 A project can add stubs for its own modules through `ProsperoUserStubLibrary` (generated from a `.prx`
 by the stub tool); those let an application link against libraries it supplies. Run the target
 directly like this:
 
 ```
-dotnet msbuild src/SharpProspero.Sample/SharpProspero.Sample.csproj /t:ProsperoLink ^
+dotnet msbuild samples/prospero-app/SampleApp.csproj /t:ProsperoLink ^
   /p:ProsperoObjectFile=<path-to-object> /p:ProsperoRuntimePack=<runtime-archive-folder> ^
   /p:OutputPath=<module-folder>/
 ```
@@ -369,6 +370,7 @@ pwsh build/build-app.ps1 -ProjectPath MyApp.csproj -Output Folder     # every fi
 | `-TitleId` | The title this build carries, when it should differ from the one the project's metadata names. Four letters and five digits, for example `PPSA99098`. | the project's own |
 | `-SdkRoot` | The SDK folder. | the folder above the script, then `SHARPPROSPERO_ROOT` |
 | `-Payload` | Link a payload instead of a module and stop there. See [Payloads](#payloads). | off |
+| `-DiagnosticBreadcrumbs` | When used with `-Payload`, includes the CRT's `sp:*` klog checkpoints in the built ELF. Useful for bring-up; omit for production. | off |
 | `-SystemVersionPolicy` | How the system version the application requires is settled. See [Modules and libraries](modules.md). | `Match` |
 | `-SystemVersion` | The version `Upgrade` and `Downgrade` move to, as NN.NN. | none |
 
@@ -411,8 +413,13 @@ timing, and the C library), so the linker resolves those as ordinary imports aga
 The rest — a small set the runtime asks for by a name the device does not publish, such as the
 large-file variants of the file calls — are provided by a compat object the linker emits itself: each
 is a thin forwarder to the name the device does publish, or a fixed result an application module can
-accept. The upshot is that the runtime's operating-system surface is satisfied entirely by the device
-modules and the toolchain, with no platform layer to build.
+accept. A `--kind payload` link builds a variant of the compat object tuned for that environment: a
+wider memory-protection commit that covers the runtime's straddled bookkeeping page, a
+`pthread_create` wrapper that installs a thread-local block on every new thread (the dynamic linker
+that does this for a module is absent in a payload), and no libc marker (see
+[Modules and payloads](modules-and-payloads.md)). The upshot is that the runtime's operating-system
+surface is satisfied entirely by the device modules and the toolchain, with no platform layer to
+build.
 
 The linker also defines the section-boundary symbols the runtime reads to walk its own managed-code and
 module tables (`__start_<section>` / `__stop_<section>`), the way the system linker does. A table slot
@@ -449,7 +456,13 @@ functions it calls at run time rather than importing them from modules. [Modules
 payloads](modules-and-payloads.md) covers how the two forms differ and which one to build; this section
 covers the build command.
 
-Build one with the payload output kind. The link is self-contained, so it supplies its own start code:
+Build one with `build-app.ps1` and the `-Payload` switch:
+
+```
+pwsh build/build-app.ps1 -ProjectPath MyServer.csproj -Payload -Output Folder
+```
+
+Or call the linker directly:
 
 ```
 sharpprospero-bindgen link --kind payload --self-contained --obj app.o --lib runtime.a --out app.elf
@@ -458,6 +471,16 @@ sharpprospero-bindgen link --kind payload --self-contained --obj app.o --lib run
 Every reference the objects leave open becomes a name the payload resolves at start-up through the
 resolver the loader hands it; the start code fills a table of these before calling `main`. The output is
 a plain shared-object executable with base-relative relocations only.
+
+A payload that calls functions from additional system libraries declares them in the project file as
+`<ProsperoSprx>` items. The build passes each as a `--sprx` flag so the linker emits the
+corresponding `DT_NEEDED` entries. A payload that needs a kernel module other than the default
+`libkernel_web.sprx` sets `<ProsperoKernelSprx>` in the project (for example
+`libkernel_sys.sprx` for process-level access). See [Modules and payloads](modules-and-payloads.md)
+for the project-file syntax.
+
+Pass `-DiagnosticBreadcrumbs` alongside `-Payload` to include the CRT's `sp:*` klog checkpoints in
+the built ELF. These trace each bring-up step in the device log; omit the switch for production builds.
 
 Send a built payload to a listening loader:
 
@@ -470,9 +493,12 @@ The loader reads the whole file, maps it, applies the relocations, and runs it. 
 {: .note }
 > The file format of both an application module and a payload is checked against the console's own loader
 > and libraries: the header identification, the segment and dynamic-table layout, and the relocation
-> section are the forms the loader accepts. The payload start code resolves its references, allocates and
-> installs the managed runtime's thread-local storage, runs the global constructors, and marks the C
-> runtime threaded before `main`. Producing, sending, and running the file is the complete path; the
+> section are the forms the loader accepts. The payload start code resolves its references through a
+> three-handle cascade (`0x1` / `0x2` / `0x2001`) using `sys_dynlib_dlsym`, allocates and installs the
+> managed runtime's thread-local storage with TCB canary forwarding, runs the global constructors,
+> and marks the C runtime threaded before the managed entry. The managed entry point is
+> `[UnmanagedCallersOnly(EntryPoint = "__managed__Main")]`; `libbootstrapper.o` initializes the
+> NativeAOT runtime and calls it. Producing, sending, and running the file is the complete path; the
 > thread-local set-up runs on the entry thread and is exercised on hardware.
 
 ## Keeping the heap in bounds

@@ -3,6 +3,7 @@
 
 using SharpProspero.Interop;
 using SharpProspero.Interop.Mouse;
+using SharpProspero.Platform;
 using System;
 using Native = SharpProspero.Interop.Mouse.Mouse;
 
@@ -41,9 +42,18 @@ public sealed unsafe class Mouse : IDisposable
     /// Starts the mouse service and opens the mouse for <paramref name="userId"/> (the signed-in user
     /// by default). Every mouse is merged into one handle.
     /// </summary>
-    /// <exception cref="ProsperoException">The service or the mouse could not be opened.</exception>
-    public static Mouse Open(int userId = SceUser.System)
+    /// <remarks>
+    /// The device belongs to a signed-in user. The platform registers the handle against the user it
+    /// was opened for and routes that user's samples to it, so a handle opened for the system user is
+    /// accepted and then never delivers anything.
+    /// </remarks>
+    /// <exception cref="ProsperoException">
+    /// The user could not be read, or the service or the mouse could not be opened.
+    /// </exception>
+    public static Mouse Open(int userId = SceUser.Invalid)
     {
+        if (userId == SceUser.Invalid)
+            userId = Users.InitialUserId;
         SceResult.ThrowIfFailed(Native.sceMouseInit(), nameof(Native.sceMouseInit));
 
         var param = new SceMouseOpenParam { BehaviorFlag = Native.OpenMerged };

@@ -1,6 +1,7 @@
 ---
 title: Graphics
-nav_order: 6
+parent: Application Modules
+nav_order: 2
 has_children: true
 ---
 

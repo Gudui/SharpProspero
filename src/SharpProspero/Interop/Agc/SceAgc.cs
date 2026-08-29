@@ -257,13 +257,13 @@ public static unsafe partial class SceAgc
     [LibraryImport(Lib)]
     public static partial int sceAgcCondExecPatchSetEnd(void* packet, void* endAddress);
 
-    /// <summary>Builds an interpolant (VS-&gt;PS attribute) mapping from two shader programs.</summary>
+    /// <summary>Fills the context-register block mapping pixel inputs to geometry outputs.</summary>
     [LibraryImport(Lib)]
-    public static partial int sceAgcCreateInterpolantMapping(void* outMapping, void* vsShader, void* psShader);
+    public static partial int sceAgcCreateInterpolantMapping(void* cxInterpolantMapping, void* geometryShader, void* pixelShader);
 
     /// <summary>Creates a primitive/pipeline state object from shader programs and topology type.</summary>
     [LibraryImport(Lib)]
-    public static partial int sceAgcCreatePrimState(void* outCxPrimState, void* outUcPrimState, void* gsShader, void* vsShader, uint primType);
+    public static partial int sceAgcCreatePrimState(void* cxPrimitiveState, void* ucPrimitiveState, void* hullShader, void* geometryShader, uint primitiveType);
 
     /// <summary>Creates a shader object from a shader binary/header and its GPU address; writes the handle to outShader and returns a status.</summary>
     [LibraryImport(Lib)]
@@ -644,7 +644,7 @@ public static unsafe partial class SceAgc
 
     /// <summary>Patches the destination address/offset field of a DMA-data packet.</summary>
     [LibraryImport(Lib)]
-    public static partial int sceAgcDmaDataPatchSetDstAddressOrOffset(void* dstAddr);
+    public static partial int sceAgcDmaDataPatchSetDstAddressOrOffset(void* packet, ulong dstData);
 
     /// <summary>Patches the source address/offset/immediate value field of a DMA-data packet.</summary>
     [LibraryImport(Lib)]
@@ -694,9 +694,9 @@ public static unsafe partial class SceAgc
     [LibraryImport(Lib)]
     public static partial int sceAgcJumpPatchSetTarget(void* packet, void* target, uint size);
 
-    /// <summary>Links multiple shader programs into a linked pipeline.</summary>
+    /// <summary>Writes the context linkage and user-config primitive state for a draw pipeline.</summary>
     [LibraryImport(Lib)]
-    public static partial int sceAgcLinkShaders(void* linkState, void* outHandle, void* shaderA, void* shaderB, void* shaderC, uint flags);
+    public static partial int sceAgcLinkShaders(void* cxShaderLinkage, void* ucPrimitiveState, void* hullShader, void* geometryShader, void* pixelShader, uint primitiveType);
 
     /// <summary>Patches the write-back address of an end-of-pipe action packet.</summary>
     [LibraryImport(Lib)]

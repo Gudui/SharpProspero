@@ -15,7 +15,8 @@ namespace SharpProspero.Storage;
 /// <remarks>
 /// Each call produces at most 64 KiB. The service holds one work buffer for the life of the object;
 /// the SDK does not state a required size for it, so <see cref="Create"/> takes it as a parameter with
-/// a usable default. There is one service instance, so create at most one decompressor at a time.
+/// a usable default. There is one service instance for the whole module and it counts no holders, so
+/// only one decompressor can exist at a time: while one is alive, <see cref="Create"/> fails.
 /// </remarks>
 /// <example>
 /// <code>
@@ -39,7 +40,10 @@ public sealed unsafe class ZlibDecompressor : IDisposable
     /// Initializes the decompression service with a work buffer of <paramref name="workBufferSize"/>
     /// bytes.
     /// </summary>
-    /// <exception cref="ProsperoException">The service could not be initialized.</exception>
+    /// <exception cref="ProsperoException">
+    /// The service could not be initialized. A decompressor already holds it, which the service reports
+    /// as <see cref="Zlib.AlreadyInitialized"/>; dispose that one first.
+    /// </exception>
     public static ZlibDecompressor Create(int workBufferSize = 64 * 1024)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(workBufferSize, 1);
@@ -51,9 +55,12 @@ public sealed unsafe class ZlibDecompressor : IDisposable
             // The destination the service writes into, aligned and sized as the service requires.
             destination = NativeMemory.AlignedAlloc(Zlib.MaxDestinationSize, Zlib.DestinationAlignSize);
 
-            int result = Zlib.sceZlibInitialize(work, (nuint)workBufferSize);
-            if (result < 0 && result != Zlib.AlreadyInitialized)
-                SceResult.ThrowIfFailed(result, nameof(Zlib.sceZlibInitialize));
+            // The service is one process-wide instance that counts no holders: a second initialization
+            // registers nothing and reports that it is already up, and a shutdown from either holder
+            // closes the device under the other. Refusing the second holder is what keeps the pairing of
+            // one initialization to one shutdown true, so this failure is passed on rather than absorbed.
+            SceResult.ThrowIfFailed(
+                Zlib.sceZlibInitialize(work, (nuint)workBufferSize), nameof(Zlib.sceZlibInitialize));
 
             return new ZlibDecompressor(work, destination);
         }

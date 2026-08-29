@@ -21,6 +21,11 @@ public sealed class StubCatalogCoverageTests
     {
         Assembly sdk = typeof(Color).Assembly;
         foreach (System.Type type in sdk.GetTypes())
+        {
+            // Payload bindings are resolved by the payload CRT inside an already-running host
+            // process. They intentionally do not participate in an application's PRX stub catalog.
+            if (type.Namespace?.StartsWith("SharpProspero.Payload", StringComparison.Ordinal) == true)
+                continue;
             foreach (MethodInfo method in type.GetMethods(
                 BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly))
             {
@@ -33,6 +38,7 @@ public sealed class StubCatalogCoverageTests
                     .FirstOrDefault(n => n.MemberName == "EntryPoint").TypedValue.Value as string;
                 yield return entryPoint ?? method.Name;
             }
+        }
     }
 
     [Fact]

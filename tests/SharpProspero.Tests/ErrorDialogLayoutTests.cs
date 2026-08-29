@@ -2,6 +2,7 @@
 // Copyright (C) 2026 SvenGDK
 
 using SharpProspero.Interop.Dialog;
+using SharpProspero.Interop;
 using System.Runtime.InteropServices;
 using Xunit;
 
@@ -33,6 +34,6 @@ public sealed unsafe class ErrorDialogLayoutTests
 
         Assert.Equal(16, param.Size);
         Assert.Equal(0, param.ErrorCode);
-        Assert.Equal(0, param.UserId);
+        Assert.Equal((int)SceUser.System, param.UserId);
     }
 }

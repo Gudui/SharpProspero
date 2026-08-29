@@ -1,6 +1,7 @@
 ---
 title: Data and utilities
-nav_order: 14
+parent: Application Modules
+nav_order: 9
 has_children: true
 ---
 

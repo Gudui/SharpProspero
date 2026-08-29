@@ -1,6 +1,7 @@
 ---
 title: System services
-nav_order: 15
+parent: Application Modules
+nav_order: 10
 has_children: true
 ---
 

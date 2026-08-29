@@ -303,6 +303,11 @@ internal static class Program
     private static bool HasFlag(string[] args, string name)
         => Array.Exists(args, a => string.Equals(a, name, StringComparison.Ordinal));
 
+    // Reads an object file into an ElfObject. The start object is fully self-contained: it calls
+    // main directly, so no rename or symbol wrapping is needed on the input objects.
+    private static ElfObject LoadPayloadObject(string path)
+        => ElfObjectReader.Read(File.ReadAllBytes(path), path);
+
     // Generates bindings from a supplied module. `prx --inspect` lists the exports; `prx --names`
     // emits a wrapper for the named exports and verifies each is present.
     private static int RunPrx(string[] args)
@@ -387,14 +392,15 @@ internal static class Program
     {
         var options = new LinkOptions();
         var exportNames = new List<string>();
+        var objectPaths = new List<string>();
         for (int i = 0; i < args.Length - 1; i++)
         {
-            if (args[i] == "--obj") options.Objects.Add(args[i + 1]);
+            if (args[i] == "--obj") objectPaths.Add(args[i + 1]);
             else if (args[i] == "--lib") options.Archives.Add(args[i + 1]);
             else if (args[i] == "--stub") options.Stubs.Add(args[i + 1]);
             else if (args[i] == "--export") exportNames.Add(args[i + 1]);
         }
-        if (options.Objects.Count == 0)
+        if (objectPaths.Count == 0)
         {
             Console.Error.WriteLine("Usage: link --obj <file.o> [--obj ...] [--lib <archive.a> ...] [--stub <stub.o> ...]");
             Console.Error.WriteLine("       [--self-contained] supplies the start object and the core module stubs.");
@@ -405,9 +411,43 @@ internal static class Program
         }
 
         string? kindArg = GetOption(args, "--kind");
+        if (kindArg is not null
+            && !string.Equals(kindArg, "eboot", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(kindArg, "prx", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(kindArg, "payload", StringComparison.OrdinalIgnoreCase))
+        {
+            Console.Error.WriteLine("Unknown --kind: " + kindArg);
+            return 1;
+        }
+        // A self-contained link supplies its own start object and compat layer, and the two executable
+        // classes (eboot vs payload) get different compat objects. Omitting --kind would silently
+        // default to eboot, which gives the wrong compat body to a payload and the wrong per-thread
+        // storage to an eboot built as if it were a payload. Require the choice to be explicit so the
+        // build fails here rather than at run time on the device.
+        if (kindArg is null && HasFlag(args, "--self-contained"))
+        {
+            Console.Error.WriteLine("A --self-contained link requires --kind (eboot, prx, or payload).");
+            return 1;
+        }
         bool payload = string.Equals(kindArg, "payload", StringComparison.OrdinalIgnoreCase);
         ModuleKind kind = string.Equals(kindArg, "prx", StringComparison.OrdinalIgnoreCase)
             ? ModuleKind.Library : ModuleKind.Executable;
+
+        // A payload link wraps the runtime bootstrapper's own main so the shim's wrapper can trigger
+        // the C library's lazy thread setup before the runtime asks for an allocation. The wrapping is
+        // done here by renaming every input object's main symbol to __prospero_bootstrapper_main; the
+        // shim declares main itself and calls the renamed one. Any object without a main symbol is left
+        // as-is.
+        if (payload)
+        {
+            foreach (string path in objectPaths)
+                options.ExtraObjects.Add(LoadPayloadObject(path));
+        }
+        else
+        {
+            foreach (string path in objectPaths)
+                options.Objects.Add(path);
+        }
 
         // The self-contained link supplies its own start object and its own stubs for the modules the
         // SDK imports from, so a build needs no start file or stub library from elsewhere. A library
@@ -415,16 +455,22 @@ internal static class Program
         if (HasFlag(args, "--self-contained"))
         {
             if (payload)
+            {
                 // A payload starts through its own resolver-driven start object and imports no modules;
-                // every outside reference is resolved at run time, so it needs no stub libraries.
+                // every outside reference is resolved at run time, so it needs no stub libraries. The
+                // start object is fully self-contained: bss zero, constructor walk, main call, result
+                // relay to the loader's output slot, plain ret. No embedded prebuilt runtime.
+                if (HasFlag(args, "--diagnostics"))
+                    PayloadCrtEmitter.EmitDiagnosticBreadcrumbs = true;
                 options.ExtraObjects.Add(ElfObjectReader.Read(PayloadCrtEmitter.BuildStartObject(), "sharpprospero_payload_crt.o"));
+            }
             else if (kind == ModuleKind.Executable)
                 options.ExtraObjects.Add(ElfObjectReader.Read(CrtEmitter.BuildStartObject(), "sharpprospero_crt.o"));
             // The compat object defines the C-library names the ahead-of-time runtime imports that the
             // device modules do not publish. It is needed only when the runtime archives are linked, so
             // a bare link (no runtime) does not carry it.
             if (options.Archives.Count > 0)
-                options.ExtraObjects.Add(ElfObjectReader.Read(CompatEmitter.BuildObject(payload ? ModuleKind.Executable : kind), "sharpprospero_compat.o"));
+                options.ExtraObjects.Add(ElfObjectReader.Read(CompatEmitter.BuildObject(payload ? ModuleKind.Executable : kind, payload), "sharpprospero_compat.o"));
             if (!payload)
                 foreach (StubCatalog.Entry entry in StubCatalog.Core)
                     options.ExtraStubs.Add(StubLibrary.Parse(
