@@ -76,4 +76,36 @@ public static unsafe partial class KernelProcess
     /// <returns>Zero on success, or a negative error code.</returns>
     [LibraryImport(Lib)]
     public static partial int sceKernelUuidCreate(SceKernelUuid* uuid);
+
+    /// <summary>
+    /// Queries application information for the process with the given <paramref name="pid"/>.
+    /// </summary>
+    /// <param name="pid">The process identifier.</param>
+    /// <param name="info">On success, receives the application information.</param>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceKernelGetAppInfo(int pid, SceKernelAppInfo* info);
+}
+
+/// <summary>
+/// Application information for a running process, as returned by
+/// <see cref="KernelProcess.sceKernelGetAppInfo"/>.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct SceKernelAppInfo
+{
+    /// <summary>The application id assigned by the system.</summary>
+    public uint AppId;
+
+    /// <summary>An undocumented eight-byte field following the app id.</summary>
+    public ulong Unknown1;
+
+    /// <summary>The application type code.</summary>
+    public uint AppType;
+
+    /// <summary>The title identifier, a ten-character ASCII string (e.g. "PPSA01234").</summary>
+    public fixed byte TitleId[10];
+
+    /// <summary>Undocumented trailing data.</summary>
+    public fixed byte Unknown2[0x3C];
 }

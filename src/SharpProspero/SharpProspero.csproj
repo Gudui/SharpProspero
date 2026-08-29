@@ -12,7 +12,7 @@
     <NoWarn>$(NoWarn);CS1591</NoWarn>
 
     <PackageId>SharpProspero</PackageId>
-    <Version>0.8.0</Version>
+    <Version>0.9.0</Version>
     <Description>A C# SDK for building applications that compile to standalone ELF modules and pack into installable packages.</Description>
     <PackageLicenseExpression>GPL-3.0-or-later</PackageLicenseExpression>
     <PackageTags>ps5;prospero;homebrew;sdk;aot;elf</PackageTags>

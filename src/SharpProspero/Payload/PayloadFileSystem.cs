@@ -1,6 +1,7 @@
 // SharpProspero - a C# SDK for on-device application modules.
 // Copyright (C) 2026 SvenGDK
 
+using SharpProspero.Interop.Posix;
 using System.Runtime.InteropServices;
 
 namespace SharpProspero.Payload;
@@ -165,4 +166,231 @@ public static unsafe partial class PayloadFileSystem
     /// Matches the <c>S_ISDIR</c> macro from <c>&lt;sys/stat.h&gt;</c>.
     /// </summary>
     public static bool IsDirectory(ushort mode) => (mode & S_IFMT) == S_IFDIR;
+
+    // ---- Additional POSIX operations ----
+
+    /// <summary>File exists.</summary>
+    public const int F_OK = 0;
+
+    /// <summary>Execute/search permission.</summary>
+    public const int X_OK = 1;
+
+    /// <summary>Write permission.</summary>
+    public const int W_OK = 2;
+
+    /// <summary>Read permission.</summary>
+    public const int R_OK = 4;
+
+    /// <summary>Creates a directory at <paramref name="path"/> with <paramref name="mode"/> permissions.</summary>
+    /// <returns>Zero on success, or -1 on error.</returns>
+    [LibraryImport(Lib)]
+    public static partial int mkdir(byte* path, ushort mode);
+
+    /// <summary>Checks accessibility of <paramref name="path"/> against <paramref name="mode"/>
+    /// (<see cref="F_OK"/>, <see cref="R_OK"/>, <see cref="W_OK"/>, <see cref="X_OK"/>).</summary>
+    /// <returns>Zero when accessible, or -1 on error.</returns>
+    [LibraryImport(Lib)]
+    public static partial int access(byte* path, int mode);
+
+    /// <summary>Writes the current working directory into <paramref name="buf"/>, up to
+    /// <paramref name="size"/> bytes.</summary>
+    /// <returns>A pointer to <paramref name="buf"/> on success, or null on error.</returns>
+    [LibraryImport(Lib)]
+    public static partial byte* getcwd(byte* buf, nuint size);
+
+    /// <summary>Renames (moves) a file or directory from <paramref name="from"/> to
+    /// <paramref name="to"/>.</summary>
+    /// <returns>Zero on success, or -1 on error.</returns>
+    [LibraryImport(Lib)]
+    public static partial int rename(byte* from, byte* to);
+
+    /// <summary>Removes a directory entry (file).</summary>
+    /// <returns>Zero on success, or -1 on error.</returns>
+    [LibraryImport(Lib)]
+    public static partial int unlink(byte* path);
+
+    /// <summary>Removes an empty directory.</summary>
+    /// <returns>Zero on success, or -1 on error.</returns>
+    [LibraryImport(Lib)]
+    public static partial int rmdir(byte* path);
+
+    /// <summary>
+    /// Reads file status like <see cref="stat"/>, but does not follow symbolic links. When
+    /// <paramref name="path"/> names a symlink, the returned status describes the link itself
+    /// rather than its target.
+    /// </summary>
+    /// <param name="path">A NUL-terminated UTF-8 path.</param>
+    /// <param name="buf">A buffer to receive the status.</param>
+    /// <returns>Zero on success, or -1 on error.</returns>
+    [LibraryImport(Lib)]
+    public static partial int lstat(byte* path, FreeBsdStat* buf);
+
+    /// <summary>
+    /// Truncates or extends the file referenced by <paramref name="fd"/> to
+    /// <paramref name="length"/> bytes.
+    /// </summary>
+    /// <param name="fd">An open file descriptor with write permission.</param>
+    /// <param name="length">The desired file size in bytes.</param>
+    /// <returns>Zero on success, or -1 on error.</returns>
+    [LibraryImport(Lib)]
+    public static partial int ftruncate(int fd, long length);
+
+    /// <summary>Directory entry type: symbolic link.</summary>
+    public const byte DT_LNK = 10;
+
+    /// <summary>File type constant: symbolic link.</summary>
+    public const ushort S_IFLNK = 0xA000;
+
+    /// <summary>
+    /// Returns <c>true</c> when <paramref name="mode"/> indicates a symbolic link.
+    /// Matches the <c>S_ISLNK</c> macro from <c>&lt;sys/stat.h&gt;</c>.
+    /// </summary>
+    public static bool IsSymlink(ushort mode) => (mode & S_IFMT) == S_IFLNK;
+
+    /// <summary>Changes the permission bits of the file at <paramref name="path"/>.</summary>
+    /// <returns>Zero on success, or -1 on error.</returns>
+    [LibraryImport(Lib)]
+    public static partial int chmod(byte* path, ushort mode);
+
+    /// <summary>Open flag: read only.</summary>
+    public const int O_RDONLY = 0;
+
+    /// <summary>Open flag: write only.</summary>
+    public const int O_WRONLY = 1;
+
+    /// <summary>Open flag: read and write.</summary>
+    public const int O_RDWR = 2;
+
+    /// <summary>Open flag: create if it does not exist.</summary>
+    public const int O_CREAT = 0x0200;
+
+    /// <summary>Open flag: truncate to zero length.</summary>
+    public const int O_TRUNC = 0x0400;
+
+    /// <summary>
+    /// Copies a single file from <paramref name="src"/> to <paramref name="dst"/>. Creates
+    /// the destination, overwrites if it already exists.
+    /// </summary>
+    /// <returns><see langword="true"/> on success.</returns>
+    public static bool CopyFile(byte* src, byte* dst)
+    {
+        int srcFd = PosixIo.open(src, O_RDONLY);
+        if (srcFd < 0) return false;
+
+        int dstFd = PosixIo.open(dst, O_WRONLY | O_CREAT | O_TRUNC);
+        if (dstFd < 0)
+        {
+            PosixSocket.close(srcFd);
+            return false;
+        }
+
+        byte* buf = stackalloc byte[8192];
+        bool ok = true;
+        while (true)
+        {
+            long n = PosixIo.read(srcFd, buf, 8192);
+            if (n <= 0) break;
+            long written = 0;
+            while (written < n)
+            {
+                long w = PosixIo.write(dstFd, buf + written, (ulong)(n - written));
+                if (w <= 0) { ok = false; break; }
+                written += w;
+            }
+            if (!ok) break;
+        }
+
+        PosixSocket.close(dstFd);
+        PosixSocket.close(srcFd);
+        return ok;
+    }
+
+    /// <summary>
+    /// Recursively copies the directory at <paramref name="src"/> to <paramref name="dst"/>.
+    /// Creates the destination directory if it does not exist.
+    /// </summary>
+    /// <returns><see langword="true"/> when all files were copied successfully.</returns>
+    public static bool CopyDirectory(byte* src, byte* dst)
+    {
+        mkdir(dst, 0x1FF); // 0777
+
+        void* dir = opendir(src);
+        if (dir == null) return false;
+
+        byte* srcPath = stackalloc byte[1024];
+        byte* dstPath = stackalloc byte[1024];
+        bool ok = true;
+        while (true)
+        {
+            FreeBsdDirent* entry = readdir(dir);
+            if (entry == null) break;
+
+            if (entry->d_name[0] == (byte)'.' &&
+                (entry->d_name[1] == 0 ||
+                 (entry->d_name[1] == (byte)'.' && entry->d_name[2] == 0)))
+                continue;
+
+            JoinPath(srcPath, src, entry->d_name);
+            JoinPath(dstPath, dst, entry->d_name);
+
+            if (entry->d_type == DT_DIR)
+            {
+                if (!CopyDirectory(srcPath, dstPath)) ok = false;
+            }
+            else
+            {
+                if (!CopyFile(srcPath, dstPath)) ok = false;
+            }
+        }
+
+        closedir(dir);
+        return ok;
+    }
+
+    /// <summary>
+    /// Recursively removes the directory at <paramref name="path"/> and all its contents.
+    /// </summary>
+    /// <returns><see langword="true"/> when the directory was fully removed.</returns>
+    public static bool RemoveDirectory(byte* path)
+    {
+        void* dir = opendir(path);
+        if (dir == null) return false;
+
+        byte* childPath = stackalloc byte[1024];
+        bool ok = true;
+        while (true)
+        {
+            FreeBsdDirent* entry = readdir(dir);
+            if (entry == null) break;
+
+            if (entry->d_name[0] == (byte)'.' &&
+                (entry->d_name[1] == 0 ||
+                 (entry->d_name[1] == (byte)'.' && entry->d_name[2] == 0)))
+                continue;
+
+            JoinPath(childPath, path, entry->d_name);
+
+            if (entry->d_type == DT_DIR)
+            {
+                if (!RemoveDirectory(childPath)) ok = false;
+            }
+            else
+            {
+                if (unlink(childPath) != 0) ok = false;
+            }
+        }
+
+        closedir(dir);
+        if (rmdir(path) != 0) ok = false;
+        return ok;
+    }
+
+    private static void JoinPath(byte* dst, byte* dir, byte* name)
+    {
+        int i = 0;
+        while (*dir != 0) { dst[i++] = *dir; dir++; }
+        dst[i++] = (byte)'/';
+        while (*name != 0) { dst[i++] = *name; name++; }
+        dst[i] = 0;
+    }
 }

@@ -147,6 +147,76 @@ public static unsafe partial class SystemService
     /// <returns>Zero on success, or a negative error code.</returns>
     [LibraryImport(Lib)]
     public static partial int sceSystemServiceReenableMediaPlay();
+
+    /// <summary>
+    /// Returns the application id of the foreground game. A negative value means no game
+    /// is running.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSystemServiceGetAppIdOfRunningBigApp();
+
+    /// <summary>
+    /// Terminates the application with the given <paramref name="appId"/>.
+    /// </summary>
+    /// <param name="appId">Application id (from <see cref="sceSystemServiceGetAppIdOfRunningBigApp"/>).</param>
+    /// <param name="opt">Option flags (typically -1).</param>
+    /// <param name="method">Termination method (0 for graceful, 1 for forced).</param>
+    /// <param name="reason">Reason code (0 for no reason).</param>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceSystemServiceKillApp(uint appId, int opt, int method, int reason);
+
+    /// <summary>
+    /// Navigates the shell to the home screen, dismissing the foreground application.
+    /// </summary>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceSystemServiceNavigateToGoHome();
+
+    /// <summary>
+    /// Converts a title identifier string to its application id.
+    /// </summary>
+    /// <param name="titleId">A NUL-terminated UTF-8 title identifier (e.g. "PPSA01234\0").</param>
+    /// <returns>A non-negative application id on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceSystemServiceGetAppId(byte* titleId);
+
+    /// <summary>
+    /// Converts an application id to its title identifier string.
+    /// </summary>
+    /// <param name="appId">The application id.</param>
+    /// <param name="titleId">A buffer of at least 10 bytes to receive the NUL-terminated title id.</param>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceSystemServiceGetAppTitleId(int appId, byte* titleId);
+
+    /// <summary>
+    /// Reads the title identifier for an application id through the launch-notification utility
+    /// path.
+    /// </summary>
+    /// <param name="appId">The application id.</param>
+    /// <param name="titleId">A buffer of at least 10 bytes to receive the NUL-terminated title id.</param>
+    [LibraryImport(Lib)]
+    public static partial void sceLncUtilGetAppTitleId(uint appId, byte* titleId);
+
+    /// <summary>
+    /// Terminates the application with the given <paramref name="appId"/> through the
+    /// launch-notification utility path.
+    /// </summary>
+    /// <param name="appId">The application id.</param>
+    /// <returns>Zero on success, or a non-zero error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial uint sceLncUtilKillApp(uint appId);
+
+    /// <summary>
+    /// Terminates the application with the given <paramref name="appId"/> and a reason code
+    /// through the launch-notification utility path.
+    /// </summary>
+    /// <param name="appId">The application id.</param>
+    /// <param name="reason">Reason code for the termination.</param>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceLncUtilKillAppWithReason(int appId, int reason);
 }
 
 /// <summary>The current state of the system service, as <see cref="SystemService.sceSystemServiceGetStatus"/> reports it.</summary>
