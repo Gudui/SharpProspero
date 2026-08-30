@@ -41,7 +41,7 @@
     <StartupHookSupport>false</StartupHookSupport>
 
     <!-- Export any method marked [UnmanagedCallersOnly] as an unmanaged symbol, so a payload can
-         expose C-callable entry points.  Templates export their managed entry as __managed__Main;
+         expose C-callable entry points.  Samples export their managed entry as __managed__Main;
          the CRT _start calls main, which resolves to libbootstrapper.o's bootstrap that runs
          RhInitialize / RhRegisterOSModule / InitializeModules before tail-calling __managed__Main. -->
     <IlcExportUnmanagedEntryPoints>true</IlcExportUnmanagedEntryPoints>
@@ -94,7 +94,7 @@
   </ItemGroup>
 
   <!-- Base DirectPInvoke: only libkernel and libc. Payloads resolve symbols through the CRT
-       rtld at runtime; only the base set and per-template additions are needed. Templates
+       rtld at runtime; only the base set and per-sample additions are needed. Samples
        add their own via <DirectPInvoke Include="libSceXxx" /> in their csproj. -->
   <ItemGroup>
     <DirectPInvoke Include="libkernel" />

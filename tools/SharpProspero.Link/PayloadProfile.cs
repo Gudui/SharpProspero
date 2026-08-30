@@ -1,7 +1,7 @@
 // SharpProspero.Link - a linker for module output.
 // Copyright (C) 2026 SvenGDK
 //
-// Per-payload dependency model: each template declares which SPRX modules it loads.
+// Per-payload dependency model: each sample declares which SPRX modules it loads.
 // Every payload gets the FULL CRT unconditionally; there are no profile tiers.
 // The CRT emitter always emits every subsystem. Linker gc-sections prunes unreachable code.
 
@@ -52,13 +52,13 @@ public enum CrtSubsystem
 }
 
 /// <summary>
-/// Declares the SPRX dependency set for a payload template. Each template has a fixed set
+/// Declares the SPRX dependency set for a payload sample. Each sample has a fixed set
 /// of DT_NEEDED SPRX modules. Every payload gets the full CRT unconditionally; there are
 /// no profile tiers. The only per-payload variation is which SPRX modules are linked.
 /// </summary>
 public sealed class PayloadProfile
 {
-    /// <summary>The DT_NEEDED SPRX modules this template requires at load time.</summary>
+    /// <summary>The DT_NEEDED SPRX modules this sample requires at load time.</summary>
     public required string[] NeededSprx { get; init; }
 
     /// <summary>The kernel module SPRX to link against. Defaults to libkernel_sys.sprx (the
@@ -71,9 +71,9 @@ public sealed class PayloadProfile
 
     // ---- Known SPRX module names ----
     //
-    // Every known SPRX module available for payload templates is catalogued here.
+    // Every known SPRX module available for payload samples is catalogued here.
     // The
-    // constants are the canonical sonames the firmware publishes. Templates declare their
+    // constants are the canonical sonames the firmware publishes. Samples declare their
     // extra SPRX dependencies through ProsperoSprx MSBuild items; these names are the valid
     // values.
 
@@ -83,7 +83,7 @@ public sealed class PayloadProfile
 
     /// <summary>Kernel module for process-level payloads. Provides additional low-level
     /// kernel access (mount enumeration, hardware info). Used by the hwinfo and mntinfo
-    /// templates.</summary>
+    /// samples.</summary>
     public const string SprxKernelSys = "libkernel_sys.sprx";
 
     /// <summary>C library internals (libc, POSIX pthread, string, memory). Every payload
@@ -94,46 +94,46 @@ public sealed class PayloadProfile
     /// communication with the host.</summary>
     public const string SprxNet = "libSceNet.sprx";
 
-    /// <summary>Network control library. Used by payload templates needing network interface
+    /// <summary>Network control library. Used by payload samples needing network interface
     /// management.</summary>
     public const string SprxNetCtl = "libSceNetCtl.sprx";
 
     /// <summary>Random number generation. Used by the hello_sprx and hello_so
-    /// templates.</summary>
+    /// samples.</summary>
     public const string SprxRandom = "libSceRandom.sprx";
 
-    /// <summary>On-screen notification toasts. Used by the notify template.</summary>
+    /// <summary>On-screen notification toasts. Used by the notify sample.</summary>
     public const string SprxNotification = "libSceNotification.sprx";
 
-    /// <summary>TLS/SSL library. Used by payload templates needing secure connections (TLS/SSL for HTTP/2 and web server
-    /// templates.</summary>
+    /// <summary>TLS/SSL library. Used by payload samples needing secure connections (TLS/SSL for HTTP/2 and web server
+    /// samples.</summary>
     public const string SprxSsl = "libSceSsl.sprx";
 
-    /// <summary>HTTP/1.x client library. Used by payload templates needing HTTP client functionality.</summary>
+    /// <summary>HTTP/1.x client library. Used by payload samples needing HTTP client functionality.</summary>
     public const string SprxHttp = "libSceHttp.sprx";
 
-    /// <summary>HTTP/2 client library. Used by the http2_get template.</summary>
+    /// <summary>HTTP/2 client library. Used by the http2_get sample.</summary>
     public const string SprxHttp2 = "libSceHttp2.sprx";
 
     /// <summary>System service library (browser launch, app management). Used by the browser
-    /// and install_app templates.</summary>
+    /// and install_app samples.</summary>
     public const string SprxSystemService = "libSceSystemService.sprx";
 
     /// <summary>User service library (user session management). Used by browser and
-    /// install_app templates.</summary>
+    /// install_app samples.</summary>
     public const string SprxUserService = "libSceUserService.sprx";
 
-    /// <summary>Application installation utility. Used by payload templates needing app installation
-    /// templates.</summary>
+    /// <summary>Application installation utility. Used by payload samples needing app installation
+    /// samples.</summary>
     public const string SprxAppInstUtil = "libSceAppInstUtil.sprx";
 
-    /// <summary>Inter-process messaging interface. Used by the install_app template.</summary>
+    /// <summary>Inter-process messaging interface. Used by the install_app sample.</summary>
     public const string SprxIpmi = "libSceIpmi.sprx";
 
-    /// <summary>Internal filesystem operations. Used by payload templates needing filesystem access.</summary>
+    /// <summary>Internal filesystem operations. Used by payload samples needing filesystem access.</summary>
     public const string SprxFsInternalForVsh = "libSceFsInternalForVsh.sprx";
 
-    /// <summary>System core services. Used by payload templates needing system core services.</summary>
+    /// <summary>System core services. Used by payload samples needing system core services.</summary>
     public const string SprxSysCore = "libSceSysCore.sprx";
 
     /// <summary>Registry manager. Available for payload declaration.</summary>
@@ -176,7 +176,7 @@ public sealed class PayloadProfile
     public const string SprxPosixForWebKit = "libScePosixForWebKit.sprx";
 
     /// <summary>
-    /// The complete set of known SPRX module sonames. Every payload template
+    /// The complete set of known SPRX module sonames. Every payload sample
     /// SPRX dependency is in this set. The <see cref="IsKnownSprx"/> method checks
     /// membership; the set is useful for validation and diagnostics.
     /// </summary>
@@ -214,9 +214,9 @@ public sealed class PayloadProfile
 
     /// <summary>The three base DT_NEEDED modules every payload links against. The kernel module
     /// comes first (the loader must initialise it before resolving symbols from the others),
-    /// followed by the C library and the network library. Templates that declare extra SPRX
+    /// followed by the C library and the network library. Samples that declare extra SPRX
     /// modules via <c>&lt;ProsperoSprx&gt;</c> in their csproj get these appended automatically
-    /// unless the template already lists them.</summary>
+    /// unless the sample already lists them.</summary>
     public static readonly string[] DefaultNeeded =
     [
         SprxKernelSys,
@@ -225,9 +225,9 @@ public sealed class PayloadProfile
     ];
 
     /// <summary>
-    /// Computes the DT_NEEDED SPRX list for a payload by merging template-declared extras with
+    /// Computes the DT_NEEDED SPRX list for a payload by merging sample-declared extras with
     /// the three default modules. The result preserves declaration order for extras, then appends
-    /// any defaults the template did not already declare. An optional <paramref name="kernelOverride"/>
+    /// any defaults the sample did not already declare. An optional <paramref name="kernelOverride"/>
     /// replaces the default <c>libkernel_web.sprx</c> with a different kernel module (e.g.
     /// <c>libkernel_sys.sprx</c> for process-level payloads).
     /// <para>When <paramref name="extraSprx"/> is empty or null, the result is exactly
@@ -235,7 +235,7 @@ public sealed class PayloadProfile
     /// </summary>
     /// <param name="extraSprx">Template-declared SPRX modules, in link order. May be empty.</param>
     /// <param name="kernelOverride">When non-null, replaces the default kernel module name in the
-    /// defaults. Has no effect if the template already declares a kernel module.</param>
+    /// defaults. Has no effect if the sample already declares a kernel module.</param>
     /// <returns>The complete DT_NEEDED list: extras first, then defaults that were not already
     /// declared.</returns>
     public static string[] BuildNeededSprx(string[] extraSprx, string? kernelOverride = null)
@@ -261,13 +261,13 @@ public sealed class PayloadProfile
     // ---- Profile creation ----
 
     /// <summary>
-    /// Creates a profile by composing template-specific SPRX declarations with an optional
+    /// Creates a profile by composing sample-specific SPRX declarations with an optional
     /// kernel module override. This is the primary composition entry point: the build script
     /// reads the <c>ProsperoSprx</c> and <c>ProsperoKernelSprx</c> MSBuild properties and
     /// passes them here. The method validates the kernel override and builds the complete
     /// DT_NEEDED list. Every payload gets the full CRT; there are no profile tiers.
     /// </summary>
-    /// <param name="extraSprx">Additional SPRX modules the template declares via
+    /// <param name="extraSprx">Additional SPRX modules the sample declares via
     /// <c>&lt;ProsperoSprx&gt;</c> items. May be null or empty.</param>
     /// <param name="kernelOverride">When non-null, replaces the default kernel module. Must
     /// be a kernel SPRX (<see cref="IsKernelSprx"/>); other values are ignored.</param>

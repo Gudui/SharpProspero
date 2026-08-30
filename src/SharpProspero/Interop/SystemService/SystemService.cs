@@ -217,6 +217,66 @@ public static unsafe partial class SystemService
     /// <returns>Zero on success, or a negative error code.</returns>
     [LibraryImport(Lib)]
     public static partial int sceLncUtilKillAppWithReason(int appId, int reason);
+
+    /// <summary>
+    /// Launches an application with detailed launch parameters through the launch-notification
+    /// utility path. Takes a <see cref="LncAppParam"/> with user id, application options,
+    /// and launch flags.
+    /// </summary>
+    /// <param name="titleId">A NUL-terminated title identifier.</param>
+    /// <param name="argv">A null-terminated array of argument strings, or null.</param>
+    /// <param name="param">Launch parameters, or null for defaults.</param>
+    [LibraryImport(Lib)]
+    public static partial int sceLncUtilLaunchApp(byte* titleId, byte** argv, LncAppParam* param);
+
+    /// <summary>
+    /// Queries the detailed status of an application by its app id.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSystemServiceGetAppStatus(void* status);
+
+    /// <summary>
+    /// Registers a local process entry with the system service.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSystemServiceAddLocalProcess(void* param);
+
+}
+
+/// <summary>
+/// Shell-core utility bindings for device management.
+/// </summary>
+public static unsafe partial class ShellCoreUtil
+{
+    private const string Lib = "libSceShellCoreUtil";
+
+    /// <summary>
+    /// Ejects a removable media device at the given path.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceShellCoreUtilRequestEjectDevice(byte* path);
+}
+
+/// <summary>
+/// Launch parameters for <see cref="SystemService.sceLncUtilLaunchApp"/>.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct LncAppParam
+{
+    /// <summary>Structure size in bytes. Set to <c>sizeof(LncAppParam)</c> before calling.</summary>
+    public uint Size;
+
+    /// <summary>The user id to launch on behalf of.</summary>
+    public int UserId;
+
+    /// <summary>Application option flags.</summary>
+    public uint AppOpt;
+
+    /// <summary>Crash report setting.</summary>
+    public ulong CrashReport;
+
+    /// <summary>Launch check flags (skip launch check, skip system update check, VR mode, etc.).</summary>
+    public uint CheckFlag;
 }
 
 /// <summary>The current state of the system service, as <see cref="SystemService.sceSystemServiceGetStatus"/> reports it.</summary>

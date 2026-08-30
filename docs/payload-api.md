@@ -78,7 +78,7 @@ PayloadFileSystem.CopyDirectory(src, dst);
 PayloadFileSystem.RemoveDirectory(path);
 ```
 
-Every path is applied in the host process's filesystem view, which is the per-title sandbox by
+Every path operates within the host process's filesystem view, which is the per-title sandbox by
 default. A companion daemon promotes another process to lift that view — see
 [Promoting a running application](payload-promotion.md).
 
@@ -304,6 +304,114 @@ if (KernelOffsets.IsSupported(fw))
 `KernelOffsets1001` remains available for FW 10.01 absolute addresses and process-structure
 field offsets that are firmware-invariant (credential fields, file-descriptor table, etc.).
 
+## Signal handling
+
+`PayloadSignal` provides POSIX signal handling and non-local jumps:
+
+```csharp
+FreeBsdSigaction sa = default;
+sa.Handler = &MyHandler;
+sa.Flags = PayloadSignal.SaRestart;
+PayloadSignal.sigaction(PayloadProcessControl.SigSegv, &sa, null);
+
+// Non-local jump for fault recovery
+FreeBsdJmpBuf env;
+if (PayloadSignal.setjmp(&env) == 0) { /* normal */ }
+else { /* recovered from fault */ }
+```
+
+Also provides `select` for I/O multiplexing, `setenv`/`unsetenv` for environment variables,
+`setsid`/`setpgid` for session management, and `execve` for process replacement.
+
+## ELF reader and NID resolution
+
+`PayloadElfReader` parses ELF 64-bit headers from memory or from another process:
+
+```csharp
+if (PayloadElfReader.IsValidElf(data, length))
+{
+    Elf64Ehdr* hdr = PayloadElfReader.GetHeader(data);
+    ulong base = PayloadElfReader.GetBaseAddress(data, hdr);
+    Elf64Phdr* dyn = PayloadElfReader.FindProgramHeader(data, hdr, ElfConstants.PtDynamic);
+}
+```
+
+`PayloadNid` computes symbol identifiers for function resolution:
+
+```csharp
+string nid = PayloadNid.Compute("sceKernelSleep"u8);
+ulong raw = PayloadNid.ComputeRaw("sceKernelSleep"u8);
+```
+
+## Process memory and pattern scanning
+
+`PayloadProcessMemory` reads and writes another process's address space:
+
+```csharp
+PayloadProcessMemory.Attach(pid);
+ulong val = PayloadProcessMemory.ReadU64(pid, addr);
+nint match = PayloadProcessMemory.PatternScan(pid, start, length, pattern, mask);
+PayloadProcessMemory.Detach(pid);
+```
+
+## Image mount dispatch
+
+`PayloadImageMount` detects image files and mounts them through the correct device path:
+
+```csharp
+var type = PayloadImageMount.DetectType(path);
+int unit = PayloadImageMount.MdAttach(imagePath, 512, readOnly: true);
+int devId = PayloadImageMount.LvdAttach(2048, imageType, deviceSize);
+```
+
+## Cryptography
+
+`Aes128` provides AES-128 with CBC and XTS modes for PFS content encryption:
+
+```csharp
+var cipher = new Aes128(key);
+cipher.EncryptCbc(data, iv);
+cipher.DecryptXts(data, tweak, tweakCipher);
+```
+
+`Rsa2048` handles RSA-2048 private key operations with CRT optimization.
+`PayloadPfsCrypto` ties these together for PFS sector-level encrypt/decrypt.
+
+## Kernel infrastructure
+
+Advanced kernel operations through the pipe primitive and kekcall:
+
+```csharp
+ulong pa = KernelPaging.VirtToPhys(io, cr3, dmapBase, kernelVa);
+KernelPaging.PhysCopyin(io, cr3, dmapBase, kva, src, len);
+KernelSysent.WriteSvFlags(io, sysentvecAddr, KernelSysent.SvFlagsDisabled);
+ulong gate = KernelIdt.ReadGateTarget(io, idtBase, vector);
+ulong result = PayloadKfncall.Call(io, sysentsAddr, kfnAddr, arg1, arg2);
+```
+
+`KernelOffsetsDetailed` provides per-firmware sysent, sysentvec, copyin/copyout,
+malloc, and p_sysent offsets for FW 3.00 through 12.70.
+
+## Bypass hooks
+
+`PayloadFselfBypass` installs debug register watchpoints for unsigned SELF loading.
+`PayloadFpkgBypass` registers fake PFS keys for fake-signed package content.
+`PayloadNpdrmBypass` decrypts RIF debug keys for license bypass.
+
+## Process injection
+
+`PayloadElfLoader` maps a PIE ELF into a target process via JIT shared memory.
+`PayloadProcessSpawner` creates and elevates new processes for code injection.
+`PayloadDetour` installs x86-64 inline hooks (14-byte absolute jumps).
+
+## Services
+
+`PayloadFtpServer`, `PayloadKlogRelay`, `PayloadDiscordRpc` provide TCP-based
+services. `PayloadIpcProtocol` defines the daemon IPC command set.
+`PayloadCheatManager` searches and writes process memory values.
+`PayloadShellUiPatcher` patches trophy availability checks.
+`PayloadShellCorePatcher` applies per-firmware binary patches.
+
 ## User service
 
 ```csharp
@@ -349,7 +457,7 @@ int rc = PayloadAppInstaller.Uninstall("PPSA99099\0"u8);
 int rc = PayloadAppInstaller.InstallAll();
 ```
 
-`InstallFromDirectory` hands a staged folder to the package installer for the named title id.
+`InstallFromDirectory` hands a prepared folder to the package installer for the named title id.
 `Uninstall` removes a previously installed title. `InstallAll` initialises the installer and
 installs all pending content in one call.
 
@@ -363,6 +471,8 @@ bring-up sequence.
 ## Layout
 
 Every wrapper class is a plain static class with `[LibraryImport]` interop declarations. The
-source lives under `src/SharpProspero/Payload/`. A missing wrapper for a symbol the payload needs
-is usually one of two things: add a `LibraryImport` in the payload's `Program.cs` (fast path), or
-add the wrapper to the SDK (permanent path, with the matching SPRX declaration).
+source is organised under `src/SharpProspero/Payload/` in domain-specific sub-namespaces:
+`Kernel/`, `IO/`, `Net/`, `Process/`, `Debug/`, `Elf/`, `Posix/`, `Services/`, `Bypass/`, and
+`Orchestration/`. A missing wrapper for a symbol the payload needs is usually one of two things:
+add a `LibraryImport` in the payload's `Program.cs` (fast path), or add the wrapper to the SDK
+(permanent path, with the matching SPRX declaration).

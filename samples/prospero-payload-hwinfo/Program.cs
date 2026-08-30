@@ -1,60 +1,56 @@
-// Calls five SCE kernel functions from libkernel_sys to
-// read the console model name, serial number, SoC temperature, CPU temperature, and CPU
-// frequency, then outputs the results via klog.
+// Reads the console model name, serial number, SoC temperature, CPU temperature, and CPU
+// frequency using the SDK's PayloadHardwareInfo API, then outputs the results via klog.
 
 using System.Runtime.InteropServices;
+using SharpProspero.Payload.Services;
 
 namespace SampleApp;
 
 internal static unsafe partial class Program
 {
-    [LibraryImport("libkernel_sys", EntryPoint = "sceKernelGetHwModelName")]
-    private static partial int GetHwModelName(byte* buffer);
-
-    [LibraryImport("libkernel_sys", EntryPoint = "sceKernelGetHwSerialNumber")]
-    private static partial int GetHwSerialNumber(byte* buffer);
-
-    [LibraryImport("libkernel_sys", EntryPoint = "sceKernelGetCpuFrequency")]
-    private static partial long GetCpuFrequency();
-
-    [LibraryImport("libkernel_sys", EntryPoint = "sceKernelGetCpuTemperature")]
-    private static partial int GetCpuTemperature(int* temperature);
-
-    [LibraryImport("libkernel_sys", EntryPoint = "sceKernelGetSocSensorTemperature")]
-    private static partial int GetSocSensorTemperature(int sensor, int* temperature);
-
     [LibraryImport("libScePosix", EntryPoint = "__prospero_klog")]
     private static partial void Klog(byte* message);
 
     [UnmanagedCallersOnly(EntryPoint = "__managed__Main")]
     public static int Main(void* args)
     {
-        byte* s = stackalloc byte[1000];
-        s[0] = 0;
-        int temp = 0;
-
-        if (GetHwModelName(s) == 0)
+        if (PayloadHardwareInfo.GetModelName(out string model) == 0)
         {
+            byte* s = stackalloc byte[1000];
+            int i = 0;
+            foreach (char c in model)
+            {
+                if (i >= 999) break;
+                s[i++] = (byte)c;
+            }
+            s[i] = 0;
             LogField("Model:\t\t "u8, s);
         }
 
-        s[0] = 0;
-        if (GetHwSerialNumber(s) == 0)
+        if (PayloadHardwareInfo.GetSerialNumber(out string serial) == 0)
         {
+            byte* s = stackalloc byte[1000];
+            int i = 0;
+            foreach (char c in serial)
+            {
+                if (i >= 999) break;
+                s[i++] = (byte)c;
+            }
+            s[i] = 0;
             LogField("S/N:\t\t "u8, s);
         }
 
-        if (GetSocSensorTemperature(0, &temp) == 0)
+        if (PayloadHardwareInfo.GetSocSensorTemperature(0, out int socTemp) == 0)
         {
-            LogInt("SoC temp:\t "u8, temp, " C\n"u8);
+            LogInt("SoC temp:\t "u8, socTemp, " C\n"u8);
         }
 
-        if (GetCpuTemperature(&temp) == 0)
+        if (PayloadHardwareInfo.GetCpuTemperature(out int cpuTemp) == 0)
         {
-            LogInt("CPU temp:\t "u8, temp, " C\n"u8);
+            LogInt("CPU temp:\t "u8, cpuTemp, " C\n"u8);
         }
 
-        long freqHz = GetCpuFrequency();
+        long freqHz = PayloadHardwareInfo.sceKernelGetCpuFrequency();
         long freqMhz = freqHz / (1000 * 1000);
         LogInt("CPU freq:\t "u8, (int)freqMhz, " MHz\n"u8);
 

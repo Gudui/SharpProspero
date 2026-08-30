@@ -5,6 +5,8 @@
 using System;
 using System.Runtime.InteropServices;
 using SharpProspero.Payload;
+using SharpProspero.Payload.Kernel;
+using SharpProspero.Payload.Process;
 
 namespace SampleApp;
 
@@ -13,17 +15,11 @@ internal static unsafe partial class Program
     [LibraryImport("libScePosix", EntryPoint = "__prospero_klog")]
     private static partial void Klog(byte* message);
 
-    [LibraryImport("libc", EntryPoint = "getpid")]
-    private static partial int GetPid();
-
-    [LibraryImport("libc", EntryPoint = "getuid")]
+    [LibraryImport("libkernel", EntryPoint = "getuid")]
     private static partial int GetUid();
 
-    [LibraryImport("libc", EntryPoint = "geteuid")]
+    [LibraryImport("libkernel", EntryPoint = "geteuid")]
     private static partial int GetEuid();
-
-    [LibraryImport("libkernel", EntryPoint = "sceKernelGetAppInfo")]
-    private static partial int SceKernelGetAppInfo(int pid, void* info);
 
     [UnmanagedCallersOnly(EntryPoint = "__managed__Main")]
     public static int Main(void* args)
@@ -33,7 +29,7 @@ internal static unsafe partial class Program
             return -1;
 
         var io = new PayloadKernelIo(pargs);
-        int pid = GetPid();
+        int pid = PayloadProcessControl.getpid();
         ulong proc = PayloadKernel.FindProcessByPid(io, pid);
         if (proc == 0)
             return -2;

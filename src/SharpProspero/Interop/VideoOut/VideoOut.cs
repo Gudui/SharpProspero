@@ -87,6 +87,30 @@ public static unsafe partial class VideoOut
     /// <returns>Zero on success, or a negative error code.</returns>
     [LibraryImport(Lib)]
     public static partial int sceVideoOutAddVblankEvent(nint eq, int handle, void* udata);
+
+    /// <summary>Removes a flip event from an equeue.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceVideoOutDeleteFlipEvent(nint eq, int handle);
+
+    /// <summary>Removes a vertical-blank event from an equeue.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceVideoOutDeleteVblankEvent(nint eq, int handle);
+
+    /// <summary>Registers a pre-vblank-start event on the given equeue.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceVideoOutAddPreVblankStartEvent(nint eq, int handle, void* udata);
+
+    /// <summary>Removes a pre-vblank-start event from an equeue.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceVideoOutDeletePreVblankStartEvent(nint eq, int handle);
+
+    /// <summary>Configures the output settings for a display handle.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceVideoOutConfigureOutput(int handle, void* config);
+
+    /// <summary>Queries whether a specific output mode is supported.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceVideoOutIsOutputSupported(int handle, void* outputMode);
 }
 
 /// <summary>

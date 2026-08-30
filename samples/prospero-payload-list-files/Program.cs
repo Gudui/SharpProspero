@@ -5,6 +5,9 @@
 using System;
 using System.Runtime.InteropServices;
 using SharpProspero.Payload;
+using SharpProspero.Payload.IO;
+using SharpProspero.Payload.Kernel;
+using SharpProspero.Payload.Process;
 
 namespace SampleApp;
 
@@ -12,19 +15,6 @@ internal static unsafe partial class Program
 {
     [LibraryImport("libScePosix", EntryPoint = "__prospero_klog")]
     private static partial void Klog(byte* message);
-
-    [LibraryImport("libc", EntryPoint = "getpid")]
-    private static partial int GetPid();
-
-    [LibraryImport("libc", EntryPoint = "opendir")]
-    private static partial void* OpenDir(byte* path);
-
-    [LibraryImport("libc", EntryPoint = "closedir")]
-    private static partial int CloseDir(void* dir);
-
-    // FreeBSD readdir returns a pointer to struct dirent; d_name starts at offset 8.
-    [LibraryImport("libc", EntryPoint = "readdir")]
-    private static partial byte* ReadDir(void* dir);
 
     [UnmanagedCallersOnly(EntryPoint = "__managed__Main")]
     public static int Main(void* args)
@@ -37,7 +27,7 @@ internal static unsafe partial class Program
 
         // Save the current rootdir, then set it to the kernel root vnode.
         ulong rootvnode = io.ReadU64(KernelOffsets1001.Rootvnode);
-        int pid = GetPid();
+        int pid = PayloadProcessControl.getpid();
         ulong proc = PayloadKernel.FindProcessByPid(io, pid);
         if (proc == 0)
             return -2;
@@ -62,16 +52,14 @@ internal static unsafe partial class Program
 
     private static void ListDir(byte* basePath)
     {
-        void* dir = OpenDir(basePath);
+        void* dir = PayloadFileSystem.opendir(basePath);
         if (dir == null)
             return;
 
-        byte* entry;
-        while ((entry = ReadDir(dir)) != null)
+        FreeBsdDirent* entry;
+        while ((entry = PayloadFileSystem.readdir(dir)) != null)
         {
-            // struct dirent on FreeBSD: d_fileno(8), d_off(8), d_reclen(2), d_type(1), d_namlen(1), d_name[256].
-            // d_name starts at offset 20 on FreeBSD 12+.
-            byte* name = entry + 20;
+            byte* name = entry->d_name;
 
             // Skip "." and ".."
             if (name[0] == '.' && (name[1] == 0 || (name[1] == '.' && name[2] == 0)))
@@ -91,6 +79,6 @@ internal static unsafe partial class Program
             Klog(fullPath);
         }
 
-        CloseDir(dir);
+        PayloadFileSystem.closedir(dir);
     }
 }
