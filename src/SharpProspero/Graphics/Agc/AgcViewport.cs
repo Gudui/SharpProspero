@@ -26,9 +26,9 @@ public struct AgcViewport
     private const ushort RegXScale = 0x10F, RegXOffset = 0x110, RegYScale = 0x111, RegYOffset = 0x112, RegZScale = 0x113, RegZOffset = 0x114;
     private const ushort RegZMin = 0x0B4, RegZMax = 0x0B5;
     private const ushort RegGbVertClip = 0x2FA, RegGbVertDisc = 0x2FB, RegGbHorzClip = 0x2FC, RegGbHorzDisc = 0x2FD;
-    private const ushort RegScreenScissorTL = 0x081, RegScreenScissorBR = 0x082;
-    private const ushort RegWindowScissorTL = 0x084, RegWindowScissorBR = 0x085;
-    private const ushort RegScissorTL = 0x090, RegScissorBR = 0x091;
+    private const ushort RegWindowScissorTL = 0x081, RegWindowScissorBR = 0x082;
+    private const ushort RegCliprect0TL = 0x084, RegCliprect0BR = 0x085;
+    private const ushort RegGenericScissorTL = 0x090, RegGenericScissorBR = 0x091;
     private const uint WindowOffsetDisable = 0x80000000u;
 
     /// <summary>The number of context registers the block writes.</summary>
@@ -86,13 +86,11 @@ public struct AgcViewport
         uint tlScreen = Corner(_scissorLeft, _scissorTop);
         uint brScreen = Corner(_scissorRight, _scissorBottom);
 
-        // GFX10 PA_SC_VPORT_SCISSOR_0_TL (0x090) packing:
-        // [13:0] TL_X
-        // [14] WINDOW_OFFSET_DISABLE
-        // [15] reserved
-        // [29:16] TL_Y
-        uint tlVport = (uint)Math.Clamp(_scissorLeft, 0, 0x3FFF) | (1u << 14) | (((uint)Math.Clamp(_scissorTop, 0, 0x3FFF)) << 16);
-        uint brVport = (uint)Math.Clamp(_scissorRight, 0, 0x3FFF) | (((uint)Math.Clamp(_scissorBottom, 0, 0x3FFF)) << 16);
+        // GFX10.3 PA_SC_GENERIC_SCISSOR_TL (0x090): TL_X [14:0], TL_Y [30:16],
+        // WINDOW_OFFSET_DISABLE [31]. Bit 14 is an X coordinate, not the disable flag.
+        // Retain the existing 14-bit coordinate clamp; viewport-0 scissor is at 0x094/0x095.
+        uint tlGeneric = (uint)Math.Clamp(_scissorLeft, 0, 0x3FFF) | WindowOffsetDisable | (((uint)Math.Clamp(_scissorTop, 0, 0x3FFF)) << 16);
+        uint brGeneric = (uint)Math.Clamp(_scissorRight, 0, 0x3FFF) | (((uint)Math.Clamp(_scissorBottom, 0, 0x3FFF)) << 16);
 
         int i = 0;
         destination[i++] = Float(RegXScale, xScale);
@@ -107,12 +105,12 @@ public struct AgcViewport
         destination[i++] = Float(RegGbVertDisc, _gbVertDisc);
         destination[i++] = Float(RegGbHorzClip, _gbHorzClip);
         destination[i++] = Float(RegGbHorzDisc, _gbHorzDisc);
-        destination[i++] = new CxRegister(RegScreenScissorTL, tlScreen);
-        destination[i++] = new CxRegister(RegScreenScissorBR, brScreen);
         destination[i++] = new CxRegister(RegWindowScissorTL, tlScreen);
         destination[i++] = new CxRegister(RegWindowScissorBR, brScreen);
-        destination[i++] = new CxRegister(RegScissorTL, tlVport);
-        destination[i++] = new CxRegister(RegScissorBR, brVport);
+        destination[i++] = new CxRegister(RegCliprect0TL, tlScreen);
+        destination[i++] = new CxRegister(RegCliprect0BR, brScreen);
+        destination[i++] = new CxRegister(RegGenericScissorTL, tlGeneric);
+        destination[i++] = new CxRegister(RegGenericScissorBR, brGeneric);
         return i;
     }
 

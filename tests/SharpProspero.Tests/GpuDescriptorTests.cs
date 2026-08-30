@@ -86,11 +86,46 @@ public sealed class GpuDescriptorTests
         Assert.Equal((ushort)0x111, registers[2].Offset);
         Assert.Equal(BitConverter.SingleToUInt32Bits(-540f), registers[2].Value);
 
-        // The scissor top-left carries the window-offset-disable bit at bit 14; the bottom-right packs the corner.
+        // The generic scissor disables window offsets at bit 31, outside the coordinate fields.
         Assert.Equal((ushort)0x090, registers[16].Offset);
-        Assert.Equal(1u << 14, registers[16].Value); // tlVport where left=0, top=0
+        Assert.Equal(1u << 31, registers[16].Value);
         Assert.Equal((ushort)0x091, registers[17].Offset);
-        Assert.Equal(1920u | (1080u << 16), registers[17].Value); // brVport
+        Assert.Equal(1920u | (1080u << 16), registers[17].Value);
+    }
+
+    [Fact]
+    public void DefaultGenericScissorHasPositiveAreaWithoutChangingOtherScissors()
+    {
+        var registers = new AgcViewport().ToRegisters();
+
+        Assert.Equal(18, registers.Length);
+        Assert.Equal((ushort)0x081, registers[12].Offset);
+        Assert.Equal(0u, registers[12].Value);
+        Assert.Equal((ushort)0x082, registers[13].Offset);
+        Assert.Equal(0x3FFF3FFFu, registers[13].Value);
+        Assert.Equal((ushort)0x084, registers[14].Offset);
+        Assert.Equal(0u, registers[14].Value);
+        Assert.Equal((ushort)0x085, registers[15].Offset);
+        Assert.Equal(0x3FFF3FFFu, registers[15].Value);
+        Assert.Equal((ushort)0x090, registers[16].Offset);
+        Assert.Equal(0x80000000u, registers[16].Value);
+        Assert.Equal((ushort)0x091, registers[17].Offset);
+        Assert.Equal(0x3FFF3FFFu, registers[17].Value);
+        Assert.True((registers[16].Value & 0x7FFF) < (registers[17].Value & 0x7FFF));
+    }
+
+    [Theory]
+    [InlineData(12, 34, 1920, 1080, 0x8022000Cu, 0x04380780u)]
+    [InlineData(-1, -2, 16384, 16384, 0x80000000u, 0x3FFF3FFFu)]
+    public void GenericScissorFlagDoesNotAlterCoordinatesOrExistingClamp(
+        int left, int top, int right, int bottom, uint expectedTl, uint expectedBr)
+    {
+        var viewport = new AgcViewport();
+        viewport.SetScissor(left, top, right, bottom);
+        var registers = viewport.ToRegisters();
+
+        Assert.Equal(expectedTl, registers[16].Value);
+        Assert.Equal(expectedBr, registers[17].Value);
     }
 
     [Fact]
