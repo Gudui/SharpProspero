@@ -59,9 +59,9 @@ if (-not $SdkRoot) { $SdkRoot = Split-Path -Parent (Split-Path -Parent $MyInvoca
 if (-not (Test-Path (Join-Path $SdkRoot "build/Prospero.App.targets")) -and $env:SHARPPROSPERO_ROOT) {
     $SdkRoot = $env:SHARPPROSPERO_ROOT
 }
-# A project created from a template points its imports and its reference to the SDK through the
+# A project created from a sample points its imports and its reference to the SDK through the
 # SharpProsperoRoot property (defaulting to the SHARPPROSPERO_ROOT environment variable). The in-tree
-# sample uses relative imports and does not need it, but a template project does, so the resolved SDK
+# sample uses relative imports and does not need it, but an external project does, so the resolved SDK
 # folder is passed to every compile and evaluate step below. Resolve it to a full path first.
 $SdkRoot = (Resolve-Path $SdkRoot).Path
 
@@ -213,7 +213,7 @@ if ($Payload) {
     $elf = Join-Path $OutputFolder "$name.elf"
 
     # Extract ProsperoSprx ItemGroup entries from the project. Each entry becomes a --sprx flag
-    # so the linker emits DT_NEEDED for the declared SPRX modules. Templates that declare no
+    # so the linker emits DT_NEEDED for the declared SPRX modules. Samples that declare no
     # <ProsperoSprx> items get the three defaults (libkernel_web, libSceLibcInternal, libSceNet).
     $sprxItems = @()
     try {
@@ -256,7 +256,7 @@ if ($Payload) {
     # The payload CRT supplies its own start sequence.  libbootstrapper.o is included because it
     # provides the NativeAOT runtime bootstrap (RhInitialize, RhRegisterOSModule, InitializeModules)
     # that must run before the managed entry point.  Its main() calls __managed__Main, which the
-    # template's [UnmanagedCallersOnly(EntryPoint = "__managed__Main")] exports.
+    # sample's [UnmanagedCallersOnly(EntryPoint = "__managed__Main")] exports.
     # libbootstrapperdll.o is the DLL-mode bootstrapper (PRX modules) and is excluded.
     foreach ($o in Get-ChildItem -Path $supportDir -File -Filter *.o) {
         if ($o.Name -eq 'libbootstrapperdll.o') { continue }

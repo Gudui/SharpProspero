@@ -48,10 +48,10 @@ if ($onWindows) {
     $wslReady = $wslDotnet
 }
 
-# SDK root for templates
+# SDK root for samples
 $root = $env:SHARPPROSPERO_ROOT
 $rootOk = $root -and (Test-Path (Join-Path $root "build/build-app.ps1"))
-Report "SDK root (SHARPPROSPERO_ROOT)" $rootOk $root "Set SHARPPROSPERO_ROOT to $here so templates and app builds find the SDK." $false
+Report "SDK root (SHARPPROSPERO_ROOT)" $rootOk $root "Set SHARPPROSPERO_ROOT to $here so samples and app builds find the SDK." $false
 
 Write-Host "-------------------------------"
 if ($ok) {

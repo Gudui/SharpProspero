@@ -10,6 +10,7 @@
 using System;
 using System.Runtime.InteropServices;
 using SharpProspero.Payload;
+using SharpProspero.Payload.Kernel;
 
 namespace SampleApp;
 

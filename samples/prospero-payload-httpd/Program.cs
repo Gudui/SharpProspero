@@ -10,6 +10,7 @@
 using System;
 using System.Text;
 using SharpProspero.Payload;
+using SharpProspero.Payload.Net;
 
 namespace SampleApp;
 

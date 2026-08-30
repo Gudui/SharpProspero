@@ -11,6 +11,8 @@
 
 using System;
 using System.Runtime.InteropServices;
+using SharpProspero.Payload.IO;
+using SharpProspero.Payload.Services;
 
 namespace SampleApp;
 
@@ -30,40 +32,8 @@ internal static unsafe partial class Program
     // first 128 bytes of content so the user still sees what the file looks like.
     private const int MaxLogBytes = 512;
 
-    // POSIX open flags. O_RDONLY is 0 on FreeBSD, which is what libc uses; the constant is spelled
-    // out to keep the intent readable at the call site.
-    private const int O_RDONLY = 0x0000;
-
-    // Bytes reserved in front of the notification payload before the caller's message. The shell
-    // read notification requests as a fixed layout where the visible text starts at offset 45.
-    private const int NotifyTextOffset = 45;
-
-    // Buffer size for the notification request. The shell rejects anything shorter than 3120.
-    private const int NotifyRequestBytes = 3120;
-
     [LibraryImport("libScePosix", EntryPoint = "__prospero_klog")]
     private static partial void Klog(byte* message);
-
-    [LibraryImport("libkernel", EntryPoint = "sceKernelSendNotificationRequest")]
-    private static partial int Notify(int device, void* request, nuint size, int blocking);
-
-    [LibraryImport("libc", EntryPoint = "open")]
-    private static partial int Open(byte* path, int flags);
-
-    [LibraryImport("libc", EntryPoint = "read")]
-    private static partial nint Read(int fd, byte* buffer, nuint count);
-
-    [LibraryImport("libc", EntryPoint = "close")]
-    private static partial int Close(int fd);
-
-    [LibraryImport("libc", EntryPoint = "opendir")]
-    private static partial void* Opendir(byte* path);
-
-    [LibraryImport("libc", EntryPoint = "readdir")]
-    private static partial void* Readdir(void* dir);
-
-    [LibraryImport("libc", EntryPoint = "closedir")]
-    private static partial int Closedir(void* dir);
 
     [System.Runtime.InteropServices.UnmanagedCallersOnly(EntryPoint = "__managed__Main")]
     public static int Main(void* args)
@@ -93,7 +63,7 @@ internal static unsafe partial class Program
         }
 
         Log("<118>read-param-json: no param.json found\n"u8);
-        SendNotification("read-param-json: not found"u8);
+        PayloadNotification.SendKernelNotification("read-param-json: not found"u8);
         return -1;
     }
 
@@ -156,7 +126,7 @@ internal static unsafe partial class Program
         int rootLen = CopyBytes(rootZ, root);
         rootZ[rootLen] = 0;
 
-        void* dir = Opendir(rootZ);
+        void* dir = PayloadFileSystem.opendir(rootZ);
         if (dir == null)
             return 0;
 
@@ -165,11 +135,11 @@ internal static unsafe partial class Program
         {
             while (true)
             {
-                void* entry = Readdir(dir);
+                FreeBsdDirent* entry = PayloadFileSystem.readdir(dir);
                 if (entry == null)
                     break;
 
-                byte* name = (byte*)entry + 8;
+                byte* name = entry->d_name;
                 if (name[0] != (byte)'P' || name[1] != (byte)'P')
                     continue;
 
@@ -184,7 +154,7 @@ internal static unsafe partial class Program
         }
         finally
         {
-            Closedir(dir);
+            PayloadFileSystem.closedir(dir);
         }
 
         return 0;
@@ -246,19 +216,19 @@ internal static unsafe partial class Program
 
     private static int ReadEntireFile(byte* pathZ, byte* buffer)
     {
-        int fd = Open(pathZ, O_RDONLY);
+        int fd = PayloadIo.open(pathZ, PayloadFileSystem.O_RDONLY);
         if (fd < 0)
             return 0;
 
         int total = 0;
         while (total < MaxReadBytes)
         {
-            nint n = Read(fd, buffer + total, (nuint)(MaxReadBytes - total));
+            long n = PayloadIo.read(fd, buffer + total, (nuint)(MaxReadBytes - total));
             if (n <= 0)
                 break;
             total += (int)n;
         }
-        Close(fd);
+        PayloadIo.close(fd);
         return total;
     }
 
@@ -325,27 +295,12 @@ internal static unsafe partial class Program
         dumpLine[dumpLen] = 0;
         Klog(dumpLine);
 
-        SendNotification("read-param-json: done"u8);
+        PayloadNotification.SendKernelNotification("read-param-json: done"u8);
     }
 
     private static void Log(ReadOnlySpan<byte> message)
     {
         fixed (byte* p = message)
             Klog(p);
-    }
-
-    private static void SendNotification(ReadOnlySpan<byte> message)
-    {
-        byte* req = stackalloc byte[NotifyRequestBytes];
-        new Span<byte>(req, NotifyRequestBytes).Clear();
-        int len = message.Length;
-        if (len > NotifyRequestBytes - NotifyTextOffset - 1)
-            len = NotifyRequestBytes - NotifyTextOffset - 1;
-        fixed (byte* src = message)
-        {
-            for (int i = 0; i < len; i++)
-                req[NotifyTextOffset + i] = src[i];
-        }
-        Notify(0, req, NotifyRequestBytes, 0);
     }
 }

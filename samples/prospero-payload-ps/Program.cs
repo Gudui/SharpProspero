@@ -5,25 +5,16 @@
 using System;
 using System.Runtime.InteropServices;
 using SharpProspero.Payload;
+using SharpProspero.Payload.Kernel;
+using SharpProspero.Payload.Posix;
+using SharpProspero.Payload.Process;
 
 namespace SampleApp;
 
 internal static unsafe partial class Program
 {
-    [LibraryImport("libc", EntryPoint = "sysctl")]
-    private static partial int Sysctl(int* name, uint namelen, void* oldp, nuint* oldlenp,
-        void* newp, nuint newlen);
-
-    [LibraryImport("libkernel", EntryPoint = "sceKernelGetAppInfo")]
-    private static partial int SceKernelGetAppInfo(int pid, void* info);
-
     [LibraryImport("libScePosix", EntryPoint = "__prospero_klog")]
     private static partial void Klog(byte* message);
-
-    // sysctl MIBs: CTL_KERN=1, KERN_PROC=14, KERN_PROC_PROC=8
-    private const int CtlKern = 1;
-    private const int KernProc = 14;
-    private const int KernProcProc = 8;
 
     // kinfo_proc field offsets:
     private const int KiStructsize = 0;    // int at offset 0
@@ -39,14 +30,14 @@ internal static unsafe partial class Program
         PayloadKernelIo io = pargs != null ? new PayloadKernelIo(pargs) : default;
 
         int* mib = stackalloc int[4];
-        mib[0] = CtlKern;
-        mib[1] = KernProc;
-        mib[2] = KernProcProc;
+        mib[0] = PayloadSysctl.CtlKern;
+        mib[1] = PayloadSysctl.KernProc;
+        mib[2] = PayloadSysctl.KernProcProc;
         mib[3] = 0;
 
         // First call: determine buffer size.
         nuint bufSize = 0;
-        if (Sysctl(mib, 4, null, &bufSize, null, 0) != 0)
+        if (PayloadSysctl.sysctl(mib, 4, null, &bufSize, null, 0) != 0)
             return -1;
 
         // Allocate on stack if small enough, otherwise bail (payloads have limited heap).
@@ -54,7 +45,7 @@ internal static unsafe partial class Program
             return -2;
 
         byte* buf = stackalloc byte[(int)bufSize];
-        if (Sysctl(mib, 4, buf, &bufSize, null, 0) != 0)
+        if (PayloadSysctl.sysctl(mib, 4, buf, &bufSize, null, 0) != 0)
             return -3;
 
         // Header
