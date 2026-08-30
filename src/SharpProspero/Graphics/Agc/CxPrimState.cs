@@ -31,10 +31,10 @@ public sealed unsafe class CxPrimState
     public const ushort NggClipControlOffset = 0x020E;
 
     /// <summary>
-    /// GFX10 NGG edge-flag enable and vertex-reuse depth. This matches the complete non-tessellated,
-    /// no-logical-GS pipeline value emitted by the reference GFX10.3 driver.
+    /// GFX10 NGG vertex-reuse depth for a pipeline without user edge flags. The Vulkan ABI supplies
+    /// zero initial edge flags, so INDEX_BUF_EDGE_FLAG_ENA remains disabled while reuse depth is 30.
     /// </summary>
-    public const uint NggClipControlValue = 0x0000007A;
+    public const uint NggClipControlValue = 0x00000078;
 
     private readonly CxRegister[] _regs = new CxRegister[MaxRegisters];
     private int _count;
