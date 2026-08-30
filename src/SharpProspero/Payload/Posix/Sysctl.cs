@@ -21,7 +21,6 @@ namespace SharpProspero.Payload.Posix;
 /// </remarks>
 public static unsafe partial class PayloadSysctl
 {
-    private const string Lib = "libc";
     private const string LibKernel = "libkernel";
 
     /// <summary>Top-level MIB: kernel parameters.</summary>
@@ -54,18 +53,20 @@ public static unsafe partial class PayloadSysctl
         void* newp, nuint newlen);
 
     /// <summary>
-    /// Returns the list of mounted filesystems. The buffer is allocated by the library.
+    /// Returns the list of mounted filesystems.
     /// </summary>
     /// <param name="bufp">On success, points to an array of <c>statfs</c> structures.</param>
     /// <param name="mode">Either <see cref="MntWait"/> or <see cref="MntNowait"/>.</param>
     /// <returns>The number of mounted filesystems, or -1 on error.</returns>
     /// <remarks>
-    /// <c>getmntinfo</c> is not exported by any SPRX module on the target platform.
-    /// This declaration requires static linking against a libc archive that provides
-    /// it. TODO: Replace with a managed wrapper using <c>getvfsstat</c> via sysctl.
+    /// <c>getmntinfo</c> is not exported by any SPRX module on the target platform (it exists
+    /// only in static <c>libc.a</c>). This method throws at runtime. Replace callers with a
+    /// managed wrapper that invokes <c>getvfsstat</c> via <see cref="sysctl"/>.
     /// </remarks>
-    [LibraryImport(Lib)]
-    public static partial int getmntinfo(void** bufp, int mode);
+    /// <exception cref="System.PlatformNotSupportedException">Always thrown.</exception>
+    public static int getmntinfo(void** bufp, int mode) =>
+        throw new System.PlatformNotSupportedException(
+            "getmntinfo is not exported by any SPRX module. Use sysctl or getvfsstat instead.");
 
     /// <summary>Third-level MIB: all processes (one entry per pid).</summary>
     public const int KernProcPid = 0;

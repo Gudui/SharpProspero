@@ -148,14 +148,14 @@ public static unsafe partial class PayloadProcessControl
     public static partial int sceKernelTerminateProcess(int pid, int* ret);
 
     /// <summary>
-    /// Spawns a new process from an executable path. Requires <c>libkernel_sys</c>.
+    /// Spawns a new process from an executable path.
     /// </summary>
     /// <param name="pid">On success, receives the new process identifier.</param>
     /// <param name="dbg">Debug flags (0 for default).</param>
     /// <param name="path">A NUL-terminated path to the executable.</param>
     /// <param name="root">A NUL-terminated root directory path, or null.</param>
     /// <param name="argv">A null-terminated array of argument strings, or null.</param>
-    [LibraryImport(LibKernelSys)]
+    [LibraryImport(LibKernel)]
     public static partial int sceKernelSpawn(int* pid, int dbg, byte* path, byte* root, byte** argv);
 
     /// <summary>

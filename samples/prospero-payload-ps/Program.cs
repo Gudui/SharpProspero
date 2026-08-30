@@ -11,11 +11,8 @@ using SharpProspero.Payload.Process;
 
 namespace SampleApp;
 
-internal static unsafe partial class Program
+internal static unsafe class Program
 {
-    [LibraryImport("libScePosix", EntryPoint = "__prospero_klog")]
-    private static partial void Klog(byte* message);
-
     // kinfo_proc field offsets:
     private const int KiStructsize = 0;    // int at offset 0
     private const int KiPid = 72;          // pid_t at offset 72
@@ -50,7 +47,7 @@ internal static unsafe partial class Program
 
         // Header
         fixed (byte* hdr = "  PID   PPID    UID  Command\n\0"u8)
-            Klog(hdr);
+            PayloadCrt.Klog(hdr);
 
         // Walk each kinfo_proc entry.
         byte* ptr = buf;
@@ -80,7 +77,7 @@ internal static unsafe partial class Program
                 line[pos++] = comm[i];
             line[pos++] = (byte)'\n';
             line[pos] = 0;
-            Klog(line);
+            PayloadCrt.Klog(line);
 
             ptr += structsize;
         }

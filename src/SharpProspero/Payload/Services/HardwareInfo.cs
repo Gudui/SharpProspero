@@ -7,18 +7,20 @@ namespace SharpProspero.Payload.Services;
 
 /// <summary>
 /// Reads hardware information from the kernel in a payload context: the console model name,
-/// its serial number, CPU frequency, CPU temperature, and SoC sensor temperatures. Wraps
-/// the five functions from <c>libkernel_sys</c> that read hardware state.
+/// its serial number, CPU frequency, CPU temperature, SoC sensor temperatures, and fan duty.
+/// Hardware-name functions (<c>sceKernelGetHwModelName</c>, <c>sceKernelGetHwSerialNumber</c>)
+/// are exported by <c>libkernel_sys</c>; the remaining functions are exported by
+/// <c>libkernel</c>.
 /// </summary>
 /// <remarks>
-/// These functions are exported by <c>libkernel_sys.sprx</c>, not the default
-/// <c>libkernel_web.sprx</c>. A payload template that uses this class must declare
-/// <c>libkernel_sys.sprx</c> as its kernel module override, and include
-/// <c>&lt;DirectPInvoke Include="libkernel_sys" /&gt;</c> in its csproj.
+/// A payload template that uses this class must include both
+/// <c>&lt;DirectPInvoke Include="libkernel_sys" /&gt;</c> and
+/// <c>&lt;DirectPInvoke Include="libkernel" /&gt;</c> in its csproj.
 /// </remarks>
 public static unsafe partial class PayloadHardwareInfo
 {
     private const string Lib = "libkernel_sys";
+    private const string LibKernel = "libkernel";
 
     /// <summary>
     /// Writes the console's model name into <paramref name="buffer"/>. The buffer should be at
@@ -39,14 +41,14 @@ public static unsafe partial class PayloadHardwareInfo
     /// <summary>
     /// Returns the CPU frequency in Hz. Divide by <c>1_000_000</c> for MHz.
     /// </summary>
-    [LibraryImport(Lib)]
+    [LibraryImport(LibKernel)]
     public static partial long sceKernelGetCpuFrequency();
 
     /// <summary>
     /// Writes the CPU temperature in degrees Celsius into <paramref name="temperature"/>.
     /// </summary>
     /// <returns>Zero on success, or a negative error code.</returns>
-    [LibraryImport(Lib)]
+    [LibraryImport(LibKernel)]
     public static partial int sceKernelGetCpuTemperature(int* temperature);
 
     /// <summary>
@@ -54,7 +56,7 @@ public static unsafe partial class PayloadHardwareInfo
     /// <paramref name="temperature"/> in degrees Celsius. Sensor 0 is the primary SoC sensor.
     /// </summary>
     /// <returns>Zero on success, or a negative error code.</returns>
-    [LibraryImport(Lib)]
+    [LibraryImport(LibKernel)]
     public static partial int sceKernelGetSocSensorTemperature(int sensor, int* temperature);
 
     /// <summary>Reads the console model name as a managed string.</summary>
@@ -112,7 +114,7 @@ public static unsafe partial class PayloadHardwareInfo
     /// Reads the current fan duty cycle. The duty value ranges from 0 (off) to 255 (full speed).
     /// </summary>
     /// <returns>Zero on success, or a negative error code.</returns>
-    [LibraryImport(Lib)]
+    [LibraryImport(LibKernel)]
     public static partial int sceKernelGetCurrentFanDuty(int* unk, int* duty);
 
     /// <summary>Reads the current fan duty cycle as a percentage (0–100).</summary>

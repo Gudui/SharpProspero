@@ -10,7 +10,7 @@ namespace SharpProspero.Payload.Debug;
 /// </summary>
 public static unsafe partial class PayloadAsyncIo
 {
-    private const string Lib = "libc";
+    private const string Lib = "libkernel";
 
     /// <summary>Submits an asynchronous read request.</summary>
     [LibraryImport(Lib)]

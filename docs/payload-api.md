@@ -10,6 +10,40 @@ Everything a payload calls from managed code lives under the `SharpProspero.Payl
 This page groups the surface by what it does, names the wrapper class, and shows one call for
 each.
 
+## CRT functions
+
+`PayloadCrt` provides the CRT-emitted functions the toolchain statically links into every
+payload: the kernel log, the raw syscall gateway, and the payload arguments accessor.
+
+```csharp
+// Kernel log
+PayloadCrt.Klog("hello from payload\n\0"u8);
+
+// Raw FreeBSD syscall (e.g. SYS_close = 6)
+PayloadCrt.Syscall(PayloadCrt.SYS_close, fd);
+
+// Payload arguments
+PayloadArgs* args = PayloadCrt.GetPayloadArgs();
+```
+
+These symbols live in the payload's own `.text` section, not in an SPRX module. The library
+name `"libScePosix"` on the `[LibraryImport]` attribute is a DirectPInvoke placeholder that
+the linker resolves at compile time — it never reaches the on-device loader.
+
+All `PayloadCrt` methods carry `[SuppressGCTransition]` because the CRT functions are thin
+in-process trampolines (a handful of instructions, no blocking). SPRX-resolved functions
+(like `sceUserServiceInitialize`) may block and should NOT carry `[SuppressGCTransition]`.
+
+### DirectPInvoke resolution
+
+NativeAOT resolves `[LibraryImport]` calls at link time by searching ALL libraries declared
+as `<DirectPInvoke>` targets in `Prospero.Payload.props` — currently `libkernel`, `libc`,
+and `libScePosix`. The linker matches the entry point against every declared library's exports
+and binds the first match. This means a `[LibraryImport("libc", EntryPoint = "getpid")]` still
+resolves to `libkernel.so`'s `getpid` export, because the linker searches `libkernel.so` and
+finds it there. The SDK wrappers use the correct library names for clarity; a wrong name links
+but is misleading.
+
 ## Entry point and arguments
 
 | Type | What it holds |

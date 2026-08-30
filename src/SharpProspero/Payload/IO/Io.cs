@@ -8,11 +8,11 @@ namespace SharpProspero.Payload.IO;
 /// <summary>
 /// Low-level file descriptor I/O for a payload context. Wraps the POSIX <c>open</c>,
 /// <c>close</c>, <c>read</c>, <c>write</c>, <c>lseek</c>, <c>pread</c>, <c>pwrite</c>,
-/// <c>fstat</c>, <c>ioctl</c>, <c>pipe</c>, <c>dup2</c>, and <c>fcntl</c> from <c>libc</c>.
+/// <c>fstat</c>, <c>ioctl</c>, <c>pipe</c>, <c>dup2</c>, and <c>fcntl</c> from <c>libkernel</c>.
 /// </summary>
 public static unsafe partial class PayloadIo
 {
-    private const string Lib = "libc";
+    private const string Lib = "libkernel";
 
     /// <summary>Opens a file at <paramref name="path"/> with <paramref name="flags"/> and
     /// <paramref name="mode"/> permissions.</summary>

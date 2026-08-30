@@ -40,8 +40,7 @@ public unsafe struct PtraceIoDesc
 /// </remarks>
 public static unsafe partial class PayloadDebug
 {
-    private const string LibC = "libc";
-    private const string LibPosix = "libScePosix";
+    private const string Lib = "libkernel";
 
     // ---- ptrace request constants (FreeBSD values) ----
 
@@ -77,7 +76,7 @@ public static unsafe partial class PayloadDebug
     /// <param name="data">Request-specific integer data.</param>
     /// <returns>Zero on success for most requests, or -1 on error.</returns>
     [SuppressGCTransition]
-    [LibraryImport(LibC)]
+    [LibraryImport(Lib)]
     public static partial int ptrace(int request, int pid, void* addr, int data);
 
     /// <summary>
@@ -91,34 +90,34 @@ public static unsafe partial class PayloadDebug
     /// <param name="rusage">Resource usage buffer, or <c>null</c> if not needed.</param>
     /// <returns>The pid of the process that changed state, or -1 on error.</returns>
     [SuppressGCTransition]
-    [LibraryImport(LibC)]
+    [LibraryImport(Lib)]
     public static partial int wait4(int pid, int* status, int options, void* rusage);
 
     /// <summary>
     /// Copies data out from a process at the given address using the mdbg primitive.
     /// </summary>
     [SuppressGCTransition]
-    [LibraryImport(LibPosix)]
+    [LibraryImport(Lib)]
     public static partial int mdbg_copyout(int pid, nint addr, void* buf, nuint len);
 
     /// <summary>
     /// Copies data into a process at the given address using the mdbg primitive.
     /// </summary>
     [SuppressGCTransition]
-    [LibraryImport(LibPosix)]
+    [LibraryImport(Lib)]
     public static partial int mdbg_copyin(int pid, void* buf, nint addr, nuint len);
 
     /// <summary>
     /// Returns the effective user id of the calling process.
     /// </summary>
     [SuppressGCTransition]
-    [LibraryImport(LibC)]
+    [LibraryImport(Lib)]
     public static partial uint geteuid();
 
     /// <summary>
     /// Returns the real user id of the calling process.
     /// </summary>
     [SuppressGCTransition]
-    [LibraryImport(LibC)]
+    [LibraryImport(Lib)]
     public static partial uint getuid();
 }

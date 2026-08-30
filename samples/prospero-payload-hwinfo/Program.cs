@@ -2,15 +2,13 @@
 // frequency using the SDK's PayloadHardwareInfo API, then outputs the results via klog.
 
 using System.Runtime.InteropServices;
+using SharpProspero.Payload;
 using SharpProspero.Payload.Services;
 
 namespace SampleApp;
 
-internal static unsafe partial class Program
+internal static unsafe class Program
 {
-    [LibraryImport("libScePosix", EntryPoint = "__prospero_klog")]
-    private static partial void Klog(byte* message);
-
     [UnmanagedCallersOnly(EntryPoint = "__managed__Main")]
     public static int Main(void* args)
     {
@@ -67,7 +65,7 @@ internal static unsafe partial class Program
             line[pos++] = value[i];
         line[pos++] = (byte)'\n';
         line[pos] = 0;
-        Klog(line);
+        PayloadCrt.Klog(line);
     }
 
     private static void LogInt(System.ReadOnlySpan<byte> prefix, int value, System.ReadOnlySpan<byte> suffix)
@@ -89,6 +87,6 @@ internal static unsafe partial class Program
         for (int i = 0; i < suffix.Length; i++)
             line[pos++] = suffix[i];
         line[pos] = 0;
-        Klog(line);
+        PayloadCrt.Klog(line);
     }
 }

@@ -100,6 +100,7 @@ public unsafe struct FreeBsdFdSet
 public static unsafe partial class PayloadSignal
 {
     private const string Lib = "libc";
+    private const string LibKernel = "libkernel";
 
     /// <summary>Use <c>sa_sigaction</c> handler with siginfo.</summary>
     public const int SaSiginfo = 0x0040;
@@ -121,7 +122,7 @@ public static unsafe partial class PayloadSignal
     /// <param name="act">The new action, or null to query the current one.</param>
     /// <param name="oact">On return, the previous action, or null to discard it.</param>
     /// <returns>Zero on success, or -1 on error.</returns>
-    [LibraryImport(Lib)]
+    [LibraryImport(LibKernel)]
     public static partial int sigaction(int sig, FreeBsdSigaction* act, FreeBsdSigaction* oact);
 
     /// <summary>
@@ -148,7 +149,7 @@ public static unsafe partial class PayloadSignal
     /// <param name="exceptfds">Set of descriptors to watch for exceptions, or null.</param>
     /// <param name="timeout">Maximum wait time, or null for infinite.</param>
     /// <returns>The number of ready descriptors, 0 on timeout, or -1 on error.</returns>
-    [LibraryImport(Lib)]
+    [LibraryImport(LibKernel)]
     public static partial int select(int nfds, FreeBsdFdSet* readfds, FreeBsdFdSet* writefds,
         FreeBsdFdSet* exceptfds, FreeBsdTimeval* timeout);
 
@@ -168,13 +169,13 @@ public static unsafe partial class PayloadSignal
     /// <summary>
     /// Creates a new session. The calling process becomes the session leader.
     /// </summary>
-    [LibraryImport(Lib)]
+    [LibraryImport(LibKernel)]
     public static partial int setsid();
 
     /// <summary>
     /// Sets the process group identifier of the process <paramref name="pid"/>.
     /// </summary>
-    [LibraryImport(Lib)]
+    [LibraryImport(LibKernel)]
     public static partial int setpgid(int pid, int pgid);
 
     /// <summary>
@@ -183,6 +184,6 @@ public static unsafe partial class PayloadSignal
     /// <param name="path">A NUL-terminated path to the executable.</param>
     /// <param name="argv">A null-terminated array of argument strings.</param>
     /// <param name="envp">A null-terminated array of environment strings.</param>
-    [LibraryImport(Lib)]
+    [LibraryImport(LibKernel)]
     public static partial int execve(byte* path, byte** argv, byte** envp);
 }
