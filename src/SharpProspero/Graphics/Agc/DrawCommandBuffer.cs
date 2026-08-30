@@ -245,6 +245,36 @@ public sealed unsafe class DrawCommandBuffer : IDisposable
     /// </summary>
     public nint EventWrite(uint eventType, ulong eventControl = 0) => (nint)SceAgc.sceAgcDcbEventWrite(St, eventType, eventControl);
 
+    /// <summary>
+    /// Appends the addressed GFX10 <c>SAMPLE_PIPELINESTAT</c> event used by pipeline-statistics
+    /// queries. The firmware's generic event builder does not encode an address for this event, so
+    /// this exact packet is recorded here with the command buffer's normal capacity guard.
+    /// </summary>
+    /// <exception cref="ArgumentNullException"><paramref name="destination"/> is null.</exception>
+    /// <exception cref="ArgumentException"><paramref name="destination"/> is not 64-bit aligned.</exception>
+    /// <exception cref="InvalidOperationException">The command buffer has no room for the packet.</exception>
+    public nint SamplePipelineStatistics(void* destination)
+    {
+        if (destination is null)
+            throw new ArgumentNullException(nameof(destination));
+        if (((nuint)destination & (sizeof(ulong) - 1)) != 0)
+            throw new ArgumentException("The pipeline-statistics destination must be 64-bit aligned.", nameof(destination));
+
+        const uint packetDwords = 4;
+        State* state = St;
+        if (RemainingDwords < state->ReservedDwords + packetDwords)
+            throw new InvalidOperationException("The command buffer has no room for a pipeline-statistics sample packet.");
+
+        uint* packet = state->UpCursor;
+        ulong address = (ulong)destination;
+        packet[0] = 0xC002_4600; // EVENT_WRITE_EOP-style addressed event, two following payload dwords.
+        packet[1] = 0x0000_021E; // SAMPLE_PIPELINESTAT (0x1E), pipeline-stat event index (2).
+        packet[2] = (uint)address;
+        packet[3] = (uint)(address >> 32);
+        state->UpCursor += packetDwords;
+        return (nint)packet;
+    }
+
     // --- Present: wait for the display to release a buffer, then queue the flip. ---
 
     /// <summary>
