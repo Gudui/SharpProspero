@@ -77,6 +77,8 @@ public sealed unsafe class PipelineStatisticsQueryTests
         Assert.True(result.IsStructurallyValid);
         Assert.Equal(11UL, result.ClipperPrimitives);
         Assert.Equal(12UL, result.ClipperInvocations);
+        Assert.All(result.BeginTail, value => Assert.Equal(PipelineStatisticsQuery.Sentinel, value));
+        Assert.All(result.EndTail, value => Assert.Equal(PipelineStatisticsQuery.Sentinel, value));
     }
 
     [Fact]

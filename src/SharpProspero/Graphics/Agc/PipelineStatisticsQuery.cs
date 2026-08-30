@@ -13,6 +13,8 @@ public sealed record PipelineStatisticsQueryResult(
     ulong[] Begin,
     ulong[] End,
     ulong[] Delta,
+    ulong[] BeginTail,
+    ulong[] EndTail,
     bool BeginComplete,
     bool EndComplete,
     bool BeginTailIntact,
@@ -143,11 +145,14 @@ public sealed unsafe class PipelineStatisticsQuery : IDisposable
             delta[i] = unchecked(end[i] - begin[i]);
         }
 
-        bool beginTailIntact = TailIsSentinel(words.Slice(CounterCount, SampleStrideQwords - CounterCount));
-        bool endTailIntact = TailIsSentinel(words.Slice(
-            SampleStrideQwords + CounterCount, SampleStrideQwords - CounterCount));
+        ulong[] beginTail = words.Slice(CounterCount, SampleStrideQwords - CounterCount).ToArray();
+        ulong[] endTail = words.Slice(
+            SampleStrideQwords + CounterCount, SampleStrideQwords - CounterCount).ToArray();
+        bool beginTailIntact = TailIsSentinel(beginTail);
+        bool endTailIntact = TailIsSentinel(endTail);
         return new PipelineStatisticsQueryResult(
-            begin, end, delta, beginComplete, endComplete, beginTailIntact, endTailIntact);
+            begin, end, delta, beginTail, endTail,
+            beginComplete, endComplete, beginTailIntact, endTailIntact);
     }
 
     /// <summary>Releases the allocation after all GPU work and readback have completed.</summary>
