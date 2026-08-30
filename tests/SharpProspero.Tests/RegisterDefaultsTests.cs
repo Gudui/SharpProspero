@@ -111,6 +111,23 @@ public sealed unsafe class RegisterDefaultsTests : IDisposable
         Assert.All(RegisterDefaults.RenderTargetBlock(), record => Assert.Equal(0u, record.Value));
     }
 
+    [Fact]
+    public void AuditedAttrib3DefaultExposesTheExistingClGuardMismatch()
+    {
+        // Input from the recorded defaults audit, not a guess about hardware bit semantics.
+        // Keep other records zero to isolate just the newly restored ATTRIB3 reset value.
+        for (int i = 0; i < Offsets.Length; i++) _records[i].Value = 0;
+        _records[15].Value = 0x08C6C000;
+        var target = new CxRenderTarget().Init(RegisterDefaults.RenderTargetBlock());
+        var spec = new RenderTargetSpec(CxRenderTarget.Format.k8_8_8_8,
+            CxRenderTarget.ChannelType.kUNorm, CxRenderTarget.ChannelOrder.kAlt,
+            1920, 1080, 0x100000, CxRenderTarget.TileMode.kRenderTarget);
+        AgcRenderTargetSetup.Initialize(target, spec);
+        Assert.Equal((ushort)0x03B8, target[15].Offset);
+        Assert.Equal(0x4DC6C000u, target[15].Value);
+        Assert.NotEqual(0x4506C000u, target[15].Value); // CL's unchanged pre-submit guard.
+    }
+
     public void Dispose()
     {
         Field("_descriptor").SetValue(null, Pointer.Box(null, typeof(byte*)));
