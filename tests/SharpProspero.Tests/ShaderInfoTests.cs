@@ -72,7 +72,7 @@ public class ShaderInfoTests
     }
 
     [Fact]
-    public void Read_MeshPixelShaderAdvertisesOnlyItsUncompressedMrt0Export()
+    public void Read_MeshPixelShaderMatchesTheConstantWhiteDiagnosticProgram()
     {
         byte[] container = LoadShaderResource("SharpProspero.Shaders.mesh_ps.sb");
         ShaderInfo info = ShaderInfo.Read(container);
@@ -85,8 +85,33 @@ public class ShaderInfoTests
             info.ContextRegisters,
             register => register.Offset == 0x01B8 && register.Value == 0x01000000);
         Assert.Equal(
-            "f62be2093642e923be5ba72cf2c61fa1ae0555584c69e289d3bd7416922659b6",
+            "0238a27c7903ee586e1d9ace87d08aea802081f12149143ec36c8ab98fdda792",
             Convert.ToHexString(SHA256.HashData(LoadShaderSection(container, ".shader_text"))).ToLowerInvariant());
+    }
+
+    [Fact]
+    public void Read_ConstantWhiteDiagnosticPreservesEveryByteOutsideItsDataSourcePatch()
+    {
+        byte[] container = LoadShaderResource("SharpProspero.Shaders.mesh_ps.sb");
+        Assert.Equal(968, container.Length);
+        Assert.Equal(
+            "ab3722ac8e950ead1a53adfa9c2ff0d85be68cae0eb11ea2bc40ffb85461490d",
+            Convert.ToHexString(SHA256.HashData(container)).ToLowerInvariant());
+
+        // Identity checks only: LLVM gfx1030 is the instruction authority. GPU-CL replaces
+        // eight interpolation instructions with four constant-one moves and four NOPs.
+        Assert.Equal(
+            Convert.FromHexString("F202047EF202067EF202087EF2020A7E000080BF000080BF000080BF000080BF"),
+            container[0x44..0x64]);
+        Assert.Equal(Convert.FromHexString("0F1800F802030405"), container[0x64..0x6C]);
+
+        // Restoring only those 32 bytes must recover the complete CK shader hash, proving
+        // that headers, register records, export, padding and all other bytes are unchanged.
+        Convert.FromHexString("000408C8010409C800050CC801050DC8000610C8010611C8000714C8010715C8")
+            .CopyTo(container, 0x44);
+        Assert.Equal(
+            "580f0794d49f2b17fc1054e9d02f9df4e9a83e071ff47cf3b316aec586b1afce",
+            Convert.ToHexString(SHA256.HashData(container)).ToLowerInvariant());
     }
 
     [Fact]
