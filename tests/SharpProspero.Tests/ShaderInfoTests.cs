@@ -71,10 +71,11 @@ public class ShaderInfoTests
         Assert.Equal("pixel", info.KindName);
     }
 
+#if DIAGNOSTIC_SHADERS
     [Fact]
-    public void Read_MeshPixelShaderMatchesTheConstantWhiteDiagnosticProgram()
+    public void Read_DiagnosticPixelShaderMatchesTheConstantWhiteProgram()
     {
-        byte[] container = LoadShaderResource("SharpProspero.Shaders.mesh_ps.sb");
+        byte[] container = LoadShaderResource("SharpProspero.Diagnostics.Shaders.constant_white_ps.sb");
         ShaderInfo info = ShaderInfo.Read(container);
 
         Assert.Equal(9, info.ContextRegisters.Count);
@@ -92,7 +93,7 @@ public class ShaderInfoTests
     [Fact]
     public void Read_ConstantWhiteDiagnosticPreservesEveryByteOutsideItsDataSourcePatch()
     {
-        byte[] container = LoadShaderResource("SharpProspero.Shaders.mesh_ps.sb");
+        byte[] container = LoadShaderResource("SharpProspero.Diagnostics.Shaders.constant_white_ps.sb");
         Assert.Equal(968, container.Length);
         Assert.Equal(
             "ab3722ac8e950ead1a53adfa9c2ff0d85be68cae0eb11ea2bc40ffb85461490d",
@@ -115,9 +116,9 @@ public class ShaderInfoTests
     }
 
     [Fact]
-    public void Read_MeshVertexShaderMatchesTheValidatedNggExportProgram()
+    public void Read_DiagnosticVertexShaderMatchesTheValidatedNggExportProgram()
     {
-        byte[] container = LoadShaderResource("SharpProspero.Shaders.mesh_vs.sb");
+        byte[] container = LoadShaderResource("SharpProspero.Diagnostics.Shaders.hardcoded_triangle_vs.sb");
 
         // The validated gfx1030 program completes its primitive and position exports. Parameter
         // exports do not own the position-stage completion bit, and the merged NGG vertex stage
@@ -130,7 +131,7 @@ public class ShaderInfoTests
     [Fact]
     public void Read_ResolvesSelfRelativeRegisterPointers()
     {
-        ShaderInfo info = ShaderInfo.Read(LoadShaderResource("SharpProspero.Shaders.mesh_vs.sb"));
+        ShaderInfo info = ShaderInfo.Read(LoadShaderResource("SharpProspero.Diagnostics.Shaders.hardcoded_triangle_vs.sb"));
 
         Assert.Contains(
             info.ContextRegisters,
@@ -143,6 +144,7 @@ public class ShaderInfoTests
             register => register.Offset == 0x02E4 && register.Value == 0x00000000);
         Assert.DoesNotContain(info.ContextRegisters, register => register.Offset == 0x0000);
     }
+#endif
 
     [Fact]
     public void Read_RejectsANonShaderFile()

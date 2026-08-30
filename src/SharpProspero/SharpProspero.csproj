@@ -32,4 +32,10 @@
     <EmbeddedResource Include="Graphics\Agc\Shaders\mesh_ps.sb" LogicalName="SharpProspero.Shaders.mesh_ps.sb" />
   </ItemGroup>
 
+  <!-- Diagnostics are opt-in and never replace the general-purpose mesh shader resources. -->
+  <ItemGroup Condition="'$(EmbedDiagnosticShaders)' == 'true'">
+    <EmbeddedResource Include="Graphics\Agc\Diagnostics\Shaders\hardcoded_triangle_vs.sb" LogicalName="SharpProspero.Diagnostics.Shaders.hardcoded_triangle_vs.sb" />
+    <EmbeddedResource Include="Graphics\Agc\Diagnostics\Shaders\constant_white_ps.sb" LogicalName="SharpProspero.Diagnostics.Shaders.constant_white_ps.sb" />
+  </ItemGroup>
+
 </Project>

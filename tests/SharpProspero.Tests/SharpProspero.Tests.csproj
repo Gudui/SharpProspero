@@ -7,6 +7,10 @@
     <EnableInternalTests>true</EnableInternalTests>
   </PropertyGroup>
 
+  <PropertyGroup Condition="'$(EmbedDiagnosticShaders)' == 'true'">
+    <DefineConstants>$(DefineConstants);DIAGNOSTIC_SHADERS</DefineConstants>
+  </PropertyGroup>
+
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.8.1" />
     <PackageReference Include="xunit" Version="2.9.3" />
