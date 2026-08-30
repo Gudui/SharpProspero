@@ -11,12 +11,13 @@
 
 using System;
 using System.Runtime.InteropServices;
+using SharpProspero.Payload;
 using SharpProspero.Payload.IO;
 using SharpProspero.Payload.Services;
 
 namespace SampleApp;
 
-internal static unsafe partial class Program
+internal static unsafe class Program
 {
     // When set to a nine-character identifier the payload reads that title's param.json directly.
     // Leaving it empty walks every known homebrew root and returns the first param.json found.
@@ -31,9 +32,6 @@ internal static unsafe partial class Program
     // finite; larger reads are logged in the "read <size>" line and the notification carries the
     // first 128 bytes of content so the user still sees what the file looks like.
     private const int MaxLogBytes = 512;
-
-    [LibraryImport("libScePosix", EntryPoint = "__prospero_klog")]
-    private static partial void Klog(byte* message);
 
     [System.Runtime.InteropServices.UnmanagedCallersOnly(EntryPoint = "__managed__Main")]
     public static int Main(void* args)
@@ -275,7 +273,7 @@ internal static unsafe partial class Program
 
         line[lineLen++] = (byte)'\n';
         line[lineLen] = 0;
-        Klog(line);
+        PayloadCrt.Klog(line);
 
         // Log a hex slice of the content so the user sees the raw bytes without needing to fetch
         // the file. Cap at MaxLogBytes to keep the klog line inside its buffer.
@@ -293,14 +291,13 @@ internal static unsafe partial class Program
         }
         dumpLine[dumpLen++] = (byte)'\n';
         dumpLine[dumpLen] = 0;
-        Klog(dumpLine);
+        PayloadCrt.Klog(dumpLine);
 
         PayloadNotification.SendKernelNotification("read-param-json: done"u8);
     }
 
     private static void Log(ReadOnlySpan<byte> message)
     {
-        fixed (byte* p = message)
-            Klog(p);
+        PayloadCrt.Klog(message);
     }
 }

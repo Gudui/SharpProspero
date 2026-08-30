@@ -4,15 +4,13 @@
 
 using System;
 using System.Runtime.InteropServices;
+using SharpProspero.Payload;
 using SharpProspero.Payload.Net;
 
 namespace SampleApp;
 
-internal static unsafe partial class Program
+internal static unsafe class Program
 {
-    [LibraryImport("libScePosix", EntryPoint = "__prospero_klog")]
-    private static partial void Klog(byte* message);
-
     private static int _netMemId = -1, _sslCtxId = -1, _httpCtxId = -1;
     private static int _tmplId = -1, _reqId = -1;
 
@@ -63,7 +61,7 @@ internal static unsafe partial class Program
             while ((length = PayloadHttp2.sceHttp2ReadData(_reqId, buf, 0x0FFF)) > 0)
             {
                 buf[length] = 0;
-                Klog(buf);
+                PayloadCrt.Klog(buf);
             }
         }
         return status;

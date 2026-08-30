@@ -94,7 +94,7 @@ public unsafe struct FreeBsdStatfs
 
 /// <summary>
 /// Filesystem mount and unmount operations for a payload context. Wraps <c>nmount</c>,
-/// <c>unmount</c>, and <c>statfs</c> from <c>libc</c>.
+/// <c>unmount</c>, and <c>statfs</c> from <c>libkernel</c>.
 /// </summary>
 /// <remarks>
 /// <c>nmount</c> takes an array of <see cref="FreeBsdIovec"/> pairs where each even-indexed entry
@@ -103,7 +103,7 @@ public unsafe struct FreeBsdStatfs
 /// </remarks>
 public static unsafe partial class PayloadMount
 {
-    private const string Lib = "libc";
+    private const string Lib = "libkernel";
 
     /// <summary>Read-only mount.</summary>
     public const int MntReadOnly = 0x01;

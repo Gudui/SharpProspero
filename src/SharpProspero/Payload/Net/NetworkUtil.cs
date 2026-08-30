@@ -28,6 +28,7 @@ public struct PollFd
 public static unsafe partial class PayloadNetworkUtil
 {
     private const string Lib = "libc";
+    private const string LibKernel = "libkernel";
 
     /// <summary>Data may be read without blocking.</summary>
     public const short PollIn = 0x0001;
@@ -51,7 +52,7 @@ public static unsafe partial class PayloadNetworkUtil
     /// <param name="nfds">Number of entries in <paramref name="fds"/>.</param>
     /// <param name="timeout">Timeout in milliseconds, or -1 for infinite.</param>
     /// <returns>The number of descriptors with events, 0 on timeout, or -1 on error.</returns>
-    [LibraryImport(Lib)]
+    [LibraryImport(LibKernel)]
     public static partial int poll(PollFd* fds, uint nfds, int timeout);
 
     /// <summary>Converts a 16-bit value from host to network byte order.</summary>
@@ -96,7 +97,7 @@ public static unsafe partial class PayloadNetworkUtil
     /// <param name="addr">Buffer to receive the address.</param>
     /// <param name="addrlen">On entry, the buffer size; on exit, the actual address size.</param>
     /// <returns>Zero on success, or -1 on error.</returns>
-    [LibraryImport(Lib)]
+    [LibraryImport(LibKernel)]
     public static partial int getsockname(int sockfd, void* addr, uint* addrlen);
 
     /// <summary>
@@ -106,7 +107,7 @@ public static unsafe partial class PayloadNetworkUtil
     /// <param name="addr">Buffer to receive the address.</param>
     /// <param name="addrlen">On entry, the buffer size; on exit, the actual address size.</param>
     /// <returns>Zero on success, or -1 on error.</returns>
-    [LibraryImport(Lib)]
+    [LibraryImport(LibKernel)]
     public static partial int getpeername(int sockfd, void* addr, uint* addrlen);
 
     /// <summary>IPv4 address family.</summary>

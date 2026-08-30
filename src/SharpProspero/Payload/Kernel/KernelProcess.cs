@@ -120,7 +120,7 @@ public static unsafe partial class PayloadKernel
 
     /// <summary>
     /// Applies the full 11-write credential and filesystem escalation to a process whose kernel
-    /// address is already known. The write set matches the reference implementation verbatim:
+    /// address is already known. The write set covers eleven fields:
     /// five uid/gid fields zeroed, authorization id set, two capability quadwords set to all-ones,
     /// one attribute byte set, and the root and jail directory vnodes pointed at the kernel's own
     /// root vnode.
@@ -494,7 +494,7 @@ public static unsafe partial class PayloadKernel
     /// Escapes the filesystem jail and raises the effective uid to root with full capabilities on
     /// a running process, without touching the prison pointer, the real / saved user or group
     /// identifiers, the authorisation identifier, or the attribute set. The narrower footprint
-    /// matches what the reference loader does for its own children and avoids the kernel
+    /// avoids the kernel
     /// bookkeeping paths that trap after a broader credential rewrite: cr_prison carries a
     /// reference-counted pointer whose list linkage the kernel walks on later scheduling
     /// decisions, and swapping it out from under a live process leaves the previous prison's

@@ -1,25 +1,16 @@
-// Prints console info (firmware version, authid,
-// capabilities, uid/euid, jail vnode), then tests mdbg (copyout/copyin) and ptrace
-// (PT_ATTACH/IO/DETACH) on SceRedisServer.
+// Prints privilege information for the calling process: authid, capability masks,
+// uid/euid, and jail-directory vnode.
 
 using System;
-using System.Runtime.InteropServices;
 using SharpProspero.Payload;
+using SharpProspero.Payload.Debug;
 using SharpProspero.Payload.Kernel;
 using SharpProspero.Payload.Process;
 
 namespace SampleApp;
 
-internal static unsafe partial class Program
+internal static unsafe class Program
 {
-    [LibraryImport("libScePosix", EntryPoint = "__prospero_klog")]
-    private static partial void Klog(byte* message);
-
-    [LibraryImport("libkernel", EntryPoint = "getuid")]
-    private static partial int GetUid();
-
-    [LibraryImport("libkernel", EntryPoint = "geteuid")]
-    private static partial int GetEuid();
 
     [UnmanagedCallersOnly(EntryPoint = "__managed__Main")]
     public static int Main(void* args)
@@ -49,8 +40,8 @@ internal static unsafe partial class Program
         ulong caps1 = io.ReadU64(ucred + (ulong)KernelOffsets1001.UcredSceCaps + 8);
 
         // Read uid.
-        int uid = GetUid();
-        int euid = GetEuid();
+        int uid = (int)PayloadDebug.getuid();
+        int euid = (int)PayloadDebug.geteuid();
 
         // Read jail vnode.
         ulong filedesc = io.ReadU64(proc + (ulong)KernelOffsets1001.ProcFd);
@@ -58,7 +49,7 @@ internal static unsafe partial class Program
 
         // Output console info.
         fixed (byte* hdr = "Privileges\n----------\n\0"u8)
-            Klog(hdr);
+            PayloadCrt.Klog(hdr);
 
         LogHex("authid:  0x"u8, authId);
         LogHex("caps[0]: 0x"u8, caps0);
@@ -78,7 +69,7 @@ internal static unsafe partial class Program
             line[pos++] = HexChar((int)((value >> shift) & 0xF));
         line[pos++] = (byte)'\n';
         line[pos] = 0;
-        Klog(line);
+        PayloadCrt.Klog(line);
     }
 
     private static void LogInt(ReadOnlySpan<byte> prefix, int value)
@@ -96,7 +87,7 @@ internal static unsafe partial class Program
             line[pos++] = digits[i];
         line[pos++] = (byte)'\n';
         line[pos] = 0;
-        Klog(line);
+        PayloadCrt.Klog(line);
     }
 
     private static byte HexChar(int nibble) =>

@@ -34,7 +34,7 @@ public unsafe struct FreeBsdKevent
 
 /// <summary>
 /// Raw <c>kqueue</c>/<c>kevent</c> event notification for a payload context. Wraps the FreeBSD
-/// <c>kqueue(2)</c> and <c>kevent(2)</c> system calls from <c>libc</c>.
+/// <c>kqueue(2)</c> and <c>kevent(2)</c> system calls from <c>libkernel</c>.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -46,7 +46,7 @@ public unsafe struct FreeBsdKevent
 /// </remarks>
 public static unsafe partial class PayloadEvent
 {
-    private const string Lib = "libc";
+    private const string Lib = "libkernel";
 
     // ---- Filters ----
 

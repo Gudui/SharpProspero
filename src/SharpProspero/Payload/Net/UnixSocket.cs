@@ -55,7 +55,7 @@ public unsafe struct FreeBsdMsghdr
 /// </summary>
 public static unsafe partial class PayloadUnixSocket
 {
-    private const string Lib = "libc";
+    private const string Lib = "libkernel";
 
     /// <summary>AF_UNIX / AF_LOCAL address family.</summary>
     public const int AfUnix = 1;

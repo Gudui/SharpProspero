@@ -56,9 +56,6 @@ public struct FreeBsdStat
     /// <summary>Device ID (if special file).</summary>
     public uint st_rdev;
 
-    /// <summary>Alignment padding to 8-byte boundary for timespec.</summary>
-    private uint _pad0;
-
     /// <summary>Access time (seconds).</summary>
     public long st_atim_sec;
 
@@ -110,6 +107,8 @@ public struct FreeBsdStat
 public static unsafe partial class PayloadFileSystem
 {
     private const string Lib = "libc";
+    private const string LibKernel = "libkernel";
+    private const string LibKernelSys = "libkernel_sys";
 
     /// <summary>File type constant: directory.</summary>
     public const ushort S_IFDIR = 0x4000;
@@ -144,7 +143,7 @@ public static unsafe partial class PayloadFileSystem
     /// <param name="path">A NUL-terminated UTF-8 path.</param>
     /// <param name="buf">A buffer to receive the status.</param>
     /// <returns>Zero on success, or -1 on error.</returns>
-    [LibraryImport(Lib)]
+    [LibraryImport(LibKernel)]
     public static partial int stat(byte* path, FreeBsdStat* buf);
 
     /// <summary>
@@ -169,13 +168,13 @@ public static unsafe partial class PayloadFileSystem
 
     /// <summary>Creates a directory at <paramref name="path"/> with <paramref name="mode"/> permissions.</summary>
     /// <returns>Zero on success, or -1 on error.</returns>
-    [LibraryImport(Lib)]
+    [LibraryImport(LibKernel)]
     public static partial int mkdir(byte* path, ushort mode);
 
     /// <summary>Checks accessibility of <paramref name="path"/> against <paramref name="mode"/>
     /// (<see cref="F_OK"/>, <see cref="R_OK"/>, <see cref="W_OK"/>, <see cref="X_OK"/>).</summary>
     /// <returns>Zero when accessible, or -1 on error.</returns>
-    [LibraryImport(Lib)]
+    [LibraryImport(LibKernel)]
     public static partial int access(byte* path, int mode);
 
     /// <summary>Writes the current working directory into <paramref name="buf"/>, up to
@@ -187,17 +186,17 @@ public static unsafe partial class PayloadFileSystem
     /// <summary>Renames (moves) a file or directory from <paramref name="from"/> to
     /// <paramref name="to"/>.</summary>
     /// <returns>Zero on success, or -1 on error.</returns>
-    [LibraryImport(Lib)]
+    [LibraryImport(LibKernel)]
     public static partial int rename(byte* from, byte* to);
 
     /// <summary>Removes a directory entry (file).</summary>
     /// <returns>Zero on success, or -1 on error.</returns>
-    [LibraryImport(Lib)]
+    [LibraryImport(LibKernel)]
     public static partial int unlink(byte* path);
 
     /// <summary>Removes an empty directory.</summary>
     /// <returns>Zero on success, or -1 on error.</returns>
-    [LibraryImport(Lib)]
+    [LibraryImport(LibKernel)]
     public static partial int rmdir(byte* path);
 
     /// <summary>
@@ -208,7 +207,7 @@ public static unsafe partial class PayloadFileSystem
     /// <param name="path">A NUL-terminated UTF-8 path.</param>
     /// <param name="buf">A buffer to receive the status.</param>
     /// <returns>Zero on success, or -1 on error.</returns>
-    [LibraryImport(Lib)]
+    [LibraryImport(LibKernel)]
     public static partial int lstat(byte* path, FreeBsdStat* buf);
 
     /// <summary>
@@ -218,7 +217,7 @@ public static unsafe partial class PayloadFileSystem
     /// <param name="fd">An open file descriptor with write permission.</param>
     /// <param name="length">The desired file size in bytes.</param>
     /// <returns>Zero on success, or -1 on error.</returns>
-    [LibraryImport(Lib)]
+    [LibraryImport(LibKernel)]
     public static partial int ftruncate(int fd, long length);
 
     /// <summary>Directory entry type: symbolic link.</summary>
@@ -235,7 +234,7 @@ public static unsafe partial class PayloadFileSystem
 
     /// <summary>Changes the permission bits of the file at <paramref name="path"/>.</summary>
     /// <returns>Zero on success, or -1 on error.</returns>
-    [LibraryImport(Lib)]
+    [LibraryImport(LibKernel)]
     public static partial int chmod(byte* path, ushort mode);
 
     /// <summary>Open flag: read only.</summary>
@@ -373,32 +372,32 @@ public static unsafe partial class PayloadFileSystem
 
     /// <summary>Changes the ownership of a file by path.</summary>
     /// <returns>Zero on success, or -1 on error.</returns>
-    [LibraryImport(Lib)]
+    [LibraryImport(LibKernel)]
     public static partial int chown(byte* path, uint owner, uint group);
 
     /// <summary>Changes the permissions of an open file descriptor.</summary>
     /// <returns>Zero on success, or -1 on error.</returns>
-    [LibraryImport(Lib)]
+    [LibraryImport(LibKernel)]
     public static partial int fchmod(int fd, ushort mode);
 
     /// <summary>Changes the ownership of an open file descriptor.</summary>
     /// <returns>Zero on success, or -1 on error.</returns>
-    [LibraryImport(Lib)]
+    [LibraryImport(LibKernel)]
     public static partial int fchown(int fd, uint owner, uint group);
 
     /// <summary>Truncates a file to <paramref name="length"/> bytes by path.</summary>
     /// <returns>Zero on success, or -1 on error.</returns>
-    [LibraryImport(Lib)]
+    [LibraryImport(LibKernel)]
     public static partial int truncate(byte* path, long length);
 
     /// <summary>Creates a hard link from <paramref name="name1"/> to <paramref name="name2"/>.</summary>
     /// <returns>Zero on success, or -1 on error.</returns>
-    [LibraryImport(Lib)]
+    [LibraryImport(LibKernel)]
     public static partial int link(byte* name1, byte* name2);
 
     /// <summary>Creates a named pipe (FIFO) at <paramref name="path"/>.</summary>
     /// <returns>Zero on success, or -1 on error.</returns>
-    [LibraryImport(Lib)]
+    [LibraryImport(LibKernel)]
     public static partial int mkfifo(byte* path, ushort mode);
 
     /// <summary>
@@ -408,19 +407,19 @@ public static unsafe partial class PayloadFileSystem
     /// <param name="times">An array of two <c>timeval</c> structs (access time, modification
     /// time), each 16 bytes (tv_sec long + tv_usec long), or null to set to the current time.</param>
     /// <returns>Zero on success, or -1 on error.</returns>
-    [LibraryImport(Lib)]
+    [LibraryImport(LibKernel)]
     public static partial int utimes(byte* path, void* times);
 
     /// <summary>
     /// Reads the target of a symbolic link.
     /// </summary>
-    [LibraryImport(Lib)]
+    [LibraryImport(LibKernelSys)]
     public static partial long readlink(byte* pathname, byte* buf, nuint bufsiz);
 
     /// <summary>
     /// Changes the working directory of the calling process.
     /// </summary>
-    [LibraryImport(Lib)]
+    [LibraryImport(LibKernel)]
     public static partial int chdir(byte* path);
 
     private static void JoinPath(byte* dst, byte* dir, byte* name)

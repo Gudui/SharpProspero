@@ -11,11 +11,8 @@ using SharpProspero.Payload.Process;
 
 namespace SampleApp;
 
-internal static unsafe partial class Program
+internal static unsafe class Program
 {
-    [LibraryImport("libScePosix", EntryPoint = "__prospero_klog")]
-    private static partial void Klog(byte* message);
-
     [UnmanagedCallersOnly(EntryPoint = "__managed__Main")]
     public static int Main(void* args)
     {
@@ -76,7 +73,7 @@ internal static unsafe partial class Program
                 fullPath[pos++] = name[i];
             fullPath[pos++] = (byte)'\n';
             fullPath[pos] = 0;
-            Klog(fullPath);
+            PayloadCrt.Klog(fullPath);
         }
 
         PayloadFileSystem.closedir(dir);
