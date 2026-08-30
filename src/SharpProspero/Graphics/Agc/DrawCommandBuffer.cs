@@ -239,7 +239,10 @@ public sealed unsafe class DrawCommandBuffer : IDisposable
     /// <summary>The queue a draw buffer records into.</summary>
     private const uint DrawQueue = 0;
 
-    /// <summary>Records an end-of-pipe event of <paramref name="eventType"/>.</summary>
+    /// <summary>
+    /// Appends an AGC event. Pixel-pipe control/dump events (0x38/0x39) carry the aligned 64-bit
+    /// <paramref name="eventControl"/> value; ordinary events ignore it.
+    /// </summary>
     public nint EventWrite(uint eventType, ulong eventControl = 0) => (nint)SceAgc.sceAgcDcbEventWrite(St, eventType, eventControl);
 
     // --- Present: wait for the display to release a buffer, then queue the flip. ---
