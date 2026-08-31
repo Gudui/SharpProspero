@@ -4,6 +4,7 @@ obj/
 *.user
 *.suo
 *.elf
+__pycache__/
 
 # Build output of the samples and generated bindings.
 samples/*/out/
