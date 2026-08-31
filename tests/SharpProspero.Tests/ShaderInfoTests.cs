@@ -72,7 +72,7 @@ public class ShaderInfoTests
     }
 
     [Fact]
-    public void Read_MeshPixelShaderMatchesTheConstantWhiteDiagnosticProgram()
+    public void Read_MeshPixelShaderMatchesTheConstantOrangeDiagnosticProgram()
     {
         byte[] container = LoadShaderResource("SharpProspero.Shaders.mesh_ps.sb");
         ShaderInfo info = ShaderInfo.Read(container);
@@ -85,23 +85,23 @@ public class ShaderInfoTests
             info.ContextRegisters,
             register => register.Offset == 0x01B8 && register.Value == 0x01000000);
         Assert.Equal(
-            "0238a27c7903ee586e1d9ace87d08aea802081f12149143ec36c8ab98fdda792",
+            "4b7979bd8cdd88f0e1665f39d987e69f437997040b554f860d7b55a6339d25af",
             Convert.ToHexString(SHA256.HashData(LoadShaderSection(container, ".shader_text"))).ToLowerInvariant());
     }
 
     [Fact]
-    public void Read_ConstantWhiteDiagnosticPreservesEveryByteOutsideItsDataSourcePatch()
+    public void Read_ConstantOrangeDiagnosticPreservesEveryByteOutsideItsDataSourcePatch()
     {
         byte[] container = LoadShaderResource("SharpProspero.Shaders.mesh_ps.sb");
         Assert.Equal(968, container.Length);
         Assert.Equal(
-            "ab3722ac8e950ead1a53adfa9c2ff0d85be68cae0eb11ea2bc40ffb85461490d",
+            "ff49d8756e41d443954a99463b1a050d47b7d25587ee9cb0ccc357c2e5f75b8f",
             Convert.ToHexString(SHA256.HashData(container)).ToLowerInvariant());
 
-        // Identity checks only: LLVM gfx1030 is the instruction authority. GPU-CL replaces
-        // eight interpolation instructions with four constant-one moves and four NOPs.
+        // Identity checks only: LLVM gfx1030 is the instruction authority. CO keeps the
+        // constant moves/NOPs from CL/CN but exports RGBA (1,0.5,0,1).
         Assert.Equal(
-            Convert.FromHexString("F202047EF202067EF202087EF2020A7E000080BF000080BF000080BF000080BF"),
+            Convert.FromHexString("F202047EF002067E8002087EF2020A7E000080BF000080BF000080BF000080BF"),
             container[0x44..0x64]);
         Assert.Equal(Convert.FromHexString("0F1800F802030405"), container[0x64..0x6C]);
 
