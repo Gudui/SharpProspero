@@ -17,6 +17,11 @@ public sealed class KnownVaryingProbeTests
         stream.CopyTo(memory);
         byte[] orange = memory.ToArray();
         Assert.Equal(968, orange.Length);
+        Assert.Equal(Convert.FromHexString("0003FCBE"), orange[0x44..0x48]);
+        Array.Copy(orange, 0x48, orange, 0x44, 0x1C);
+        Convert.FromHexString("000080BF").CopyTo(orange, 0x60);
+        Assert.Equal("a8b8411104c3c54d3bc963a7ea3f2809a76451d9f7e868f50af046bab4c6fb08",
+            Convert.ToHexString(SHA256.HashData(orange)).ToLowerInvariant());
         Assert.Equal(Convert.FromHexString("000708C8"), orange[0x44..0x48]);
         Assert.Equal(Convert.FromHexString("010709C8"), orange[0x54..0x58]);
         Convert.FromHexString("F202047E").CopyTo(orange, 0x44);

@@ -85,7 +85,7 @@ public class ShaderInfoTests
             info.ContextRegisters,
             register => register.Offset == 0x01B8 && register.Value == 0x01000000);
         Assert.Equal(
-            "657a8cd7ff9d58cbd7685fe19eb9aa26b870893645f8b28e91e96a667dc22735",
+            "cad7d29fee3e72e27e0e65e843366c65e19ac6e96590cebfa186df5e0deeebb8",
             Convert.ToHexString(SHA256.HashData(LoadShaderSection(container, ".shader_text"))).ToLowerInvariant());
     }
 
@@ -95,11 +95,17 @@ public class ShaderInfoTests
         byte[] container = LoadShaderResource("SharpProspero.Shaders.mesh_ps.sb");
         Assert.Equal(968, container.Length);
         Assert.Equal(
-            "a8b8411104c3c54d3bc963a7ea3f2809a76451d9f7e868f50af046bab4c6fb08",
+            "0fd6b4242b57bdfc07656294a3d9eb10474d55544b1fb4a3fa421bdcea158327",
             Convert.ToHexString(SHA256.HashData(container)).ToLowerInvariant());
 
-        // Identity checks only: LLVM gfx1030 is the instruction authority. CP uses one
-        // attr1.w interpolation pair for red; green/blue/alpha stay immediate.
+        // Identity checks only: LLVM gfx1030 is the instruction authority. CQ initializes M0
+        // before CP's pair, consuming one NOP and retaining the export position.
+        Assert.Equal(Convert.FromHexString("0003FCBE"), container[0x44..0x48]);
+        Array.Copy(container, 0x48, container, 0x44, 0x1C);
+        Convert.FromHexString("000080BF").CopyTo(container, 0x60);
+        Assert.Equal("a8b8411104c3c54d3bc963a7ea3f2809a76451d9f7e868f50af046bab4c6fb08",
+            Convert.ToHexString(SHA256.HashData(container)).ToLowerInvariant());
+        // Restored CP uses one attr1.w pair; all downstream CK restoration assertions remain.
         Assert.Equal(
             Convert.FromHexString("000708C8F002067E8002087EF2020A7E010709C8000080BF000080BF000080BF"),
             container[0x44..0x64]);
