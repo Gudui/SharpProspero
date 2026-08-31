@@ -7,16 +7,22 @@ using Xunit;
 namespace SharpProspero.Tests;
 
 // Branch-local diagnostic contract. This does not qualify normal mesh shaders or interpolation.
-public sealed class ConstantOrangeProbeTests
+public sealed class KnownVaryingProbeTests
 {
     [Fact]
-    public void OrangeResourceDiffersFromCnOnlyInTwoConstantOperands()
+    public void KnownVaryingRestoresExactCoWithOnlyTwoInstructionReplacements()
     {
         using Stream stream = typeof(BuiltInShaders).Assembly.GetManifestResourceStream("SharpProspero.Shaders.mesh_ps.sb")!;
         using var memory = new MemoryStream();
         stream.CopyTo(memory);
         byte[] orange = memory.ToArray();
         Assert.Equal(968, orange.Length);
+        Assert.Equal(Convert.FromHexString("000708C8"), orange[0x44..0x48]);
+        Assert.Equal(Convert.FromHexString("010709C8"), orange[0x54..0x58]);
+        Convert.FromHexString("F202047E").CopyTo(orange, 0x44);
+        Convert.FromHexString("000080BF").CopyTo(orange, 0x54);
+        Assert.Equal("ff49d8756e41d443954a99463b1a050d47b7d25587ee9cb0ccc357c2e5f75b8f",
+            Convert.ToHexString(SHA256.HashData(orange)).ToLowerInvariant());
         Assert.Equal(0xF0, orange[0x48]);
         Assert.Equal(0x80, orange[0x4C]);
         byte[] restoredCn = (byte[])orange.Clone();
