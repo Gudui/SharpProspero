@@ -10,6 +10,22 @@ class PixelM0Tests(unittest.TestCase):
     def test_initialized_pair(self):
         check_instructions(INIT + PAIR + END)
 
+    def test_spatial_z_pair(self):
+        check_instructions(INIT + PAIR.replace('attr1.w', 'attr1.z') + END, 'z')
+
+    def test_spatial_pair_negative_variants(self):
+        pair = PAIR.replace('attr1.w', 'attr1.z')
+        for name, text in {
+            'cq-constant-w': INIT + PAIR + END,
+            'mismatched': INIT + pair.replace('attr1.z', 'attr1.w', 1) + END,
+            'wrong-slot': INIT + pair.replace('attr1', 'attr0') + END,
+            'reversed': INIT + '\n'.join(reversed(pair.strip().splitlines())) + '\n' + END,
+            'wrong-destination': INIT + pair.replace('v2,', 'v3,') + END,
+            'missing-m0': pair + END,
+        }.items():
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                check_instructions(text, 'z')
+
     def test_negative_variants(self):
         for name, text in {
             'missing': PAIR + END,

@@ -85,7 +85,7 @@ public class ShaderInfoTests
             info.ContextRegisters,
             register => register.Offset == 0x01B8 && register.Value == 0x01000000);
         Assert.Equal(
-            "cad7d29fee3e72e27e0e65e843366c65e19ac6e96590cebfa186df5e0deeebb8",
+            "ee53ed493d76e893882c5cac9aa08efa0a1371d09263ab1f1b21ee89b34f4f39",
             Convert.ToHexString(SHA256.HashData(LoadShaderSection(container, ".shader_text"))).ToLowerInvariant());
     }
 
@@ -95,7 +95,15 @@ public class ShaderInfoTests
         byte[] container = LoadShaderResource("SharpProspero.Shaders.mesh_ps.sb");
         Assert.Equal(968, container.Length);
         Assert.Equal(
-            "0fd6b4242b57bdfc07656294a3d9eb10474d55544b1fb4a3fa421bdcea158327",
+            "1afb9c75647b28565f11da8b4a5ad8f577156508ce93e1ebf96d8c88088f60a8",
+            Convert.ToHexString(SHA256.HashData(container)).ToLowerInvariant());
+
+        // CR changes only two selector bytes; recover exact CQ before the prior restoration tests.
+        Assert.Equal(6, container[0x49]);
+        Assert.Equal(6, container[0x59]);
+        container[0x49] = 7;
+        container[0x59] = 7;
+        Assert.Equal("0fd6b4242b57bdfc07656294a3d9eb10474d55544b1fb4a3fa421bdcea158327",
             Convert.ToHexString(SHA256.HashData(container)).ToLowerInvariant());
 
         // Identity checks only: LLVM gfx1030 is the instruction authority. CQ initializes M0
