@@ -258,8 +258,8 @@ public sealed unsafe class Renderer3D : IDisposable
             AgcBufferDescriptor vbDescriptor = AgcBufferDescriptor.Structured((ulong)mesh.VertexAddress, (uint)MeshBuffer.VertexStride, (uint)mesh.VertexCount);
 
             int cbOff = 0, vbOff = 4;
-            if (_vs.Shader.TryGetResourceSlot(ShaderResourceKind.ConstantBuffer, 0, out int cOff, out _)) cbOff = cOff;
-            if (_vs.Shader.TryGetResourceSlot(ShaderResourceKind.ReadOnly, 0, out int vOff, out _)) vbOff = vOff;
+            if (_vs.TryGetResourceSlot(ShaderResourceKind.ConstantBuffer, 0, out int cOff, out _)) cbOff = cOff;
+            if (_vs.TryGetResourceSlot(ShaderResourceKind.ReadOnly, 0, out int vOff, out _)) vbOff = vOff;
             if (_firstDraw && trace) _trace?.Invoke("AGC_SLOTS cbOff=" + cbOff + " vbOff=" + vbOff);
 
             shader[sh++] = new CxRegister((ushort)(AgcShader.GsUserDataBaseOffset + cbOff + 0), cbDescriptor.Word0);

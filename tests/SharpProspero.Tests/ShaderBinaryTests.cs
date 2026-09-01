@@ -95,4 +95,18 @@ public sealed class ShaderBinaryTests
         Assert.Equal(24u, ps.Version);
         Assert.True(ps.Code.Length > 0);
     }
+
+    [Fact]
+    public void BuiltInMeshVertex_ResolvesSerializedResourceSlotsBeforePreparation()
+    {
+        ShaderBinary vs = BuiltInShaders.MeshVertex();
+
+        Assert.True(vs.TryGetResourceSlot(ShaderResourceKind.ReadOnly, 0, out int vertexOffset, out bool vertexSmall));
+        Assert.Equal(0, vertexOffset);
+        Assert.True(vertexSmall);
+        Assert.True(vs.TryGetResourceSlot(ShaderResourceKind.ConstantBuffer, 0, out int constantOffset, out bool constantSmall));
+        Assert.Equal(4, constantOffset);
+        Assert.True(constantSmall);
+        Assert.False(vs.TryGetResourceSlot(ShaderResourceKind.ReadWrite, 0, out _, out _));
+    }
 }

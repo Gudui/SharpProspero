@@ -51,6 +51,43 @@ public sealed class ShaderBinary
     public int ShaderRegisterCount => _header[92];
 
     /// <summary>
+    /// Finds a resource descriptor in the immutable serialized user-data layout. The returned offset is
+    /// relative to this stage's user-data register zero; it is not an absolute ISA SGPR number.
+    /// </summary>
+    public bool TryGetResourceSlot(ShaderResourceKind kind, int slot, out int dwordOffset, out bool small)
+    {
+        dwordOffset = 0;
+        small = true;
+        if (slot < 0 || (uint)kind > (uint)ShaderResourceKind.ConstantBuffer)
+            return false;
+
+        ulong userDataRelative = BinaryPrimitives.ReadUInt64LittleEndian(_header.AsSpan(8));
+        if (userDataRelative == 0)
+            return false;
+        long userData = 8 + checked((long)userDataRelative);
+        if (userData < 0 || userData + 54 > _header.Length)
+            throw new InvalidOperationException("Shader user-data layout is out of range.");
+
+        int countOffset = checked((int)userData + 46 + (int)kind * sizeof(ushort));
+        int count = BinaryPrimitives.ReadUInt16LittleEndian(_header.AsSpan(countOffset));
+        if (slot >= count)
+            return false;
+
+        int pointerField = checked((int)userData + 8 + (int)kind * sizeof(ulong));
+        ulong entriesRelative = BinaryPrimitives.ReadUInt64LittleEndian(_header.AsSpan(pointerField));
+        if (entriesRelative == 0)
+            throw new InvalidOperationException("Shader resource count has no matching offset array.");
+        long entryOffset = pointerField + checked((long)entriesRelative) + slot * sizeof(ushort);
+        if (entryOffset < 0 || entryOffset + sizeof(ushort) > _header.Length)
+            throw new InvalidOperationException("Shader resource offset array is out of range.");
+
+        ushort entry = BinaryPrimitives.ReadUInt16LittleEndian(_header.AsSpan(checked((int)entryOffset)));
+        dwordOffset = entry & 0x7FFF;
+        small = (entry & 0x8000) != 0;
+        return true;
+    }
+
+    /// <summary>
     /// Reads a shader binary from a compiled container. The container holds the header in a
     /// <c>.shader_header</c> section and the microcode in a <c>.shader_text</c> section; both are copied
     /// out so the caller owns them.
@@ -171,6 +208,13 @@ public sealed class PreparedShader : IDisposable
 
     /// <summary>The number of shader registers the program sets.</summary>
     public int ShaderRegisterCount => _binary.ShaderRegisterCount;
+
+    /// <summary>
+    /// Finds a resource descriptor in the compiled shader's serialized user-data layout. This remains
+    /// stable even when the native preparation call returns a handle that is not the original header.
+    /// </summary>
+    public bool TryGetResourceSlot(ShaderResourceKind kind, int slot, out int dwordOffset, out bool small) =>
+        _binary.TryGetResourceSlot(kind, slot, out dwordOffset, out small);
 
     /// <summary>Releases the header and code regions.</summary>
     public void Dispose()
