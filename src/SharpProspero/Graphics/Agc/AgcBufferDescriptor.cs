@@ -27,6 +27,25 @@ public readonly struct AgcBufferDescriptor
         dest[0] = Word0; dest[1] = Word1; dest[2] = Word2; dest[3] = Word3;
     }
 
+    /// <summary>
+    /// Writes this four-dword descriptor as consecutive shader user-data registers.
+    /// <paramref name="dwordOffset"/> is relative to the supplied shader-stage user-data base.
+    /// </summary>
+    /// <returns>The four registers written.</returns>
+    public int WriteShaderRegisters(Span<CxRegister> destination, uint userDataBaseOffset, int dwordOffset)
+    {
+        if (destination.Length < 4) throw new ArgumentException("Four destination registers are required.", nameof(destination));
+        if (dwordOffset < 0 || userDataBaseOffset + (uint)dwordOffset + 3 > ushort.MaxValue)
+            throw new ArgumentOutOfRangeException(nameof(dwordOffset));
+
+        uint first = userDataBaseOffset + (uint)dwordOffset;
+        destination[0] = new CxRegister((ushort)(first + 0), Word0);
+        destination[1] = new CxRegister((ushort)(first + 1), Word1);
+        destination[2] = new CxRegister((ushort)(first + 2), Word2);
+        destination[3] = new CxRegister((ushort)(first + 3), Word3);
+        return 4;
+    }
+
     // Swizzle mapping: 3 bits per channel (0=0, 1=1, 4=X, 5=Y, 6=Z, 7=W).
     private const uint SwizzleX001 = 4 | (0 << 3) | (0 << 6) | (1 << 9);  // 0x204
     private const uint SwizzleXYZW = 4 | (5 << 3) | (6 << 6) | (7 << 9);  // 0xFAC

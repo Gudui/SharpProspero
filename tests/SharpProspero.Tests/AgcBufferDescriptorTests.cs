@@ -33,4 +33,29 @@ public sealed class AgcBufferDescriptorTests
     {
         Assert.Throws<System.ArgumentOutOfRangeException>(() => AgcBufferDescriptor.Structured(0, 1 << 14, 1));
     }
+
+    [Fact]
+    public void WriteShaderRegisters_WritesFourConsecutiveUserDataWords()
+    {
+        var descriptor = AgcBufferDescriptor.Structured(0x1234_5678_9ABCUL, 16, 3);
+        var registers = new CxRegister[4];
+
+        Assert.Equal(4, descriptor.WriteShaderRegisters(registers, 0x008C, 8));
+        Assert.Equal((ushort)0x0094, registers[0].Offset);
+        Assert.Equal((ushort)0x0095, registers[1].Offset);
+        Assert.Equal((ushort)0x0096, registers[2].Offset);
+        Assert.Equal((ushort)0x0097, registers[3].Offset);
+        Assert.Equal(descriptor.Word0, registers[0].Value);
+        Assert.Equal(descriptor.Word1, registers[1].Value);
+        Assert.Equal(descriptor.Word2, registers[2].Value);
+        Assert.Equal(descriptor.Word3, registers[3].Value);
+    }
+
+    [Fact]
+    public void WriteShaderRegisters_RejectsShortDestinationAndNegativeOffset()
+    {
+        var descriptor = AgcBufferDescriptor.Structured(0x1000, 16, 3);
+        Assert.Throws<System.ArgumentException>(() => descriptor.WriteShaderRegisters(new CxRegister[3], 0x008C, 8));
+        Assert.Throws<System.ArgumentOutOfRangeException>(() => descriptor.WriteShaderRegisters(new CxRegister[4], 0x008C, -1));
+    }
 }
