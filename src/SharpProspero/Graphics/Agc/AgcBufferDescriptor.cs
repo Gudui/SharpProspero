@@ -57,6 +57,7 @@ public readonly struct AgcBufferDescriptor
     private const uint DataFormat8 = 1;               // 8-bit unsigned element (BUF_DATA_FORMAT_8)
     private const uint DataFormat32 = 4;              // 32-bit element (BUF_DATA_FORMAT_32, 4 bytes)
     private const uint DataFormat32_32_32_32 = 14;    // four 32-bit floats (BUF_DATA_FORMAT_32_32_32_32, 16 bytes)
+    private const uint UpstreamStructuredFormat = 5;
 
     /// <summary>
     /// A structured buffer of <paramref name="elementCount"/> records, each <paramref name="strideInBytes"/>
@@ -67,7 +68,9 @@ public readonly struct AgcBufferDescriptor
         if (strideInBytes >= 1u << 14) throw new ArgumentOutOfRangeException(nameof(strideInBytes), "The stride must be less than 16384 bytes.");
         uint word0 = (uint)(address & 0xFFFFFFFF);
         uint word1 = (uint)((address >> 32) & 0xFFFF) | ((strideInBytes & 0x3FFF) << 16);
-        uint word3 = SwizzleX001 | (NumFormatUnorm << 12) | (DataFormat8 << 15) | (3u << 28);
+        // Preserve the exact descriptor emitted by pinned upstream e24e25e. CT tests this one word
+        // against the fork-only 0x30008204 value; target support is not claimed before that run.
+        uint word3 = SwizzleX001 | (UpstreamStructuredFormat << 12);
         return new AgcBufferDescriptor(word0, word1, elementCount, word3);
     }
 

@@ -15,7 +15,16 @@ public sealed class AgcBufferDescriptorTests
         Assert.Equal(0x56789ABCu, d.Word0);
         Assert.Equal(0x1234u | (36u << 16), d.Word1);
         Assert.Equal(100u, d.Word2);
-        Assert.Equal(0x204u | (0u << 12) | (1u << 15) | (3u << 28), d.Word3); // RDNA2 Structured
+        Assert.Equal(0x00005204u, d.Word3); // exact pinned upstream e24e25e Structured encoding
+    }
+
+    [Fact]
+    public void Structured_RejectsForkAndMixedWord3NearMisses()
+    {
+        uint actual = AgcBufferDescriptor.Structured(0x1000, 16, 3).Word3;
+        Assert.NotEqual(0x30008204u, actual); // tested CS fork value
+        Assert.NotEqual(0x30005204u, actual); // misleading upstream-format plus fork type/OOB bits
+        Assert.Equal(0x00005204u, actual);
     }
 
     [Fact]
