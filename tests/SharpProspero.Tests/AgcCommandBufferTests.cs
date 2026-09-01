@@ -31,6 +31,22 @@ public sealed unsafe class AgcCommandBufferTests
     }
 
     [Fact]
+    public void ShaderRegisterRangeValidationAcceptsExactDescriptorAndRejectsNearMisses()
+    {
+        DrawCommandBuffer.ValidateShaderRegisterRangeArguments(0x0094, 4);
+        DrawCommandBuffer.ValidateShaderRegisterRangeArguments(0xFFFF, 1);
+
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            DrawCommandBuffer.ValidateShaderRegisterRangeArguments(0x0094, 0));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            DrawCommandBuffer.ValidateShaderRegisterRangeArguments(0x0094, 0x4000));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            DrawCommandBuffer.ValidateShaderRegisterRangeArguments(0xFFFF, 2));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            DrawCommandBuffer.ValidateShaderRegisterRangeArguments(0x1_0000, 1));
+    }
+
+    [Fact]
     public void DmaFillContractIsSynchronizedImmediateDataToIncrementingL2Memory()
     {
         Assert.Equal((byte)0, DrawCommandBuffer.DmaFillEngine);

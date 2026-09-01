@@ -134,6 +134,32 @@ public sealed unsafe class DrawCommandBuffer : IDisposable
     /// <summary>Writes one shader register (<paramref name="offset"/> = <paramref name="value"/>).</summary>
     public nint SetShaderRegister(uint offset, uint value) => (nint)SceAgc.sceAgcDcbSetShRegisterDirect(St, Pack(offset, value));
 
+    /// <summary>
+    /// Writes a contiguous range of shader registers in one packet, using the native command-buffer
+    /// allocator and copying <paramref name="values"/> into the packet immediately.
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">The range is empty, too large, or exceeds the 16-bit register space.</exception>
+    /// <exception cref="InvalidOperationException">The command buffer has no room for the packet.</exception>
+    public nint SetShaderRegisterRange(uint offset, ReadOnlySpan<uint> values)
+    {
+        ValidateShaderRegisterRangeArguments(offset, values.Length);
+        fixed (uint* source = values)
+        {
+            uint* packet = SceAgc.sceAgcCbSetShRegisterRangeDirect(St, offset, source, (uint)values.Length);
+            if (packet is null)
+                throw new InvalidOperationException("The command buffer has no room for the shader-register range packet.");
+            return (nint)packet;
+        }
+    }
+
+    internal static void ValidateShaderRegisterRangeArguments(uint offset, int count)
+    {
+        if (count <= 0 || count > 0x3FFF)
+            throw new ArgumentOutOfRangeException(nameof(count), "A shader-register range must contain 1..16383 dwords.");
+        if (offset > 0xFFFF || offset + (uint)count - 1 > 0xFFFF)
+            throw new ArgumentOutOfRangeException(nameof(offset), "The shader-register range exceeds the 16-bit register space.");
+    }
+
     /// <summary>Writes one user-config register (<paramref name="offset"/> = <paramref name="value"/>).</summary>
     public nint SetUserConfigRegister(uint offset, uint value) => (nint)SceAgc.sceAgcDcbSetUcRegisterDirect(St, Pack(offset, value));
 
