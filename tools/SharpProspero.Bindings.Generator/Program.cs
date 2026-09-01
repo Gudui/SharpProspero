@@ -650,14 +650,14 @@ internal static class Program
         }
     }
 
-    // Reports a compiled shader binary: its kind, version, sizes and the register writes it carries,
-    // and with --registers the full register lists.
+    // Reports a compiled shader binary: its kind, version, sizes, resource declarations and register
+    // writes; --resources and --registers print the respective complete lists.
     private static int RunShader(string[] args)
     {
         string? file = GetOption(args, "--file") ?? GetOption(args, "--input") ?? GetOption(args, "-i");
         if (string.IsNullOrEmpty(file) || !File.Exists(file))
         {
-            Console.Error.WriteLine("Usage: shader --file <shader.sb> [--registers]");
+            Console.Error.WriteLine("Usage: shader --file <shader.sb> [--resources] [--registers]");
             return 1;
         }
         try
@@ -671,6 +671,16 @@ internal static class Program
             Console.WriteLine($"Code:     {info.CodeSectionSize} bytes ({info.DeclaredCodeSize} declared)");
             Console.WriteLine($"Context registers: {info.ContextRegisters.Count}");
             Console.WriteLine($"Shader registers:  {info.ShaderRegisters.Count}");
+            Console.WriteLine($"Resources:         {info.Resources.Count}");
+            if (HasFlag(args, "--resources"))
+            {
+                foreach (ShaderResourceDeclaration resource in info.Resources)
+                {
+                    Console.WriteLine(
+                        $"  {resource.KindName} slot={resource.Slot} offset={resource.DwordOffset} " +
+                        $"small={resource.Small.ToString().ToLowerInvariant()}");
+                }
+            }
             if (HasFlag(args, "--registers"))
             {
                 PrintShaderRegisters("Context registers", info.ContextRegisters);
@@ -1943,8 +1953,8 @@ internal static class Program
                 Console.WriteLine("  missing from --source, and fails when one is neither present nor available.");
                 break;
             case "shader":
-                Console.WriteLine("Usage: shader --file <shader.sb> [--registers]");
-                Console.WriteLine("  Reports a compiled shader's kind, version, sizes, and register writes.");
+                Console.WriteLine("Usage: shader --file <shader.sb> [--resources] [--registers]");
+                Console.WriteLine("  Reports a compiled shader's kind, version, sizes, resources, and register writes.");
                 break;
             case "vag":
                 Console.WriteLine("Usage: vag --input <clip.wav|clip.vag> --output <clip.vag|clip.wav> [--name <name>]");
@@ -2006,7 +2016,7 @@ internal static class Program
         Console.WriteLine("       sharpprospero-bindgen elf --file <module> [--exports]");
         Console.WriteLine("       sharpprospero-bindgen diff --a <module> --b <module>");
         Console.WriteLine("       sharpprospero-bindgen modules --module <eboot.bin> --folder <sce_module folder> [--source <folder>]");
-        Console.WriteLine("       sharpprospero-bindgen shader --file <shader.sb> [--registers]");
+        Console.WriteLine("       sharpprospero-bindgen shader --file <shader.sb> [--resources] [--registers]");
         Console.WriteLine("       sharpprospero-bindgen vag --input <clip.wav|clip.vag> --output <clip.vag|clip.wav> [--name <name>]");
         Console.WriteLine("       sharpprospero-bindgen gnf --input <image.png|.tga|.bmp> --output <file.gnf> [--srgb]");
         Console.WriteLine("       sharpprospero-bindgen payload --send --host <address> [--port 9021] --file <payload.elf>");

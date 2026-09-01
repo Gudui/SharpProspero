@@ -15,10 +15,25 @@ namespace SharpProspero.Prx;
 /// <summary>One register write a shader program carries: a register offset and the value to write.</summary>
 public readonly record struct ShaderRegisterWrite(ushort Offset, uint Value);
 
+/// <summary>One resource descriptor location declared by a shader's user-data layout.</summary>
+public readonly record struct ShaderResourceDeclaration(byte Kind, int Slot, int DwordOffset, bool Small)
+{
+    /// <summary>A stable readable name matching the shader resource-kind order.</summary>
+    public string KindName => Kind switch
+    {
+        0 => "readonly",
+        1 => "readwrite",
+        2 => "sampler",
+        3 => "constant-buffer",
+        _ => $"kind-{Kind}",
+    };
+}
+
 /// <summary>The inspectable contents of a compiled shader binary.</summary>
 public readonly record struct ShaderInfo(
     uint Magic, uint Version, byte Kind, uint DeclaredHeaderSize, uint DeclaredCodeSize, int CodeSectionSize,
-    IReadOnlyList<ShaderRegisterWrite> ContextRegisters, IReadOnlyList<ShaderRegisterWrite> ShaderRegisters)
+    IReadOnlyList<ShaderRegisterWrite> ContextRegisters, IReadOnlyList<ShaderRegisterWrite> ShaderRegisters,
+    IReadOnlyList<ShaderResourceDeclaration> Resources)
 {
     /// <summary>The magic a valid shader-binary header block starts with.</summary>
     public const uint HeaderMagic = 0x34333231;
@@ -101,7 +116,43 @@ public readonly record struct ShaderInfo(
         return new ShaderInfo(
             magic, version, kind, headerSize, shaderSize, codeSize,
             ReadRegisters(header, 24, cxOff, numCx),
-            ReadRegisters(header, 32, shOff, numSh));
+            ReadRegisters(header, 32, shOff, numSh),
+            ReadResources(header));
+    }
+
+    // Reads the same UserDataLayout fields consumed after preparation by AgcShader.TryGetResourceSlot.
+    // Every pointer is self-relative to its own pointer field before sceAgcCreateShader relocates it.
+    private static List<ShaderResourceDeclaration> ReadResources(byte[] header)
+    {
+        ulong userDataRelative = BinaryPrimitives.ReadUInt64LittleEndian(header.AsSpan(8));
+        if (userDataRelative == 0)
+            return [];
+        long userData = 8 + checked((long)userDataRelative);
+        if (userData < 0 || userData + 54 > header.Length)
+            throw new PrxFormatException("Shader user-data layout is out of range.");
+
+        var resources = new List<ShaderResourceDeclaration>();
+        for (byte kind = 0; kind < 4; kind++)
+        {
+            int count = BinaryPrimitives.ReadUInt16LittleEndian(header.AsSpan(checked((int)userData + 46 + kind * 2)));
+            if (count == 0)
+                continue;
+            int pointerField = checked((int)userData + 8 + kind * sizeof(ulong));
+            ulong entriesRelative = BinaryPrimitives.ReadUInt64LittleEndian(header.AsSpan(pointerField));
+            if (entriesRelative == 0)
+                throw new PrxFormatException($"Shader resource kind {kind} has a count but no offset array.");
+            long entries = pointerField + checked((long)entriesRelative);
+            if (entries < 0 || entries + (long)count * sizeof(ushort) > header.Length)
+                throw new PrxFormatException($"Shader resource kind {kind} offset array is out of range.");
+            for (int slot = 0; slot < count; slot++)
+            {
+                ushort entry = BinaryPrimitives.ReadUInt16LittleEndian(
+                    header.AsSpan(checked((int)entries + slot * sizeof(ushort))));
+                resources.Add(new ShaderResourceDeclaration(
+                    kind, slot, entry & 0x7FFF, (entry & 0x8000) != 0));
+            }
+        }
+        return resources;
     }
 
     // A register array stored in the header: each entry is a two-byte offset then a four-byte value, at a

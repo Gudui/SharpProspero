@@ -65,6 +65,36 @@ public class ShaderInfoTests
     }
 
     [Fact]
+    public void Read_MeshVertexShaderReportsItsActualResourceLayout()
+    {
+        ShaderInfo info = ShaderInfo.Read(LoadShaderResource("SharpProspero.Shaders.mesh_vs.sb"));
+
+        Assert.Collection(
+            info.Resources,
+            resource =>
+            {
+                Assert.Equal("readonly", resource.KindName);
+                Assert.Equal(0, resource.Slot);
+                Assert.Equal(0, resource.DwordOffset);
+                Assert.True(resource.Small);
+            },
+            resource =>
+            {
+                Assert.Equal("constant-buffer", resource.KindName);
+                Assert.Equal(0, resource.Slot);
+                Assert.Equal(4, resource.DwordOffset);
+                Assert.True(resource.Small);
+            });
+    }
+
+    [Fact]
+    public void Read_MeshPixelShaderDeclaresNoResources()
+    {
+        ShaderInfo info = ShaderInfo.Read(LoadShaderResource("SharpProspero.Shaders.mesh_ps.sb"));
+        Assert.Empty(info.Resources);
+    }
+
+    [Fact]
     public void Read_TheMeshPixelShaderIsAPixelStage()
     {
         ShaderInfo info = ShaderInfo.Read(LoadShaderResource("SharpProspero.Shaders.mesh_ps.sb"));
