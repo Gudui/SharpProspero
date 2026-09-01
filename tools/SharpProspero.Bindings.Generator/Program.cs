@@ -657,12 +657,37 @@ internal static class Program
         string? file = GetOption(args, "--file") ?? GetOption(args, "--input") ?? GetOption(args, "-i");
         if (string.IsNullOrEmpty(file) || !File.Exists(file))
         {
-            Console.Error.WriteLine("Usage: shader --file <shader.sb> [--resources] [--registers]");
+            Console.Error.WriteLine("Usage: shader --file <shader.sb> [--json] [--resources] [--registers]");
             return 1;
         }
         try
         {
             ShaderInfo info = ShaderInfo.Read(File.ReadAllBytes(file));
+            if (HasFlag(args, "--json"))
+            {
+                var resources = new List<object>(info.Resources.Count);
+                foreach (ShaderResourceDeclaration resource in info.Resources)
+                {
+                    resources.Add(new
+                    {
+                        kind = resource.KindName,
+                        slot = resource.Slot,
+                        dwordOffset = resource.DwordOffset,
+                        small = resource.Small,
+                    });
+                }
+                Console.WriteLine(JsonSerializer.Serialize(new
+                {
+                    valid = info.IsValid,
+                    kind = info.KindName,
+                    version = info.Version,
+                    declaredHeaderSize = info.DeclaredHeaderSize,
+                    declaredCodeSize = info.DeclaredCodeSize,
+                    codeSectionSize = info.CodeSectionSize,
+                    resources,
+                }, JsonOptions));
+                return info.IsValid ? 0 : 2;
+            }
             Console.WriteLine($"File:     {Path.GetFileName(file)}");
             Console.WriteLine($"Valid:    {(info.IsValid ? "yes" : "no (unexpected header magic)")}");
             Console.WriteLine($"Kind:     {info.KindName} (0x{info.Kind:X2})");
@@ -1953,7 +1978,7 @@ internal static class Program
                 Console.WriteLine("  missing from --source, and fails when one is neither present nor available.");
                 break;
             case "shader":
-                Console.WriteLine("Usage: shader --file <shader.sb> [--resources] [--registers]");
+                Console.WriteLine("Usage: shader --file <shader.sb> [--json] [--resources] [--registers]");
                 Console.WriteLine("  Reports a compiled shader's kind, version, sizes, resources, and register writes.");
                 break;
             case "vag":
@@ -2016,7 +2041,7 @@ internal static class Program
         Console.WriteLine("       sharpprospero-bindgen elf --file <module> [--exports]");
         Console.WriteLine("       sharpprospero-bindgen diff --a <module> --b <module>");
         Console.WriteLine("       sharpprospero-bindgen modules --module <eboot.bin> --folder <sce_module folder> [--source <folder>]");
-        Console.WriteLine("       sharpprospero-bindgen shader --file <shader.sb> [--resources] [--registers]");
+        Console.WriteLine("       sharpprospero-bindgen shader --file <shader.sb> [--json] [--resources] [--registers]");
         Console.WriteLine("       sharpprospero-bindgen vag --input <clip.wav|clip.vag> --output <clip.vag|clip.wav> [--name <name>]");
         Console.WriteLine("       sharpprospero-bindgen gnf --input <image.png|.tga|.bmp> --output <file.gnf> [--srgb]");
         Console.WriteLine("       sharpprospero-bindgen payload --send --host <address> [--port 9021] --file <payload.elf>");
