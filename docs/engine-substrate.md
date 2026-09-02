@@ -14,6 +14,10 @@ allocating direct memory itself, or adopting `ProsperoApp` as its game architect
 This is a roadmap, not a statement that the APIs below already exist. Names are conceptual until an
 API design and tests approve them.
 
+The source-level ownership, lifecycle, state machine, compatibility plan and decision log are kept in
+the [living engine substrate design](engine-substrate-design.md). Update that record alongside changes
+to the boundaries described here.
+
 ## Scope
 
 SharpProspero owns:

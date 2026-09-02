@@ -28,6 +28,8 @@ Two executable forms come out of the same C#:
 5. [Extras](extras.md) collects the tips per form and the package metadata every title carries.
 6. [Engine substrate roadmap](engine-substrate.md) describes the planned engine-neutral runtime and
    graphics RHI above the existing low-level layers.
+7. [Engine substrate design](engine-substrate-design.md) is the living source inventory, ownership,
+   lifecycle, state-machine and decision record used to implement that boundary safely.
 
 ## The documentation
 

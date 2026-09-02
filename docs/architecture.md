@@ -82,7 +82,9 @@ built-in shaders. See [Graphics](graphics.md) and [GPU command layer](graphics-g
 
 The planned engine-neutral boundary above AGC is documented in the
 [engine substrate roadmap](engine-substrate.md). That page distinguishes current APIs from proposed
-RHI work and defines `Renderer3D` as the migration test rather than the final abstraction.
+RHI work and defines `Renderer3D` as the migration test rather than the final abstraction. The
+[living engine substrate design](engine-substrate-design.md) records current ownership, accepted
+lifetimes, frame states, compatibility rules and design decisions for that work.
 
 ### Input
 
