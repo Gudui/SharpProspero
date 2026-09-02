@@ -42,7 +42,9 @@ $required = [ordered]@{
 }
 
 foreach ($entry in $required.GetEnumerator()) {
-    if (-not $text.Contains($entry.Value, [System.StringComparison]::Ordinal)) {
+    # IndexOf is used instead of the Contains(String, StringComparison) overload so the check
+    # also runs on Windows PowerShell 5.1, where that overload does not exist.
+    if ($text.IndexOf($entry.Value, [System.StringComparison]::Ordinal) -lt 0) {
         $failures.Add("Missing policy coverage: $($entry.Key) ('$($entry.Value)').")
     }
 }
@@ -54,7 +56,7 @@ $forbidden = [ordered]@{
 }
 
 foreach ($entry in $forbidden.GetEnumerator()) {
-    if ($text.Contains($entry.Value, [System.StringComparison]::OrdinalIgnoreCase)) {
+    if ($text.IndexOf($entry.Value, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
         $failures.Add("Forbidden context-heavy or mutable policy: $($entry.Key) ('$($entry.Value)').")
     }
 }
