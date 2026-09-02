@@ -15,7 +15,7 @@ compatible, and which implementation slice may start next.
 | Field | Value |
 |---|---|
 | Document status | Approved direction; Slice 0 enforcement active; Slice 1 external-host runtime implemented and host-tested (not target-qualified); graphics RHI not started |
-| Source inventory commit | `7f72b8a0e84866912f3c1f0a59b99c3518f8a8f3` |
+| Source inventory commit | `e6fa8c2574e3ae543168b5695889349dbefe7473` |
 | Target-qualified code baseline | `d6b7f1c` plus the external GPU-CW application artifact |
 | Last reviewed | 2026-09-02 |
 | Immediate implementation boundary | External-host runtime, followed by one graphics vertical slice |
