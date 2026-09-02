@@ -26,6 +26,8 @@ Two executable forms come out of the same C#:
 4. [Payloads](payloads.md) covers the runtime bring-up, the kernel-access surface, and the payload
    API.
 5. [Extras](extras.md) collects the tips per form and the package metadata every title carries.
+6. [Engine substrate roadmap](engine-substrate.md) describes the planned engine-neutral runtime and
+   graphics RHI above the existing low-level layers.
 
 ## The documentation
 

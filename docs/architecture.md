@@ -80,6 +80,10 @@ Below that CPU drawing path, `SharpProspero.Graphics.Agc` records register state
 into buffers the graphics processor runs; `Renderer3D` uses it to draw a `MeshData` mesh with the
 built-in shaders. See [Graphics](graphics.md) and [GPU command layer](graphics-gpu.md).
 
+The planned engine-neutral boundary above AGC is documented in the
+[engine substrate roadmap](engine-substrate.md). That page distinguishes current APIs from proposed
+RHI work and defines `Renderer3D` as the migration test rather than the final abstraction.
+
 ### Input
 
 `SharpProspero.Input` decodes a controller sample into `GamePadState` (button bits, stick axes,
