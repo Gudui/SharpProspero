@@ -14,7 +14,7 @@ compatible, and which implementation slice may start next.
 
 | Field | Value |
 |---|---|
-| Document status | Approved direction; source implementation not started |
+| Document status | Approved direction; Slice 0 enforcement active; source implementation not started |
 | Source inventory commit | `7f72b8a0e84866912f3c1f0a59b99c3518f8a8f3` |
 | Target-qualified code baseline | `d6b7f1c` plus the external GPU-CW application artifact |
 | Last reviewed | 2026-09-02 |
@@ -386,6 +386,28 @@ Exit criteria:
 - a test can reject a fixture that imports AGC from an engine-facing acceptance client;
 - shader contract tests reject wrong kind, slot, width and size form, including a plausible near miss;
 - open decisions that affect Slice 1 are resolved.
+
+### Executable-check activation ledger
+
+Architecture tests are activated only when they can be truthful and green. A check for a future API is
+first proven against valid and deliberately invalid fixtures, then applied to live source in the same
+slice that introduces the owning type. This avoids both unprotected implementation and a permanently
+red suite that encourages stubs or waived assertions.
+
+| Check | Current state | Activation gate |
+|---|---|---|
+| Engine-facing code has no AGC, Interop, VideoOut or direct-memory dependency | Active as a fixture-proven checker and a non-expanding `Renderer3D` legacy-debt ratchet; zero-dependency assertion pending | Make zero-dependency live when `Renderer3D` migrates to the RHI |
+| `ProsperoApp` delegates lifecycle to `ProsperoRuntime` | Active as a non-expanding/non-duplicating direct-lifecycle-call ratchet | Require zero direct ownership plus ordered delegation when Slice 1 introduces `ProsperoRuntime` |
+| Draw operations cannot submit or present | Backlog | Activate with `GraphicsCommandList`; fake encoder must observe recording events only |
+| One presentation owner per display frame | Backlog | Activate with the frame/presentation token; duplicate present must fail before native interaction |
+| In-flight resources cannot be destroyed or overwritten | Backlog | Activate with `Submission` and device resources; fake retirement must prove deferred release |
+| Shader bindings derive from serialized metadata | Active for built-in resource lookup, wrong kind/slot and the offset-8 absolute-ISA near miss | Move the same fail-closed contract onto `ShaderModule`/pipeline binding in Slice 2 |
+| Invalid frame transitions fail before submission | Backlog | Activate with the frame state owner; exercise every illegal edge and assert zero backend submits |
+| Existing public API remains source-compatible | Active through a compile-only `ProsperoApp`/`DisplayDevice`/`Renderer3D` client and signature checks | Extend before each compatibility-bearing refactor; replace only after an approved versioning decision |
+
+The active ratchets deliberately permit today's documented `Renderer3D` and `ProsperoApp` debt to
+shrink but not spread. They do not claim that the endpoint already exists. Backlog entries are design
+obligations, not optional tests, and become merge gates with their named owning slice.
 
 ### Slice 1 — External-host runtime
 

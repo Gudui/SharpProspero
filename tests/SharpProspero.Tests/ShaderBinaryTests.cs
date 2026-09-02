@@ -109,4 +109,24 @@ public sealed class ShaderBinaryTests
         Assert.True(constantSmall);
         Assert.False(vs.TryGetResourceSlot(ShaderResourceKind.ReadWrite, 0, out _, out _));
     }
+
+    [Fact]
+    public void BuiltInMeshVertex_RejectsWrongKindSlotAndAbsoluteIsaNearMiss()
+    {
+        ShaderBinary vs = BuiltInShaders.MeshVertex();
+
+        Assert.True(vs.TryGetResourceSlot(ShaderResourceKind.ReadOnly, 0, out int userDataOffset, out bool small));
+        Assert.Equal(0, userDataOffset);
+        Assert.True(small);
+
+        // Geometry user data starts after eight system SGPRs. Serialized offset zero maps to ISA
+        // s[8:11]; treating that absolute ISA index as user-data offset eight was the plausible and
+        // hardware-safe-looking near miss this regression must continue to reject.
+        Assert.NotEqual(8, userDataOffset);
+        Assert.False(vs.TryGetResourceSlot(ShaderResourceKind.ReadOnly, 1, out _, out _));
+        Assert.False(vs.TryGetResourceSlot(ShaderResourceKind.ConstantBuffer, 1, out _, out _));
+        Assert.False(vs.TryGetResourceSlot(ShaderResourceKind.Sampler, 0, out _, out _));
+        Assert.False(vs.TryGetResourceSlot(ShaderResourceKind.ReadOnly, -1, out _, out _));
+        Assert.False(vs.TryGetResourceSlot((ShaderResourceKind)4, 0, out _, out _));
+    }
 }
