@@ -31,14 +31,7 @@ public sealed partial class EngineSubstrateArchitectureTests
         "SharpProspero.Memory",
     ];
 
-    private static readonly HashSet<string> ProsperoAppLifecycleBudget =
-    [
-        "DisplayDevice.Open",
-        "GamePad.Open",
-        "SystemService.sceSystemServiceHideSplashScreen",
-        "UserService.sceUserServiceInitialize",
-        "UserService.sceUserServiceTerminate",
-    ];
+
 
     [Fact]
     public void DependencyGate_RejectsForbiddenNamespaceAndQualifiedReference()
@@ -84,13 +77,36 @@ public sealed partial class EngineSubstrateArchitectureTests
     }
 
     [Fact]
-    public void ProsperoApp_LifecycleDebtCannotExpandOrDuplicate()
+    public void ProsperoApp_DelegatesLifecycleToRuntime()
     {
         string source = File.ReadAllText(SourcePath("Application", "ProsperoApp.cs"));
         string[] calls = LifecycleCall().Matches(source).Select(match => match.Value).ToArray();
 
-        Assert.All(calls, call => Assert.Contains(call, ProsperoAppLifecycleBudget));
-        Assert.All(calls.Distinct(), call => Assert.Equal(1, calls.Count(candidate => candidate == call)));
+        // Slice 1: the convenience loop holds zero direct ownership of service, display or pad
+        // lifecycle; the runtime owns it.
+        Assert.Empty(calls);
+
+        // Ordered delegation: initialize the runtime, open the display, open the pad, tear down.
+        int initialize = source.IndexOf("ProsperoRuntime.Initialize", StringComparison.Ordinal);
+        int openDisplay = source.IndexOf("OpenDisplay", StringComparison.Ordinal);
+        int openPad = source.IndexOf("TryOpenGamePad", StringComparison.Ordinal);
+        int dispose = source.IndexOf("_runtime?.Dispose()", StringComparison.Ordinal);
+        Assert.True(initialize >= 0, "ProsperoApp must initialize a ProsperoRuntime.");
+        Assert.True(openDisplay > initialize, "The display must open after runtime initialization.");
+        Assert.True(openPad > openDisplay, "The pad must open after the display.");
+        Assert.True(dispose > openPad, "The runtime must be disposed after devices open.");
+    }
+
+    [Fact]
+    public void ProsperoRuntime_OwnsServiceDisplayAndInputLifecycle()
+    {
+        string source = File.ReadAllText(SourcePath("Application", "ProsperoRuntime.cs"));
+
+        Assert.Contains("DisplayDevice.Open", source, StringComparison.Ordinal);
+        Assert.Contains("GamePad.Open", source, StringComparison.Ordinal);
+        Assert.Contains("sceUserServiceInitialize", source, StringComparison.Ordinal);
+        Assert.Contains("sceUserServiceTerminate", source, StringComparison.Ordinal);
+        Assert.Contains("sceSystemServiceHideSplashScreen", source, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -14,7 +14,7 @@ compatible, and which implementation slice may start next.
 
 | Field | Value |
 |---|---|
-| Document status | Approved direction; Slice 0 enforcement active; source implementation not started |
+| Document status | Approved direction; Slice 0 enforcement active; Slice 1 external-host runtime implemented and host-tested (not target-qualified); graphics RHI not started |
 | Source inventory commit | `7f72b8a0e84866912f3c1f0a59b99c3518f8a8f3` |
 | Target-qualified code baseline | `d6b7f1c` plus the external GPU-CW application artifact |
 | Last reviewed | 2026-09-02 |
@@ -536,8 +536,9 @@ shader authoring, content integration and P1 renderer features remain separately
 
 ## Immediate next design action
 
-Review ADR-010 through ADR-012 against `DisplayDevice`, the target-proven submit/suspend/advance order,
-and the expected external-host lifetime. Resolve only the choices required by Slice 1 first. Then add
-the architecture-enforcement tests and implement the external-host runtime as a behavior-preserving
-extraction. No graphics implementation should begin until the Slice 2 ownership and retirement choices
-are accepted.
+Slice 1 has landed as a behavior-preserving extraction: `ProsperoRuntime` owns service, display and
+input initialization/teardown without owning the engine loop, while `ProsperoApp` delegates and
+retains its public API and CPU presentation behavior. Ordered-delegation tests are active in the
+same change. No graphics implementation should begin until the Slice 2 ownership and retirement
+choices (ADR-010 through ADR-012) are accepted against `DisplayDevice`, the target-proven
+submit/suspend/advance order, and the expected external-host lifetime.
