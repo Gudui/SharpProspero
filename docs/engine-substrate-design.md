@@ -225,6 +225,26 @@ lists and render passes. Draw never submits or presents.
 For the first vertical slice, one frame owns one command list and one display render pass. The object
 model deliberately leaves room to expand without exposing the backend.
 
+#### Display ownership and presentation lease
+
+`ProsperoRuntime` owns every `DisplayDevice` that it opens. `GraphicsDevice` borrows that display and
+never disposes it. `GraphicsDevice.Create` must acquire one exclusive graphics/presentation lease from
+the display before it initializes AGC or allocates frame state. The lease keeps the display and its
+scan-out allocations valid, exposes the backend-only native view, and is released only after the
+graphics device has retired every submission it can prove safe.
+
+While that lease is active, a second graphics device, CPU `DisplayDevice.Present`, direct
+`AdvanceFrame`, and display disposal must fail before native interaction. A faulted graphics device
+whose outstanding work cannot be proven retired retains the lease; shutdown reports the bounded
+failure instead of allowing the runtime to unregister in-use scan-out memory. Therefore the required
+external-host teardown is graphics device first, then runtime/display. The per-frame presentation
+token underneath the lease permits exactly one logical `Present` for each display submission.
+
+Why this accelerates: runtime ownership remains compatible with CPU-only applications, while the
+exclusive lease makes double presentation and premature teardown deterministic host errors rather
+than target-only corruption. Making `GraphicsDevice` own the display instead would couple an RHI
+lifetime to the application host and create ambiguous double-disposal during backend recreation.
+
 ### Resources and pipelines
 
 - `GpuBuffer` is created from a typed description containing size, usage and update policy.
@@ -268,6 +288,28 @@ Recording ----BeginRenderPass----> InRenderPass
 | InFlight | Query status; device may append/execute platform boundary operations | Submission owns command memory and referenced resources | Dispose or overwrite referenced storage is deferred or rejected |
 | Retired | Recycle slot and release deferred resources | Checked GPU completion has occurred | Retirement must not be inferred from elapsed time or a build/test result |
 | Presented | Return presented frame id; slot may become Available when both GPU and VideoOut are safe | Presentation owner observed the exact display boundary | A second present for the same frame throws |
+
+### Submission observation and bounded retirement
+
+`Submission` exposes both a non-blocking status snapshot and `Wait(timeout)`. There is no
+parameterless or infinite wait. The snapshot identifies the submission/frame, the checked-suspend
+result, the expected flip identity for a display frame, the last observed native status and whether
+GPU and display retirement have each been proven. `Wait(timeout)` returns an explicit retired,
+timed-out or faulted result with the same diagnostic identity; a caller-selected observation timeout
+does not itself make the device faulted and never makes storage reusable.
+
+For the Slice 2 display-only path, submission records exactly one flip after the draw, submits once,
+and checks `AgcDevice.SuspendPoint()` before returning control to presentation handling. `Present`
+claims the frame's sole presentation token and uses a configured bounded wait for the exact flip
+identity; one vertical blank, elapsed time, or successful suspension is not retirement. Only the exact
+retirement result releases the frame slot and its referenced resources. Breaching the device's safety
+bound, or losing the ability to establish the exact native state, faults the device and retains
+unknown in-flight storage.
+
+Offscreen submission is not part of Slice 2 and must remain rejected until a backend completion
+primitive provides an equally explicit retirement proof. Polling alone would force each host to
+invent pacing and timeout policy; waiting alone would prevent engines from integrating retirement
+with their own schedulers. Providing both keeps one source of truth while supporting both uses.
 
 ### Physical order versus logical API
 
@@ -362,7 +404,12 @@ identity to connect a target symptom to the pipeline, frame and artifact without
 - `ProsperoApp` remains source-compatible while delegating service/device ownership to
   `ProsperoRuntime`. Its CPU surface loop continues to present once per callback.
 - `DisplayDevice` remains usable for CPU surface applications. Its public raw GPU properties are
-  treated as legacy/advanced API during migration; the RHI does not require consumers to use them.
+  retained for source compatibility in the current release and must be documented and editor-hidden
+  as legacy/advanced API during Slice 2. The RHI uses only the internal presentation lease/backend view. New engine
+  adapters may not use `BackBufferAddress`, `CurrentBufferIndex`, `BackBufferSizeBytes`, `OutputHandle`,
+  `FlipStatus`, `FrameIndex` or `AdvanceFrame`. Moving or removing those members requires a later,
+  explicit major-version decision; adding immediate obsolete warnings is avoided because it would
+  break consumers that treat warnings as errors.
 - `Renderer3D` retains its public entry points until a deliberate versioning decision. Internally it
   becomes an RHI client.
 - `Graphics.Agc` remains available to SDK maintainers and diagnostic probes. It is not removed merely
@@ -499,9 +546,9 @@ boundary rather than spawning another symptom-only variant.
 | ADR-007 | Accepted | Engine choice is deferred until the RHI boundary passes its acceptance client. |
 | ADR-008 | Accepted | The friendly presentation API preserves the target-proven native order even when flip encoding occurs before the logical `Present` call. |
 | ADR-009 | Proposed | P0 graphics recording is single-threaded and frame-thread owned. Revisit only with a concrete engine requirement and synchronization design. |
-| ADR-010 | Open for Slice 2 | Decide whether `GraphicsDevice` owns `DisplayDevice` or borrows it with an explicit lifetime token. It must not be ambiguous. |
-| ADR-011 | Open for Slice 2 | Define the bounded retirement mechanism and whether `Submission` exposes polling, waiting, or both. |
-| ADR-012 | Open for Slice 2 | Decide whether the legacy raw GPU properties on `DisplayDevice` remain public long-term or move behind an explicitly unsafe advanced surface. |
+| ADR-010 | Accepted | `ProsperoRuntime` owns `DisplayDevice`; `GraphicsDevice` borrows it through one exclusive graphics/presentation lease and never disposes it. The lease blocks CPU presentation, a second graphics owner and display teardown until proven-safe graphics retirement. |
+| ADR-011 | Accepted | `Submission` exposes both a non-blocking status snapshot and bounded `Wait(timeout)`, never an infinite wait. Slice 2 retirement requires checked suspension followed by the exact display flip identity; timeout never implies retirement, and an unprovable device safety deadline faults the device without recycling storage. |
+| ADR-012 | Accepted | Existing raw GPU/display members remain source-compatible as explicitly legacy/advanced API for the current release, but the RHI uses an internal lease/backend view and engine adapters may not consume them. Removal or relocation is deferred to an explicit major-version decision. |
 
 ## Delivery acceleration index
 
@@ -536,9 +583,9 @@ shader authoring, content integration and P1 renderer features remain separately
 
 ## Immediate next design action
 
-Slice 1 has landed as a behavior-preserving extraction: `ProsperoRuntime` owns service, display and
-input initialization/teardown without owning the engine loop, while `ProsperoApp` delegates and
-retains its public API and CPU presentation behavior. Ordered-delegation tests are active in the
-same change. No graphics implementation should begin until the Slice 2 ownership and retirement
-choices (ADR-010 through ADR-012) are accepted against `DisplayDevice`, the target-proven
-submit/suspend/advance order, and the expected external-host lifetime.
+ADR-010 through ADR-012 now fix the Slice 2 boundary: runtime-owned displays are borrowed through one
+exclusive graphics/presentation lease; submissions provide polling plus bounded exact-retirement
+waiting; and the RHI cannot depend on legacy raw `DisplayDevice` access. Implement the Slice 2 host
+foundation in that order: presentation lease and negative ownership tests, submission/frame state and
+fake retirement tests, then the minimal device/command/resource/shader/pipeline vertical slice. Keep
+GPU-CW as the target control and do not create a target artifact until the host boundary is green.
